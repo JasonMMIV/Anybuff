@@ -593,6 +593,7 @@ export default function SettingsModal({
       const result = (await window.AnyBuff.fetchModels({
         baseURL: p.baseURL.trim(),
         apiKey: (apiKeys[p.id] ?? '').trim(),
+        providerId: p.id,
         providerType: 'custom'
       })) as { ok: boolean; models?: string[]; error?: string }
       if (!result.ok) {
@@ -625,6 +626,7 @@ export default function SettingsModal({
       const result = (await window.AnyBuff.fetchModels({
         baseURL: p.baseURL.trim(),
         apiKey: (apiKeys[p.id] ?? '').trim(),
+        providerId: p.id,
         providerType: 'custom'
       })) as { ok: boolean; models?: string[]; error?: string }
       if (!result.ok) {

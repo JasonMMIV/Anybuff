@@ -7,6 +7,7 @@ import { attachWindow, startRun, abortRun, isRunning, getLastLocalAgents, respon
 import { createLocalAgent, loadProjectLocalAgents, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, type CreateLocalAgentInput } from './agents/local-agents'
 import {
   getAppSettings,
+  getProviderApiKey,
   saveProviderApiKey,
   updateProviders,
   updateAgentRouting,
@@ -523,9 +524,13 @@ function registerIpc(): void {
     return projectName(cwd)
   })
 
-  ipcMain.handle('AnyBuff:fetchModels', async (_e, payload: { baseURL: string; apiKey: string; providerType: string }) => {
+  ipcMain.handle('AnyBuff:fetchModels', async (_e, payload: { baseURL: string; apiKey: string; providerType: string; providerId?: string }) => {
     try {
       const base = payload.baseURL.replace(/\/+$/, '')
+      // Stored DPAPI keys are never echoed back to the renderer, so an empty
+      // payload.apiKey after reopening Settings must fall back to the
+      // persisted key — otherwise every re-fetch goes out unauthenticated.
+      const apiKey = payload.apiKey || (payload.providerId ? getProviderApiKey(payload.providerId) : undefined)
       // Ollama-compatible endpoint (/api/tags)
       if (/ollama|:11434/i.test(base)) {
         const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(15000) })
@@ -537,12 +542,15 @@ function registerIpc(): void {
       }
       // OpenAI-compatible /models
       const res = await fetch(`${base}/models`, {
-        headers: payload.apiKey ? { Authorization: `Bearer ${payload.apiKey}` } : {},
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
         signal: AbortSignal.timeout(15000)
       })
       if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
       const data = (await res.json()) as { data?: { id?: string }[] }
-      const models = (data.data ?? []).map((m) => m.id ?? '').filter(Boolean).sort()
+      // Gemini-style endpoints list ids with a "models/" prefix; strip it so
+      // stored ids match what /chat/completions expects and selectors render
+      // clean names.
+      const models = [...new Set((data.data ?? []).map((m) => (m.id ?? '').replace(/^models\//, '')).filter(Boolean).sort())]
       if (models.length === 0) return { ok: false, error: 'No model data in response' }
       return { ok: true, models }
     } catch (e) {

@@ -98,7 +98,7 @@ const api = {
   gitBranch: (cwd: string) => ipcRenderer.invoke('AnyBuff:gitBranch', cwd),
   gitDiff: (cwd: string) => ipcRenderer.invoke('AnyBuff:gitDiff', cwd),
   projectName: (cwd: string) => ipcRenderer.invoke('AnyBuff:projectName', cwd),
-  fetchModels: (payload: { baseURL: string; apiKey: string; providerType: string }) =>
+  fetchModels: (payload: { baseURL: string; apiKey?: string; providerType?: string; providerId?: string }) =>
     ipcRenderer.invoke('AnyBuff:fetchModels', payload),
   setTheme: (theme: 'dark' | 'light') => ipcRenderer.send('AnyBuff:setTheme', theme),
   getZoomFactor: () => webFrame.getZoomFactor(),

@@ -256,6 +256,23 @@ function saveSettings(settings: PersistedSettings): void {
 
 export function getAppSettings(): AppSettings {
   const s = loadSettings()
+
+  // Self-heal Gemini-style model ids persisted with a "models/" prefix:
+  // /chat/completions expects the bare id, and selectors should render clean
+  // names. Normalize providers' lists and activeModel in one pass.
+  let dirty = false
+  for (const p of s.providers) {
+    if (Array.isArray(p.models) && p.models.some((m) => m.startsWith('models/'))) {
+      p.models = [...new Set(p.models.map((m) => m.replace(/^models\//, '')))]
+      dirty = true
+    }
+  }
+  if (typeof s.activeModel === 'string' && s.activeModel.includes('/models/')) {
+    s.activeModel = s.activeModel.replace(/\/models\//, '/')
+    dirty = true
+  }
+  if (dirty) saveSettings(s)
+
   const activeProviderId = s.activeModel.split('/')[0] ?? ''
   const activeProvider = s.providers.find((p) => p.id === activeProviderId) ?? s.providers[0]
   const hasKey = activeProvider ? getProviderApiKey(activeProvider.id) !== undefined : false
