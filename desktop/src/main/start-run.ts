@@ -63,6 +63,23 @@ export interface UiEvent {
 
 /* ─── Auto-retry on transient failures (network / timeout / rate-limit) ─── */
 
+/**
+ * Fork-parity: OpenBuff-Desktop suppressed ALL context-pruner events at
+ * emission; upstream freebuff forwards lifecycle cards ("silent pause"
+ * explainer). We choose silence — the pruner is a zero-LLM history
+ * maintenance routine spawned programmatically every step, not user-visible
+ * work. To debug context pruning, empty this set. See PLAN.md §10.
+ */
+const SILENT_AGENT_TYPES = new Set(['context-pruner'])
+
+function isSilentAgentEvent(event: UiEvent): boolean {
+  return (
+    'agentType' in event &&
+    typeof event.agentType === 'string' &&
+    SILENT_AGENT_TYPES.has(event.agentType)
+  )
+}
+
 /** Failure reasons eligible for automatic retry (classifyFailure keys). */
 const AUTO_RETRY_REASONS = new Set(['network', 'timeout', 'rate-limit'])
 /** Retries after the initial attempt (total attempts = 1 + AUTO_RETRY_MAX_RETRIES). */
@@ -627,6 +644,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         handleEvent: (event) => {
           const normalized = normalizeEvent(event)
           if (normalized.type !== 'ignored') {
+            if (isSilentAgentEvent(normalized)) return
             applyEvent(taskId, normalized)
             sendEvent(normalized)
           }
@@ -642,6 +660,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           } else if (chunk && typeof chunk === 'object' && 'chunk' in chunk) {
             if (chunk.type === 'subagent_chunk') {
               const ev = { type: 'subagent_stream', text: String(chunk.chunk), agentType: chunk.agentType ? String(chunk.agentType) : undefined }
+              if (ev.agentType && SILENT_AGENT_TYPES.has(ev.agentType)) return
               applyEvent(taskId, ev)
               sendEvent(ev)
             } else if (chunk.type === 'reasoning_chunk') {
