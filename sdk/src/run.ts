@@ -37,6 +37,7 @@ import { cloneDeep } from 'lodash'
 import { executeComposioToolViaServer } from './composio'
 import { getErrorStatusCode } from './error-utils'
 import { getAgentRuntimeImpl } from './impl/agent-runtime'
+import { setProviderApiKeyOverrides } from './impl/model-provider'
 import { localGetUserInfoFromApiKey as getUserInfoFromApiKey } from './impl/local-database'
 import { initialSessionState, applyOverridesToSessionState } from './run-state'
 import type { ComputedProjectIndex } from './run-state'
@@ -217,6 +218,10 @@ export type RunOptions = {
    * prompt for after the turn finishes. */
   drainSteeringMessages?: () => string[]
   costMode?: string
+  /** ADR-12: providerId → API key injected by the host for this run. Wins
+   * over anybuff.json apiKeyEnv resolution and keeps plaintext keys out of
+   * process.env (agent-spawned children cannot read them). */
+  apiKeyOverrides?: Record<string, string>
   /** Extra key/values merged into each LLM request's `codebuff_metadata`.
    *  Used by hosts (e.g. the CLI) to forward client-scoped identifiers like
    *  `freebuff_instance_id` that server-side gates read from the request body. */
@@ -364,6 +369,13 @@ type RunReturnType = RunState
 
 export async function run(options: RunExecutionOptions): Promise<RunState> {
   const { signal } = options
+
+  // ADR-12: register host-injected provider keys for the whole run so model
+  // resolution never needs plaintext keys in process.env. Desktop hosts run
+  // one turn at a time; concurrent runs share the last registration.
+  if (options.apiKeyOverrides) {
+    setProviderApiKeyOverrides(options.apiKeyOverrides)
+  }
 
   if (signal?.aborted) {
     const abortError = createAbortError(signal)

@@ -386,7 +386,7 @@ async function* streamOnce(
   const agentChunkMetadata =
     params.agentId != null ? { agentId: params.agentId } : undefined
 
-  const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
+  const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
     apiKey: params.apiKey,
     model: requestedModel ?? params.model,
     agentId: params.agentId,
@@ -397,6 +397,14 @@ async function* streamOnce(
       ? String((aiSDKModel as { provider: unknown }).provider).split('.')[0].trim()
       : undefined
 
+  // §9.2 compat: strict OpenAI-compatible endpoints reject Anthropic-style
+  // cache_control metadata; strip unless the provider opts into caching.
+  const effectiveParams = {
+    ...params,
+    includeCacheControl:
+      compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
+  }
+
   void logger
 
   const response = streamText({
@@ -404,7 +412,7 @@ async function* streamOnce(
     abortSignal: params.signal,
     prompt: undefined,
     model: aiSDKModel,
-    messages: convertCbToModelMessages(params),
+    messages: convertCbToModelMessages(effectiveParams),
     allowSystemInMessages: true,
     include: {
       ...streamParams.include,
@@ -876,18 +884,23 @@ export async function promptAiSdk(
   }
 
   return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
-    const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
       preferModelParam: verbatim ? true : undefined,
     })
+    const effectiveParams = {
+      ...params,
+      includeCacheControl:
+        compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
+    }
 
     const response = await generateText({
       ...params,
       prompt: undefined,
       model: aiSDKModel,
-      messages: convertCbToModelMessages(params),
+      messages: convertCbToModelMessages(effectiveParams),
       allowSystemInMessages: true,
       include: {
         ...params.include,
@@ -955,19 +968,24 @@ export async function promptAiSdkStructured<T>(
   }
 
   return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
-    const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
       preferModelParam: verbatim ? true : undefined,
     })
+    const effectiveParams = {
+      ...params,
+      includeCacheControl:
+        compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
+    }
 
     const response = await generateText({
       ...params,
       prompt: undefined,
       model: aiSDKModel,
       output: Output.object({ schema: params.schema }),
-      messages: convertCbToModelMessages(params),
+      messages: convertCbToModelMessages(effectiveParams),
       allowSystemInMessages: true,
       include: { requestBody: true },
       providerOptions: withConfiguredReasoningEffort(
