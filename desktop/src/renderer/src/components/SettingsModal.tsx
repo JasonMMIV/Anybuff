@@ -173,7 +173,7 @@ function defaultCustom(): ProviderDraft {
     label: 'OpenAI Compatible',
     type: 'openai-compatible',
     baseURL: 'http://localhost:11434/v1',
-    apiKeyEnv: 'AnyBuff_API_KEY',
+    apiKeyEnv: 'ANYBUFF_API_KEY',
     models: []
   }
 }
@@ -326,7 +326,7 @@ export default function SettingsModal({
     try {
       const usedEnv = new Set<string>()
       const normalizedProviders = providers.map((p) => {
-        let env = p.apiKeyEnv || 'AnyBuff_API_KEY'
+        let env = p.apiKeyEnv || 'ANYBUFF_API_KEY'
         let i = 1
         while (usedEnv.has(env)) env = `AnyBuff_API_KEY_${++i}`
         usedEnv.add(env)
@@ -339,7 +339,7 @@ export default function SettingsModal({
           label: p.label,
           type: p.type,
           baseURL: p.baseURL.trim(),
-          apiKeyEnv: p.apiKeyEnv || 'AnyBuff_API_KEY',
+          apiKeyEnv: p.apiKeyEnv || 'ANYBUFF_API_KEY',
           models: p.models,
           enableThinking: p.enableThinking,
           customBody: p.customBody
@@ -356,7 +356,9 @@ export default function SettingsModal({
         onSaved?.({ hasProvider: Boolean(result.settings?.hasProvider) })
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
       console.error('Settings auto-save failed:', err)
+      setError(`Save failed: ${message}`)
     }
   }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, onSaved])
 
@@ -496,7 +498,7 @@ export default function SettingsModal({
       label: preset.label,
       type: preset.type,
       baseURL: preset.baseURL,
-      apiKeyEnv: preset.apiKeyEnv || 'AnyBuff_API_KEY',
+      apiKeyEnv: preset.apiKeyEnv || 'ANYBUFF_API_KEY',
       models: [],
       enableThinking: preset.enableThinking
     }

@@ -437,7 +437,7 @@ export function classifyFailure(rawMessage: string): string {
   if (/quota|rate limit|rate_limit|429/.test(lower)) return 'rate-limit'
   if (/invalid api key|unauthorized|401|403|authentication|auth/i.test(lower)) return 'auth'
   if (/timed out|timeout/.test(lower)) return 'timeout'
-  if (/network|fetch failed|socket|econnreset|econnrefused|enotfound|etimedout/i.test(lower)) return 'network'
+  if (/network|fetch failed|socket|econnreset|econnrefused|enotfound|etimedout|connection interrupted|closed unexpectedly|no data was received/i.test(lower)) return 'network'
   return 'error'
 }
 

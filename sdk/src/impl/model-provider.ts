@@ -255,15 +255,13 @@ export function applyConfiguredProviderRequestCompatibility(
 function createConfiguredProviderFetch(
   resolved: ResolvedProviderModel,
 ): FetchFunction | undefined {
-  const hasCustomBodyMerge =
-    resolved.provider.type === 'openai-compatible' &&
-    Boolean((resolved.provider as { customBody?: unknown }).customBody)
-
-  if (!hasCustomBodyMerge) {
-    return createRetryableNetworkErrorFetch(resolved)
-  }
-
   const inner = createRetryableNetworkErrorFetch(resolved)
+
+  const customBody =
+    resolved.provider.type === 'openai-compatible'
+      ? (resolved.provider as { customBody?: Record<string, unknown> })
+          .customBody
+      : undefined
 
   return (async (
     input: RequestInfo | URL,
@@ -274,14 +272,13 @@ function createConfiguredProviderFetch(
     if (init?.body && typeof init.body === 'string') {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>
-        const customBody =
-          (resolved.provider as { customBody?: Record<string, unknown> })
-            .customBody ?? {}
+        // Compat rules apply to EVERY request (PLAN §9.2): merge optional
+        // per-provider customBody, then strip/downgrade rejected parameters.
         transformedInit = {
           ...init,
           body: JSON.stringify(
             applyConfiguredProviderRequestCompatibility(
-              { ...customBody, ...body },
+              { ...(customBody ?? {}), ...body },
               resolved,
             ),
           ),

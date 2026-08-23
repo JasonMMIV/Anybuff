@@ -119,14 +119,14 @@ function settingsPath(): string {
   return join(app.getPath('userData'), SETTINGS_FILE)
 }
 
-/** Automatically migrate settings, keys, and tasks from legacy 'AnyBuff-windows' directory if present. */
+/** Automatically migrate settings, keys, and tasks from legacy 'openbuff-windows' directory if present. */
 function migrateLegacyUserData(): void {
   try {
     const currentDir = app.getPath('userData')
     const currentSettings = join(currentDir, SETTINGS_FILE)
 
     const appData = app.getPath('appData')
-    const legacyDir = join(appData, 'AnyBuff-windows')
+    const legacyDir = join(appData, 'openbuff-windows')
     const legacySettings = join(legacyDir, SETTINGS_FILE)
     if (!existsSync(legacySettings)) return
 
@@ -150,9 +150,9 @@ function migrateLegacyUserData(): void {
     if (shouldMigrateSettings) {
       writeFileSync(currentSettings, readFileSync(legacySettings, 'utf-8'), 'utf-8')
 
-      const legacyAnyBuffJson = join(legacyDir, 'anybuff.json')
-      if (existsSync(legacyAnyBuffJson)) {
-        writeFileSync(join(currentDir, 'anybuff.json'), readFileSync(legacyAnyBuffJson, 'utf-8'), 'utf-8')
+      const legacyOpenbuffJson = join(legacyDir, 'openbuff.json')
+      if (existsSync(legacyOpenbuffJson)) {
+        writeFileSync(join(currentDir, 'anybuff.json'), readFileSync(legacyOpenbuffJson, 'utf-8'), 'utf-8')
       }
 
       const legacyWindowState = join(legacyDir, 'window-state.json')
@@ -258,11 +258,11 @@ export function getAppSettings(): AppSettings {
   const s = loadSettings()
   const activeProviderId = s.activeModel.split('/')[0] ?? ''
   const activeProvider = s.providers.find((p) => p.id === activeProviderId) ?? s.providers[0]
-  const hasKey = activeProvider ? Boolean(s.encryptedKeys?.[activeProvider.id]) : false
+  const hasKey = activeProvider ? getProviderApiKey(activeProvider.id) !== undefined : false
   const isLocal = activeProvider ? /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(activeProvider.baseURL) : false
   const providerHasKey: Record<string, boolean> = {}
   for (const p of s.providers) {
-    providerHasKey[p.id] = Boolean(s.encryptedKeys?.[p.id])
+    providerHasKey[p.id] = getProviderApiKey(p.id) !== undefined
   }
   return {
     providers: s.providers,
