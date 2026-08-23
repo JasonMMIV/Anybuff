@@ -371,7 +371,7 @@ export function writeProviderConfigFile(): string {
       providers[p.id] = {
         type: 'anthropic-compatible',
         baseURL: p.baseURL,
-        apiKeyEnv: p.apiKeyEnv,
+        apiKeyEnv: sanitizeApiKeyEnv(p.apiKeyEnv),
         models: p.models,
         compatibility: {
           stripCacheControl: false,
@@ -398,7 +398,7 @@ export function writeProviderConfigFile(): string {
       providers[p.id] = {
         type: 'openai-compatible',
         baseURL: p.baseURL,
-        apiKeyEnv: p.apiKeyEnv,
+        apiKeyEnv: sanitizeApiKeyEnv(p.apiKeyEnv),
         models: p.models,
         supportsStructuredOutputs: !isLocal,
         ...(p.enableThinking !== undefined ? { enableThinking: p.enableThinking } : {}),
@@ -803,3 +803,11 @@ export async function searchHistory(query: string): Promise<HistorySearchResult[
   return results
 }
 
+
+/** SDK schema requires /^[A-Z_][A-Z0-9_]*$/; normalize user input so a
+ * lowercase or hyphenated name can never invalidate the whole config file. */
+function sanitizeApiKeyEnv(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const upper = value.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase()
+  return /^[A-Z_][A-Z0-9_]*$/.test(upper) ? upper : undefined
+}

@@ -328,7 +328,7 @@ export default function SettingsModal({
       const normalizedProviders = providers.map((p) => {
         let env = p.apiKeyEnv || 'ANYBUFF_API_KEY'
         let i = 1
-        while (usedEnv.has(env)) env = `AnyBuff_API_KEY_${++i}`
+        while (usedEnv.has(env)) env = `ANYBUFF_API_KEY_${++i}`
         usedEnv.add(env)
         return { ...p, apiKeyEnv: env }
       })
