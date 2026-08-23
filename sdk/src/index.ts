@@ -38,8 +38,9 @@ export * from './run-state'
 export { ToolHelpers } from './tools'
 export * from './constants'
 
-export { getUserInfoFromApiKey } from './impl/database'
+export { localGetUserInfoFromApiKey as getUserInfoFromApiKey } from './impl/local-database'
 export * from './credentials'
+export * from './provider-config'
 export { loadLocalAgents } from './agents/load-agents'
 export { loadMCPConfig, loadMCPConfigSync } from './agents/load-mcp-config'
 export { loadSkills, loadSkillsSync, parseSkillFileContent } from './skills/load-skills'
@@ -78,6 +79,17 @@ export {
   createNetworkError,
 } from './error-utils'
 export type { HttpError } from './error-utils'
+
+// Provider content-policy classification (failover-eligible errors)
+export {
+  PROVIDER_CONTENT_POLICY_ERROR_CODE,
+  createProviderContentPolicyError,
+  getProviderContentPolicyFinishError,
+  isProviderContentPolicyError,
+  isProviderContentPolicyResponse,
+  normalizeProviderContentPolicyError,
+} from './error-utils'
+export type { ProviderContentPolicyError } from './error-utils'
 
 // Retry configuration constants
 export {

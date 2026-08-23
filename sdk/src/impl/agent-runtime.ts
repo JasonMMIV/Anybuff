@@ -1,18 +1,18 @@
-import { trackEvent as trackCommonEvent } from '@codebuff/common/analytics'
+import {
+  LOCAL_MODE_USER_EMAIL,
+  LOCAL_MODE_USER_ID,
+} from '@codebuff/common/constants/local-mode'
 import { env as clientEnvDefault } from '@codebuff/common/env'
 import { getCiEnv } from '@codebuff/common/env-ci'
-import { shouldTrackAnalyticsEvent } from '@codebuff/common/util/analytics-sampling'
 import { success } from '@codebuff/common/util/error'
 
-import { getWebsiteUrl } from '../constants'
-
 import {
-  addAgentStep,
-  fetchAgentFromDatabase,
-  finishAgentRun,
-  getUserInfoFromApiKey,
-  startAgentRun,
-} from './database'
+  localAddAgentStep,
+  localFetchAgentFromDatabase,
+  localFinishAgentRun,
+  localGetUserInfoFromApiKey,
+  localStartAgentRun,
+} from './local-database'
 import { promptAiSdk, promptAiSdkStream, promptAiSdkStructured } from './llm'
 
 import type {
@@ -29,8 +29,7 @@ import type { TrackEventFn } from '@codebuff/common/types/contracts/analytics'
 const DATABASE_AGENT_CACHE_MAX_ENTRIES = 200
 
 /** Insertion-order (FIFO) eviction so the cache can't grow without bound in
- *  long-lived processes (e.g. the freebuff chat server, which runs the agent
- *  runtime in-process). Templates are large — prompts plus handleSteps source. */
+ *  long-lived processes (the desktop app runs the agent runtime in-process). */
 class BoundedAgentCache extends Map<string, AgentTemplate | null> {
   override set(key: string, value: AgentTemplate | null): this {
     if (!this.has(key)) {
@@ -46,6 +45,11 @@ class BoundedAgentCache extends Map<string, AgentTemplate | null> {
 
 const databaseAgentCache: DatabaseAgentCache = new BoundedAgentCache()
 
+/**
+ * Local BYOK dependency table. There is no hosted backend: account lookups
+ * return a synthetic local user, the remote agent registry is unreachable by
+ * design (bundled + local .agents only), and run bookkeeping is local-only.
+ */
 export function getAgentRuntimeImpl(
   params: {
     logger?: Logger
@@ -77,39 +81,24 @@ export function getAgentRuntimeImpl(
     sendSubagentChunk,
   } = params
 
-  const clientEnv: ClientEnv = {
-    ...(clientEnvInput ?? clientEnvDefault),
-    NEXT_PUBLIC_CODEBUFF_APP_URL: getWebsiteUrl(),
-  }
-
-  const trackSdkRuntimeEvent: TrackEventFn = (eventParams) => {
-    if (
-      clientEnv.NEXT_PUBLIC_CB_ENVIRONMENT === 'prod' &&
-      !shouldTrackAnalyticsEvent({
-        event: eventParams.event,
-        distinctId: eventParams.userId,
-        properties: eventParams.properties,
-      })
-    ) {
-      return
-    }
-
-    trackCommonEvent(eventParams)
+  const trackSdkRuntimeEvent: TrackEventFn = () => {
+    // Local BYOK ships no telemetry.
+    return
   }
 
   return {
     // Environment
-    clientEnv,
+    clientEnv: clientEnvInput ?? clientEnvDefault,
     ciEnv: getCiEnv(),
 
-    // Database
-    getUserInfoFromApiKey,
-    fetchAgentFromDatabase,
-    startAgentRun,
-    finishAgentRun,
-    addAgentStep,
+    // Database (local stubs)
+    getUserInfoFromApiKey: localGetUserInfoFromApiKey,
+    fetchAgentFromDatabase: localFetchAgentFromDatabase,
+    startAgentRun: localStartAgentRun,
+    finishAgentRun: localFinishAgentRun,
+    addAgentStep: localAddAgentStep,
 
-    // Billing
+    // Billing (no-op: the user pays their provider directly)
     consumeCreditsWithFallback: async () =>
       success({
         chargedToOrganization: false,
@@ -131,7 +120,7 @@ export function getAgentRuntimeImpl(
     traceWriter,
     fetch: globalThis.fetch,
 
-    // Client (WebSocket)
+    // Client callbacks (in-process; historically WebSocket seams)
     handleStepsLogChunk,
     requestToolCall,
     requestMcpToolData,
