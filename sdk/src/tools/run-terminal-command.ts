@@ -9,7 +9,7 @@ import type {
 import type { Readable } from 'stream'
 
 import { stripColors } from '../../../common/src/util/string'
-import { getSystemProcessEnv } from '../env'
+import { getScrubbedSystemProcessEnv } from '../impl/env-sanitize'
 import {
   createWindowsBashNotFoundError,
   findWindowsBash,
@@ -317,8 +317,11 @@ export function runTerminalCommand({
 
   return new Promise((resolve, reject) => {
     const isWindows = os.platform() === 'win32'
+    // ADR-12b: scrub provider API keys from the inherited process environment
+    // so agent-spawned children never see plaintext credentials. Explicit
+    // host-provided env values (merged next) intentionally win.
     const processEnv = {
-      ...getSystemProcessEnv(),
+      ...getScrubbedSystemProcessEnv(),
       ...(env ?? {}),
     } as NodeJS.ProcessEnv
     if (isWindows) {

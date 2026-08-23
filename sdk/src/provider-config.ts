@@ -2244,11 +2244,16 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
     }
 
     for (const item of staged) {
-      if (item.existed) {
-        fs.renameSync(item.filePath, item.backupPath)
+      // Backup by COPY so the live target never disappears mid-transaction
+      // (§9.5: no pre-delete / pre-move of files users may be reading).
+      if (item.existed && !item.backupCreated) {
+        fs.copyFileSync(item.filePath, item.backupPath)
         item.backupCreated = true
       }
-      fs.renameSync(item.tempPath, item.filePath)
+      fsyncFile(item.tempPath)
+      // Atomic replace; transient Windows locks get backoff retries and the
+      // old file survives total failure.
+      renameReplaceWithRetry(item.tempPath, item.filePath)
       item.installed = true
     }
 
@@ -2259,11 +2264,8 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
     const rollbackErrors: string[] = []
     for (const item of [...staged].reverse()) {
       try {
-        if (item.installed && fs.existsSync(item.filePath)) {
-          fs.unlinkSync(item.filePath)
-        }
-        if (item.backupCreated && fs.existsSync(item.backupPath)) {
-          fs.renameSync(item.backupPath, item.filePath)
+        if (item.installed && item.backupCreated && fs.existsSync(item.backupPath)) {
+          fs.copyFileSync(item.backupPath, item.filePath)
         }
       } catch (rollbackError) {
         rollbackErrors.push(
@@ -2290,23 +2292,85 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
   }
 }
 
+/**
+ * Sync sleep for rename-retry backoff. Atomics.wait parks the thread without
+ * spinning; supported on Node and Bun main threads.
+ */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // Environments without a waitable main thread: fall through (rare).
+  }
+}
+
+const RENAME_REPLACE_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+/**
+ * PLAN.md §9.5: install `tempPath` at `filePath` via rename-replace.
+ *
+ * On Windows/NTFS fs.rename maps to MoveFileExW(REPLACE_EXISTING), which is
+ * an atomic metadata operation — the previous file is replaced in one step
+ * and NEVER deleted up front (deleting first creates a no-file window).
+ * Transient EPERM/EACCES/EBUSY (antivirus/indexer locks) get short backoff
+ * retries; on exhaustion the ORIGINAL FILE IS PRESERVED and the error thrown.
+ */
+function renameReplaceWithRetry(
+  tempPath: string,
+  filePath: string,
+  attempts = 6,
+): void {
+  let delayMs = 50
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      fs.renameSync(tempPath, filePath)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      const retryable =
+        RENAME_REPLACE_RETRY_CODES.has(code) || code === 'EEXIST'
+      if (!retryable || attempt === attempts - 1) {
+        throw error
+      }
+      sleepSync(delayMs)
+      delayMs *= 2
+    }
+  }
+}
+
+/** Durability: flush the temp file to disk before the atomic rename. */
+function fsyncFile(filePath: string): void {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(filePath, 'r+')
+    fs.fsyncSync(fd)
+  } catch {
+    // Best-effort: some filesystems reject fsync. The rename stays atomic;
+    // worst case without it is a post-power-loss empty file at the temp path.
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // Ignore close errors.
+      }
+    }
+  }
+}
+
 function writeJsonFileAtomic(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  // Unique temp name, same directory (cross-volume rename would degrade to a
+  // non-atomic copy+delete).
   const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`
   fs.writeFileSync(tempPath, JSON.stringify(value, null, 2) + '\n', {
     mode: 0o600,
   })
-  try {
-    fs.renameSync(tempPath, filePath)
-  } catch (error) {
-    if (
-      !['EEXIST', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')
-    ) {
-      throw error
-    }
-    fs.unlinkSync(filePath)
-    fs.renameSync(tempPath, filePath)
-  }
+  fsyncFile(tempPath)
+  // Never delete the target first: rename-replace keeps the old file intact
+  // until the instant of replacement, and preserves it when all retries fail.
+  renameReplaceWithRetry(tempPath, filePath)
 }
 
 export function writeProviderConfigFile(params: {
