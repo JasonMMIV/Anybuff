@@ -1,32 +1,36 @@
 import { jsonToolResult } from '@codebuff/common/util/messages'
 
-import { callWebSearchAPI } from '../../../llm-api/codebuff-web-api'
+import {
+  WEBSEARCH_TIMEOUT_MS,
+  executeWebSearch,
+  extractLinks,
+  fetchPublicWebUrl,
+  readResponseTextWithLimit,
+  resolveGitHubUrl,
+  stripHtml,
+} from './web-search-utils'
 
 import type { CodebuffToolHandlerFunction } from '../handler-function-type'
 import type {
   CodebuffToolCall,
   CodebuffToolOutput,
 } from '@codebuff/common/tools/list'
-import type { ClientEnv, CiEnv } from '@codebuff/common/types/contracts/env'
 import type { Logger } from '@codebuff/common/types/contracts/logger'
+
+const MAX_FETCH_LENGTH = 150_000
 
 export const handleWebSearch = (async (params: {
   previousToolCallFinished: Promise<void>
   toolCall: CodebuffToolCall<'web_search'>
   logger: Logger
-  apiKey: string
+  signal: AbortSignal
 
   agentStepId: string
   clientSessionId: string
   fingerprintId: string
   repoId: string | undefined
-  repoUrl: string | undefined
   userInputId: string
   userId: string | undefined
-
-  fetch: typeof globalThis.fetch
-  clientEnv: ClientEnv
-  ciEnv: CiEnv
 }): Promise<{
   output: CodebuffToolOutput<'web_search'>
   creditsUsed: number
@@ -34,27 +38,23 @@ export const handleWebSearch = (async (params: {
   const {
     previousToolCallFinished,
     toolCall,
+    signal,
 
     agentStepId,
-    apiKey,
     clientSessionId,
     fingerprintId,
     logger,
     repoId,
-    repoUrl,
     userId,
     userInputId,
-
-    fetch,
-    clientEnv,
-    ciEnv,
   } = params
-  const { query, depth } = toolCall.input
+  const { query, depth, url, include_links, max_links } = toolCall.input
 
-  const searchStartTime = Date.now()
-  const searchContext = {
+  const startTime = Date.now()
+  const logContext = {
     toolCallId: toolCall.toolCallId,
     query,
+    url,
     depth,
     userId,
     agentStepId,
@@ -66,84 +66,161 @@ export const handleWebSearch = (async (params: {
 
   await previousToolCallFinished
 
-  let creditsUsed = 0
+  const creditsUsed = 0
+
+  // URL-fetch branch: fetch the page content and return its text + links
+  if (url) {
+    try {
+      // GitHub repo URLs → fetch raw README directly for clean content
+      const rawUrl = resolveGitHubUrl(url)
+      const fetchUrl = rawUrl ?? url
+      const isRaw = rawUrl !== null
+
+      const combinedSignal = AbortSignal.any([
+        signal,
+        AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS),
+      ])
+      const { response, finalUrl } = await fetchPublicWebUrl({
+        url: fetchUrl,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (compatible; AnyBuff/1.0; +https://github.com/anybuff)',
+        },
+        signal: combinedSignal,
+      })
+
+      if (!response.ok) {
+        return {
+          output: jsonToolResult({
+            errorMessage: `Failed to fetch ${finalUrl.href}: HTTP ${response.status} ${response.statusText}`,
+          }),
+          creditsUsed,
+        }
+      }
+
+      const contentType = response.headers.get('content-type') ?? ''
+      const { text: rawHtml, truncated: bodyTruncated } =
+        await readResponseTextWithLimit({ response })
+      const isHtml = !isRaw && contentType.includes('text/html')
+      const content = isHtml ? stripHtml(rawHtml) : rawHtml
+      const result =
+        bodyTruncated || content.length > MAX_FETCH_LENGTH
+          ? content.slice(0, MAX_FETCH_LENGTH) +
+            '\n\n[Content truncated — page exceeded the safe fetch limit]'
+          : content
+
+      // Extract links from HTML pages (not raw text/markdown)
+      const shouldExtractLinks = include_links !== false && isHtml
+      const links = shouldExtractLinks
+        ? extractLinks(rawHtml, finalUrl.href, max_links ?? 40)
+        : undefined
+
+      logger.info(
+        {
+          ...logContext,
+          durationMs: Date.now() - startTime,
+          contentLength: content.length,
+          linkCount: links?.length ?? 0,
+          isRaw,
+        },
+        'URL fetch completed',
+      )
+      const sourceLink = { href: finalUrl.href, text: finalUrl.href }
+      const provenanceLinks = [
+        sourceLink,
+        ...(links ?? []).filter((link) => link.href !== finalUrl.href),
+      ]
+      return {
+        output: jsonToolResult({ result, links: provenanceLinks }),
+        creditsUsed,
+      }
+    } catch (error) {
+      const errorMessage = `Error fetching ${url}: ${
+        error instanceof Error ? error.message : 'Unknown error'
+      }`
+      logger.error(
+        { ...logContext, error, durationMs: Date.now() - startTime },
+        'URL fetch failed',
+      )
+      return { output: jsonToolResult({ errorMessage }), creditsUsed }
+    }
+  }
+
+  // Search branch: use Open Websearch as an in-process library.
+  if (!query) {
+    return {
+      output: jsonToolResult({
+        errorMessage: 'Either query or url must be provided',
+      }),
+      creditsUsed,
+    }
+  }
 
   try {
-    const webApi = await callWebSearchAPI({
+    const searchResult = await executeWebSearch(
       query,
-      depth,
-      repoUrl: repoUrl ?? null,
-      fetch,
-      logger,
-      apiKey,
-      env: { clientEnv, ciEnv },
-    })
+      depth ?? 'standard',
+      AbortSignal.any([signal, AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS)]),
+    )
 
-    if (webApi.error) {
-      const searchDuration = Date.now() - searchStartTime
+    if ('error' in searchResult) {
       logger.warn(
         {
-          ...searchContext,
-          searchDuration,
-          usedWebApi: true,
-          success: false,
-          error: webApi.error,
+          ...logContext,
+          error: searchResult.error,
+          durationMs: Date.now() - startTime,
         },
-        'Web API search returned error',
+        'Web search returned error',
+      )
+      return {
+        output: jsonToolResult({ errorMessage: searchResult.error }),
+        creditsUsed,
+      }
+    }
+
+    if (searchResult.results.length === 0) {
+      logger.warn(
+        { ...logContext, durationMs: Date.now() - startTime },
+        'Web search returned no results',
       )
       return {
         output: jsonToolResult({
-          errorMessage: webApi.error,
+          errorMessage: `No search results found for "${query}"`,
         }),
         creditsUsed,
       }
     }
-    const searchDuration = Date.now() - searchStartTime
-    const resultLength = webApi.result?.length || 0
-    const hasResults = Boolean(webApi.result && webApi.result.trim())
-
-    // Capture credits used from the API response
-    if (typeof webApi.creditsUsed === 'number') {
-      creditsUsed = webApi.creditsUsed
-    }
 
     logger.info(
       {
-        ...searchContext,
-        searchDuration,
-        resultLength,
-        hasResults,
-        usedWebApi: true,
-        creditsCharged: 'server',
-        creditsUsed,
-        success: true,
+        ...logContext,
+        durationMs: Date.now() - startTime,
+        resultCount: searchResult.results.length,
       },
-      'Search completed via web API',
+      'Search completed',
     )
-
     return {
-      output: jsonToolResult({ result: webApi.result ?? '' }),
+      output: jsonToolResult({
+        result: searchResult.results
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.title || item.url}\n${item.description}\nSource: ${item.url}`,
+          )
+          .join('\n\n'),
+        links: searchResult.results
+          .filter((item) => item.url)
+          .map((item) => ({ href: item.url, text: item.title || item.url })),
+      }),
       creditsUsed,
     }
   } catch (error) {
-    const searchDuration = Date.now() - searchStartTime
+    const durationMs = Date.now() - startTime
+
     const errorMessage = `Error performing web search for "${query}": ${
       error instanceof Error ? error.message : 'Unknown error'
     }`
     logger.error(
-      {
-        ...searchContext,
-        error:
-          error instanceof Error
-            ? {
-                name: error.name,
-                message: error.message,
-                stack: error.stack,
-              }
-            : error,
-        searchDuration,
-        success: false,
-      },
+      { ...logContext, error, durationMs },
       'Search failed with error',
     )
     return { output: jsonToolResult({ errorMessage }), creditsUsed }
