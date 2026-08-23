@@ -137,6 +137,20 @@ export type CodebuffClientOptions = {
   /** Optional host process boundary that keeps terminal tools away from an
    * interactive console. Headless consumers can omit it. */
   terminalCommandBroker?: TerminalCommandBroker
+  /** Approval UX for terminal commands (local BYOK, PLAN.md §9.2/ADR-8).
+   * - 'allow-all': requestApproval is never consulted.
+   * - 'balanced' (default) / 'strict': every terminal command is offered to
+   *   requestApproval before execution; the host decides presentation and may
+   *   auto-approve safe commands in its own UI logic. */
+  approvalMode?: 'balanced' | 'strict' | 'allow-all'
+  /** Async approval gate for terminal commands. Returning false declines the
+   * command; the agent receives a structured denial and continues without
+   * executing it. Omit to run all commands without prompting. */
+  requestApproval?: (request: {
+    command: string
+    cwd: string
+    mode: NonNullable<CodebuffClientOptions['approvalMode']>
+  }) => Promise<boolean>
 
   handleEvent?: (event: PrintModeEvent) => void | Promise<void>
   handleStreamChunk?: (
@@ -382,6 +396,8 @@ async function runOnce({
   maxAgentSteps = MAX_AGENT_STEPS_DEFAULT,
   env,
   terminalCommandBroker,
+  approvalMode,
+  requestApproval,
 
   handleEvent,
   handleStreamChunk,
@@ -616,6 +632,8 @@ async function runOnce({
         fs,
         env,
         terminalCommandBroker,
+        approvalMode,
+        requestApproval,
         apiKey,
         signal,
       })
@@ -960,6 +978,8 @@ async function handleToolCall({
   fs,
   env,
   terminalCommandBroker,
+  approvalMode,
+  requestApproval,
   apiKey,
   signal,
 }: {
@@ -970,6 +990,8 @@ async function handleToolCall({
   fs: CodebuffFileSystem
   env?: Record<string, string>
   terminalCommandBroker?: TerminalCommandBroker
+  approvalMode?: CodebuffClientOptions['approvalMode']
+  requestApproval?: CodebuffClientOptions['requestApproval']
   apiKey: string
   signal?: AbortSignal
 }): Promise<{ output: ToolResultOutput[] }> {
@@ -1065,9 +1087,35 @@ async function handleToolCall({
       })
     } else if (toolName === 'run_terminal_command') {
       const resolvedCwd = requireCwd(cwd, 'run_terminal_command')
+      const resolvedCommandCwd = path.resolve(resolvedCwd, input.cwd ?? '.')
+      const effectiveApprovalMode = approvalMode ?? 'balanced'
+      if (
+        requestApproval &&
+        effectiveApprovalMode !== 'allow-all' &&
+        !signal?.aborted
+      ) {
+        const approved = await requestApproval({
+          command: input.command,
+          cwd: resolvedCommandCwd,
+          mode: effectiveApprovalMode,
+        })
+        if (!approved) {
+          result = [
+            {
+              type: 'json',
+              value: {
+                command: input.command,
+                message:
+                  'The user declined this terminal command. Do not retry it; continue with other work or end the turn.',
+              },
+            },
+          ]
+          return { output: result }
+        }
+      }
       result = await runTerminalCommand({
         ...input,
-        cwd: path.resolve(resolvedCwd, input.cwd ?? '.'),
+        cwd: resolvedCommandCwd,
         env,
         signal,
         terminalCommandBroker,
