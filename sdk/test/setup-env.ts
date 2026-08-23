@@ -59,6 +59,40 @@ if (process.env.CI !== 'true' && process.env.CI !== '1') {
 process.env.NODE_ENV ||= 'test'
 process.env.BUN_ENV ||= 'test'
 
+// ---------------------------------------------------------------------------
+// AnyBuff BYOK test fixture: give mocked-fetch tests a resolvable provider
+// config so getModelForRequest can route common model strings without any
+// real endpoint. The fetch layer is mocked per-test; baseURL is irrelevant.
+// ---------------------------------------------------------------------------
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anybuff-sdk-fixture-'))
+const fixturePath = path.join(fixtureDir, 'anybuff.json')
+fs.writeFileSync(
+  fixturePath,
+  JSON.stringify({
+    providers: {
+      openai: {
+        type: 'openai-compatible',
+        baseURL: 'https://api.openai.com/v1',
+        apiKeyEnv: 'OPENAI_API_KEY',
+        models: ['gpt-5.6-luna'],
+      },
+      anthropic: {
+        type: 'anthropic-compatible',
+        baseURL: 'https://api.anthropic.com',
+        apiKeyEnv: 'ANTHROPIC_API_KEY',
+        models: ['claude-test'],
+      },
+    },
+  }),
+)
+process.env.ANYBUFF_PROVIDER_CONFIG = fixturePath
+process.env.OPENAI_API_KEY ||= 'test-key'
+process.env.ANTHROPIC_API_KEY ||= 'test-key'
+
 // No test anywhere ships telemetry to the production Axiom dataset, even if the
 // caller's environment claims NEXT_PUBLIC_CB_ENVIRONMENT is prod. Desktop server
 // children are spawned with { ...process.env }, so they inherit this too.

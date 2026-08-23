@@ -1,14 +1,18 @@
-import { models, PROFIT_MARGIN } from '@codebuff/common/old-constants'
 import { buildArray } from '@codebuff/common/util/array'
 import { STREAM_RECOVERY_EVENT } from '@codebuff/common/util/axiom-only-log'
 import { normalizeProviderRequestBodyForCacheDebug } from '@codebuff/common/util/cache-debug'
 import {
   getErrorObject,
+  isTransientNetworkError,
   promptAborted,
   promptSuccess,
 } from '@codebuff/common/util/error'
+import {
+  getErrorStatusCode,
+  isRetryableStatusCode,
+  normalizeProviderContentPolicyError,
+} from '../error-utils'
 import { convertCbToModelMessages } from '@codebuff/common/util/messages'
-import { isExplicitlyDefinedModel } from '@codebuff/common/util/model-utils'
 import { StopSequenceHandler } from '@codebuff/common/util/stop-sequence'
 import {
   streamText,
@@ -21,6 +25,15 @@ import {
   TypeValidationError,
 } from 'ai'
 
+import { loadProviderConfigSync } from '../provider-config'
+import {
+  MAX_RETRIES_PER_MESSAGE,
+  computeBackoffDelayMs,
+} from '../retry-config'
+import {
+  isFailoverEligibleError,
+  resolveModelsToTry,
+} from './failover'
 import { getModelForRequest } from './model-provider'
 import {
   classifyStreamEndRecovery,
@@ -42,27 +55,21 @@ import type {
 } from '@codebuff/common/types/contracts/llm'
 import type { ParamsOf } from '@codebuff/common/types/function-params'
 import type { ProviderMetadata } from '@codebuff/common/types/messages/provider-metadata'
+import type { JSONValue } from '@codebuff/common/types/json'
 import type { LanguageModel } from 'ai'
 
 // Provider routing documentation: https://openrouter.ai/docs/features/provider-routing
-const providerOrder = {
-  [models.openrouter_claude_sonnet_4]: [
-    'Google',
-    'Anthropic',
-    'Amazon Bedrock',
-  ],
-  [models.openrouter_claude_sonnet_4_5]: [
-    'Google',
-    'Anthropic',
-    'Amazon Bedrock',
-  ],
-  [models.openrouter_claude_opus_4]: ['Google', 'Anthropic'],
-}
+// (Upstream's provider-order table was removed: local BYOK routes directly to
+// the user's provider; OpenRouter routing stays under agent template control.)
 
+/**
+ * Local BYOK accounting: report the provider's real cost in cents. There is
+ * no platform margin — the user pays their provider directly.
+ */
 function calculateUsedCredits(params: { costDollars: number }): number {
   const { costDollars } = params
 
-  return Math.round(costDollars * (1 + PROFIT_MARGIN) * 100)
+  return Math.round(costDollars * 100)
 }
 
 export function getProviderOptions(params: {
@@ -76,53 +83,14 @@ export function getProviderOptions(params: {
   cacheDebugCorrelation?: string
   extraCodebuffMetadata?: Record<string, string>
 }): ProviderMetadata {
-  const {
-    model,
-    runId,
-    clientSessionId,
-    providerOptions,
-    agentProviderOptions,
-    n,
-    costMode,
-    cacheDebugCorrelation,
-    extraCodebuffMetadata,
-  } = params
-
-  let providerConfig: Record<string, any>
-
-  // Use agent's provider options if provided, otherwise use defaults
-  if (agentProviderOptions) {
-    providerConfig = agentProviderOptions
-  } else {
-    // Set allow_fallbacks based on whether model is explicitly defined
-    const isExplicitlyDefined = isExplicitlyDefinedModel(model)
-
-    providerConfig = {
-      order: providerOrder[model as keyof typeof providerOrder],
-      allow_fallbacks: !isExplicitlyDefined,
-    }
-  }
+  const { providerOptions, agentProviderOptions } = params
 
   return {
     ...providerOptions,
-    // Could either be "codebuff" or "openaiCompatible"
-    codebuff: {
-      ...providerOptions?.codebuff,
-      // All values here get appended to the request body
-      codebuff_metadata: {
-        // Caller-supplied keys go first so they can't override reserved
-        // identifiers like run_id/client_id/cost_mode that the server trusts.
-        ...(extraCodebuffMetadata ?? {}),
-        run_id: runId,
-        client_id: clientSessionId,
-        ...(n && { n }),
-        ...(costMode && { cost_mode: costMode }),
-        ...(cacheDebugCorrelation && {
-          cache_debug_correlation: cacheDebugCorrelation,
-        }),
-      },
-      provider: providerConfig,
-    },
+    // Local BYOK: no hosted codebuff_metadata is attached to requests.
+    // Agent-supplied OpenRouter routing options pass through untouched so
+    // users who route through openrouter.ai keep provider-order control.
+    ...(agentProviderOptions ? { openrouter: agentProviderOptions } : {}),
   }
 }
 
@@ -138,6 +106,107 @@ type OpenRouterUsageAccounting = {
 function getModelProvider(model: LanguageModel): string {
   if (typeof model === 'string') return model
   return model.provider
+}
+
+/**
+ * Inject a configured reasoning effort into the provider-option namespaces the
+ * resolved provider may read. The resolved provider's own namespace wins so
+ * custom gateway ids (e.g. "deepseek") receive the effort, while the legacy
+ * "openaiCompatible"/"openai" names stay covered for stock providers.
+ */
+function withConfiguredReasoningEffort(
+  providerOptions: ProviderMetadata | undefined,
+  reasoningEffort: string | undefined,
+  providerName: string | undefined,
+): ProviderMetadata | undefined {
+  if (!reasoningEffort || reasoningEffort === 'default') return providerOptions
+  const namespaces = new Set<string>(['openaiCompatible', 'openai'])
+  if (providerName) namespaces.add(providerName)
+  const merged: ProviderMetadata = { ...(providerOptions ?? {}) }
+  for (const ns of namespaces) {
+    merged[ns] = {
+      ...((merged[ns] as Record<string, JSONValue | undefined> | undefined) ??
+        {}),
+      reasoningEffort,
+    }
+  }
+  return merged
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Shared two-tier failure policy (PLAN.md §9.1):
+ * - inner retries: transient network errors and retryable HTTP statuses,
+ *   bounded by MAX_RETRIES_PER_MESSAGE with jittered exponential backoff;
+ * - outer failover: auth (401/403), terminal 5xx after retries, and
+ *   content-policy blocks switch to the next configured failoverModels entry.
+ * Errors that are neither retry- nor failover-eligible (e.g. plain 400s)
+ * throw immediately.
+ */
+async function runGenerationWithFailover<T>(params: {
+  signal: AbortSignal
+  model?: string
+  logger: {
+    warn: (obj: unknown, msg: string) => void
+    error: (obj: unknown, msg: string) => void
+  }
+}, run: (args: { requestedModel?: string; verbatim: boolean }) => Promise<T>): Promise<T> {
+  const modelsToTry = resolveModelsToTry(params.model, loadProviderConfigSync())
+  for (let m = 0; m < modelsToTry.length; m++) {
+    let retries = 0
+    while (true) {
+      try {
+        return await run({ requestedModel: modelsToTry[m], verbatim: m > 0 })
+      } catch (error) {
+        if (params.signal.aborted) throw error
+        const statusCode = getErrorStatusCode(error)
+        const failoverEligible = isFailoverEligibleError(error)
+        const retryEligible =
+          (statusCode !== undefined && isRetryableStatusCode(statusCode)) ||
+          isTransientNetworkError(error)
+        if (!failoverEligible && !retryEligible) {
+          throw normalizeProviderContentPolicyError(error) ?? error
+        }
+        if (
+          !failoverEligible &&
+          retryEligible &&
+          retries < MAX_RETRIES_PER_MESSAGE - 1
+        ) {
+          retries++
+          params.logger.warn(
+            {
+              model: modelsToTry[m],
+              attempt: retries,
+              statusCode,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Transient LLM error; retrying the same model',
+          )
+          await sleep(computeBackoffDelayMs({ attempt: retries - 1 }))
+          continue
+        }
+        if (m < modelsToTry.length - 1) {
+          params.logger.warn(
+            {
+              failedModel: modelsToTry[m],
+              nextModel: modelsToTry[m + 1],
+              statusCode,
+              failoverEligible,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            failoverEligible
+              ? 'Failover-eligible LLM error; switching to next configured model'
+              : 'LLM retries exhausted; failing over to next configured model',
+          )
+          break
+        }
+        throw normalizeProviderContentPolicyError(error) ?? error
+      }
+    }
+  }
+  throw new Error('AnyBuff model failover loop exited unexpectedly')
 }
 
 function emitCacheDebugProviderRequest(params: {
@@ -199,14 +268,24 @@ function emitCacheDebugUsage(params: {
   })
 }
 
+type StreamAttemptFlags = {
+  /** Any visible answer content was already streamed to the consumer. */
+  yieldedContent: boolean
+  /** A tool call was streamed: actionable even with no text. */
+  yieldedToolCall: boolean
+}
+
+/**
+ * Streaming prompt with two-tier failure handling (PLAN.md §9.1). The inner
+ * retry and outer failover loops only restart a model attempt while NOTHING
+ * has been yielded — partial output is never duplicated or truncated by a
+ * failover.
+ */
 export async function* promptAiSdkStream(
   params: ParamsOf<PromptAiSdkStreamFn>,
 ): ReturnType<PromptAiSdkStreamFn> {
-  const { providerOptions: originalProviderOptions, ...streamParams } = params
-
   const { logger } = params
-  const agentChunkMetadata =
-    params.agentId != null ? { agentId: params.agentId } : undefined
+  const { providerOptions: originalProviderOptions } = params
 
   if (params.signal.aborted) {
     logger.info(
@@ -219,11 +298,106 @@ export async function* promptAiSdkStream(
     return promptAborted('User cancelled input')
   }
 
-  const { model: aiSDKModel } = await getModelForRequest({
+  const primaryModel =
+    typeof params.model === 'string'
+      ? params.model
+      : ((params.model as unknown as { toString(): string } | undefined)?.toString() ??
+        undefined)
+  const modelsToTry = resolveModelsToTry(primaryModel, loadProviderConfigSync())
+
+  for (let m = 0; m < modelsToTry.length; m++) {
+    let retries = 0
+    while (true) {
+      const flags: StreamAttemptFlags = {
+        yieldedContent: false,
+        yieldedToolCall: false,
+      }
+      try {
+        const result = yield* streamOnce(
+          params,
+          originalProviderOptions,
+          modelsToTry[m],
+          m > 0,
+          flags,
+        )
+        return result
+      } catch (error) {
+        if (params.signal.aborted || flags.yieldedContent || flags.yieldedToolCall) {
+          throw error
+        }
+        const statusCode = getErrorStatusCode(error)
+        const failoverEligible = isFailoverEligibleError(error)
+        const retryEligible =
+          (statusCode !== undefined && isRetryableStatusCode(statusCode)) ||
+          isTransientNetworkError(error)
+        if (!failoverEligible && !retryEligible) {
+          throw normalizeProviderContentPolicyError(error) ?? error
+        }
+        if (
+          !failoverEligible &&
+          retryEligible &&
+          retries < MAX_RETRIES_PER_MESSAGE - 1
+        ) {
+          retries++
+          logger.warn(
+            {
+              model: modelsToTry[m],
+              attempt: retries,
+              statusCode,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            'Transient LLM stream error; retrying the same model',
+          )
+          await sleep(computeBackoffDelayMs({ attempt: retries - 1 }))
+          continue
+        }
+        if (m < modelsToTry.length - 1) {
+          logger.warn(
+            {
+              failedModel: modelsToTry[m],
+              nextModel: modelsToTry[m + 1],
+              statusCode,
+              failoverEligible,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            failoverEligible
+              ? 'Failover-eligible LLM stream error; switching to next configured model'
+              : 'LLM stream retries exhausted; failing over to next configured model',
+          )
+          break
+        }
+        throw normalizeProviderContentPolicyError(error) ?? error
+      }
+    }
+  }
+  throw new Error('AnyBuff model failover loop exited unexpectedly')
+}
+
+async function* streamOnce(
+  params: ParamsOf<PromptAiSdkStreamFn>,
+  originalProviderOptions: ProviderMetadata | undefined,
+  requestedModel: string | undefined,
+  verbatim: boolean,
+  flags: StreamAttemptFlags,
+): ReturnType<PromptAiSdkStreamFn> {
+  const { providerOptions: _ignoredOriginal, ...streamParams } = params
+
+  const { logger } = params
+  const agentChunkMetadata =
+    params.agentId != null ? { agentId: params.agentId } : undefined
+
+  const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
     apiKey: params.apiKey,
-    model: params.model,
+    model: requestedModel ?? params.model,
     agentId: params.agentId,
+    preferModelParam: verbatim ? true : undefined,
   })
+  const resolvedProviderName =
+    typeof aiSDKModel === 'object' && aiSDKModel !== null && 'provider' in aiSDKModel
+      ? String((aiSDKModel as { provider: unknown }).provider).split('.')[0].trim()
+      : undefined
+
+  void logger
 
   const response = streamText({
     ...streamParams,
@@ -236,11 +410,15 @@ export async function* promptAiSdkStream(
       ...streamParams.include,
       requestBody: true,
     },
-    providerOptions: getProviderOptions({
-      ...params,
-      providerOptions: originalProviderOptions,
-      agentProviderOptions: params.agentProviderOptions,
-    }),
+    providerOptions: withConfiguredReasoningEffort(
+      getProviderOptions({
+        ...params,
+        providerOptions: originalProviderOptions,
+        agentProviderOptions: params.agentProviderOptions,
+      }),
+      reasoningEffort,
+      resolvedProviderName,
+    ),
     // Handle tool call errors gracefully by passing them through to our validation layer
     // instead of throwing (which would halt the agent). The only special case is when
     // the tool name matches a spawnable agent - transform those to spawn_agents calls.
@@ -471,6 +649,7 @@ export async function* promptAiSdkStream(
       const flushed = stopSequenceHandler.flush()
       if (flushed) {
         hasYieldedContent = true
+        flags.yieldedContent = true
         yield {
           type: 'text',
           text: flushed,
@@ -568,6 +747,7 @@ export async function* promptAiSdkStream(
       if (!params.stopSequences) {
         if (chunkValue.text) {
           hasYieldedContent = true
+          flags.yieldedContent = true
           yield {
             type: 'text',
             text: chunkValue.text,
@@ -580,6 +760,7 @@ export async function* promptAiSdkStream(
       const stopSequenceResult = stopSequenceHandler.process(chunkValue.text)
       if (stopSequenceResult.text) {
         hasYieldedContent = true
+        flags.yieldedContent = true
         yield {
           type: 'text',
           text: stopSequenceResult.text,
@@ -589,12 +770,14 @@ export async function* promptAiSdkStream(
     }
     if (chunkValue.type === 'tool-call') {
       hasYieldedToolCall = true
+      flags.yieldedToolCall = true
       yield chunkValue
     }
   }
   const flushed = stopSequenceHandler.flush()
   if (flushed) {
     hasYieldedContent = true
+    flags.yieldedContent = true
     yield {
       type: 'text',
       text: flushed,
@@ -692,60 +875,67 @@ export async function promptAiSdk(
     return promptAborted('User cancelled input')
   }
 
-  const { model: aiSDKModel } = await getModelForRequest({
-    apiKey: params.apiKey,
-    model: params.model,
-    agentId: params.agentId,
-  })
+  return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
+    const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
+      apiKey: params.apiKey,
+      model: requestedModel ?? params.model,
+      agentId: params.agentId,
+      preferModelParam: verbatim ? true : undefined,
+    })
 
-  const response = await generateText({
-    ...params,
-    prompt: undefined,
-    model: aiSDKModel,
-    messages: convertCbToModelMessages(params),
-    allowSystemInMessages: true,
-    include: {
-      ...params.include,
-      requestBody: true,
-    },
-    providerOptions: getProviderOptions({
+    const response = await generateText({
       ...params,
-      agentProviderOptions: params.agentProviderOptions,
-      cacheDebugCorrelation: params.cacheDebugCorrelation,
-    }),
-  })
-  emitCacheDebugProviderRequest({
-    callback: params.onCacheDebugProviderRequestBuilt,
-    provider: getModelProvider(aiSDKModel),
-    rawBody: response.request?.body,
-  })
-  emitCacheDebugUsage({
-    callback: params.onCacheDebugUsageReceived,
-    usage: response.usage,
-  })
-  const content = response.text
+      prompt: undefined,
+      model: aiSDKModel,
+      messages: convertCbToModelMessages(params),
+      allowSystemInMessages: true,
+      include: {
+        ...params.include,
+        requestBody: true,
+      },
+      providerOptions: withConfiguredReasoningEffort(
+        getProviderOptions({
+          ...params,
+          agentProviderOptions: params.agentProviderOptions,
+          cacheDebugCorrelation: params.cacheDebugCorrelation,
+        }),
+        reasoningEffort,
+        getModelProvider(aiSDKModel).split('.')[0].trim(),
+      ),
+    })
+    emitCacheDebugProviderRequest({
+      callback: params.onCacheDebugProviderRequestBuilt,
+      provider: getModelProvider(aiSDKModel),
+      rawBody: response.request?.body,
+    })
+    emitCacheDebugUsage({
+      callback: params.onCacheDebugUsageReceived,
+      usage: response.usage,
+    })
+    const content = response.text
 
-  const providerMetadata = response.providerMetadata ?? {}
-  let costOverrideDollars: number | undefined
-  if (providerMetadata.codebuff) {
-    if (providerMetadata.codebuff.usage) {
-      const openrouterUsage = providerMetadata.codebuff
-        .usage as OpenRouterUsageAccounting
+    const providerMetadata = response.providerMetadata ?? {}
+    let costOverrideDollars: number | undefined
+    if (providerMetadata.codebuff) {
+      if (providerMetadata.codebuff.usage) {
+        const openrouterUsage = providerMetadata.codebuff
+          .usage as OpenRouterUsageAccounting
 
-      costOverrideDollars =
-        (openrouterUsage.cost ?? 0) +
-        (openrouterUsage.costDetails?.upstreamInferenceCost ?? 0)
+        costOverrideDollars =
+          (openrouterUsage.cost ?? 0) +
+          (openrouterUsage.costDetails?.upstreamInferenceCost ?? 0)
+      }
     }
-  }
 
-  // Call the cost callback if provided
-  if (params.onCostCalculated && costOverrideDollars) {
-    await params.onCostCalculated(
-      calculateUsedCredits({ costDollars: costOverrideDollars }),
-    )
-  }
+    // Call the cost callback if provided
+    if (params.onCostCalculated && costOverrideDollars) {
+      await params.onCostCalculated(
+        calculateUsedCredits({ costDollars: costOverrideDollars }),
+      )
+    }
 
-  return promptSuccess(content)
+    return promptSuccess(content)
+  })
 }
 
 export async function promptAiSdkStructured<T>(
@@ -763,58 +953,66 @@ export async function promptAiSdkStructured<T>(
     )
     return promptAborted('User cancelled input')
   }
-  const { model: aiSDKModel } = await getModelForRequest({
-    apiKey: params.apiKey,
-    model: params.model,
-    agentId: params.agentId,
-  })
 
-  const response = await generateText({
-    ...params,
-    prompt: undefined,
-    model: aiSDKModel,
-    output: Output.object({ schema: params.schema }),
-    messages: convertCbToModelMessages(params),
-    allowSystemInMessages: true,
-    include: { requestBody: true },
-    providerOptions: getProviderOptions({
+  return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
+    const { model: aiSDKModel, reasoningEffort } = await getModelForRequest({
+      apiKey: params.apiKey,
+      model: requestedModel ?? params.model,
+      agentId: params.agentId,
+      preferModelParam: verbatim ? true : undefined,
+    })
+
+    const response = await generateText({
       ...params,
-      agentProviderOptions: params.agentProviderOptions,
-      cacheDebugCorrelation: params.cacheDebugCorrelation,
-    }),
-  })
+      prompt: undefined,
+      model: aiSDKModel,
+      output: Output.object({ schema: params.schema }),
+      messages: convertCbToModelMessages(params),
+      allowSystemInMessages: true,
+      include: { requestBody: true },
+      providerOptions: withConfiguredReasoningEffort(
+        getProviderOptions({
+          ...params,
+          agentProviderOptions: params.agentProviderOptions,
+          cacheDebugCorrelation: params.cacheDebugCorrelation,
+        }),
+        reasoningEffort,
+        getModelProvider(aiSDKModel).split('.')[0].trim(),
+      ),
+    })
 
-  emitCacheDebugProviderRequest({
-    callback: params.onCacheDebugProviderRequestBuilt,
-    provider: getModelProvider(aiSDKModel),
-    rawBody: response.request?.body,
-  })
-  emitCacheDebugUsage({
-    callback: params.onCacheDebugUsageReceived,
-    usage: response.usage,
-  })
+    emitCacheDebugProviderRequest({
+      callback: params.onCacheDebugProviderRequestBuilt,
+      provider: getModelProvider(aiSDKModel),
+      rawBody: response.request?.body,
+    })
+    emitCacheDebugUsage({
+      callback: params.onCacheDebugUsageReceived,
+      usage: response.usage,
+    })
 
-  const content = response.output
+    const content = response.output
 
-  const providerMetadata = response.providerMetadata ?? {}
-  let costOverrideDollars: number | undefined
-  if (providerMetadata.codebuff) {
-    if (providerMetadata.codebuff.usage) {
-      const openrouterUsage = providerMetadata.codebuff
-        .usage as OpenRouterUsageAccounting
+    const providerMetadata = response.providerMetadata ?? {}
+    let costOverrideDollars: number | undefined
+    if (providerMetadata.codebuff) {
+      if (providerMetadata.codebuff.usage) {
+        const openrouterUsage = providerMetadata.codebuff
+          .usage as OpenRouterUsageAccounting
 
-      costOverrideDollars =
-        (openrouterUsage.cost ?? 0) +
-        (openrouterUsage.costDetails?.upstreamInferenceCost ?? 0)
+        costOverrideDollars =
+          (openrouterUsage.cost ?? 0) +
+          (openrouterUsage.costDetails?.upstreamInferenceCost ?? 0)
+      }
     }
-  }
 
-  // Call the cost callback if provided
-  if (params.onCostCalculated && costOverrideDollars) {
-    await params.onCostCalculated(
-      calculateUsedCredits({ costDollars: costOverrideDollars }),
-    )
-  }
+    // Call the cost callback if provided
+    if (params.onCostCalculated && costOverrideDollars) {
+      await params.onCostCalculated(
+        calculateUsedCredits({ costDollars: costOverrideDollars }),
+      )
+    }
 
-  return promptSuccess(content)
+    return promptSuccess(content)
+  })
 }

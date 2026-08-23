@@ -364,6 +364,13 @@ function createConfiguredOpenAICompatibleModel(
   }
   const baseURL = provider.baseURL.replace(/\/$/, '')
 
+  // Per-request usage accounting closure: capture OpenRouter-style cost
+  // fields when the endpoint reports them so local runs can show real spend.
+  const usageAccounting = {
+    cost: null as number | null,
+    upstreamInferenceCost: null as number | null,
+  }
+
   return new OpenAICompatibleChatLanguageModel(providerModel, {
     provider: providerId,
     url: ({ path: endpoint }: { path: string }) => `${baseURL}${endpoint}`,
@@ -374,6 +381,54 @@ function createConfiguredOpenAICompatibleModel(
     stringifyTextContent: resolvedModel.compatibility.stringifyTextContent,
     enableThinking: provider.enableThinking,
     customBody: provider.customBody,
+    metadataExtractor: {
+      extractMetadata: async ({ parsedBody }: { parsedBody: any }) => {
+        if (typeof parsedBody?.usage?.cost === 'number') {
+          usageAccounting.cost = parsedBody.usage.cost
+        }
+        if (
+          typeof parsedBody?.usage?.cost_details
+            ?.upstream_inference_cost === 'number'
+        ) {
+          usageAccounting.upstreamInferenceCost =
+            parsedBody.usage.cost_details.upstream_inference_cost
+        }
+        return {
+          codebuff: {
+            usage: {
+              cost: usageAccounting.cost,
+              costDetails: {
+                upstreamInferenceCost: usageAccounting.upstreamInferenceCost,
+              },
+            },
+          },
+        }
+      },
+      createStreamExtractor: () => ({
+        processChunk: (parsedChunk: any) => {
+          if (typeof parsedChunk?.usage?.cost === 'number') {
+            usageAccounting.cost = parsedChunk.usage.cost
+          }
+          if (
+            typeof parsedChunk?.usage?.cost_details
+              ?.upstream_inference_cost === 'number'
+          ) {
+            usageAccounting.upstreamInferenceCost =
+              parsedChunk.usage.cost_details.upstream_inference_cost
+          }
+        },
+        buildMetadata: () => ({
+          codebuff: {
+            usage: {
+              cost: usageAccounting.cost,
+              costDetails: {
+                upstreamInferenceCost: usageAccounting.upstreamInferenceCost,
+              },
+            },
+          },
+        }),
+      }),
+    },
   })
 }
 
