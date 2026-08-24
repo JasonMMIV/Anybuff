@@ -56,7 +56,7 @@ describe('web_search (local DuckDuckGo port)', () => {
     globalThis.fetch = (async () =>
       new Response(DDG_HTML, {
         headers: { 'content-type': 'text/html' },
-      })) as typeof fetch
+      })) as unknown as typeof fetch
     try {
       const { output } = await handleWebSearch(makeParams({ query: 'test' }))
       const value = (output[0] as any).value

@@ -104,6 +104,20 @@ export type PrintModeReasoningDelta = z.infer<
   typeof printModeReasoningDeltaSchema
 >
 
+/**
+ * Per-step context meter (fork-parity 'context_window' event): locally
+ * estimated token count against the same per-model budget the context-pruner
+ * uses. Emitted once per loop iteration before the step runs.
+ */
+export const printModeContextWindowSchema = z.object({
+  type: z.literal('context_window'),
+  used: z.number(),
+  max: z.number(),
+})
+export type PrintModeContextWindow = z.infer<
+  typeof printModeContextWindowSchema
+>
+
 export const printModeEventSchema = z.discriminatedUnion('type', [
   printModeDownloadStatusSchema,
   printModeErrorSchema,
@@ -115,6 +129,7 @@ export const printModeEventSchema = z.discriminatedUnion('type', [
   printModeToolCallSchema,
   printModeToolResultSchema,
 
+  printModeContextWindowSchema,
   printModeReasoningDeltaSchema,
 ])
 

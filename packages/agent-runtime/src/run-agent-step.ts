@@ -647,6 +647,15 @@ export const runAgentStep = async (
     `End agent ${agentType} step ${iterationNum} (${userInputId}${prompt ? ` - Prompt: ${prompt.slice(0, 20)}` : ''})`,
   )
 
+  // Context meter for host UIs (fork-parity 'context_window' event):
+  // locally-estimated tokens against the same per-model budget the pruner
+  // uses. Emitted at end of each step so hosts can render usage rings.
+  onResponseChunk({
+    type: 'context_window',
+    used: agentState.contextTokenCount,
+    max: contextPrunerBudgetForModel(agentTemplate.model),
+  })
+
   return {
     agentState,
     fullResponse,
@@ -1099,7 +1108,6 @@ export async function loopAgentSteps(
         }
       }
 
-      // 1. Run programmatic step first if it exists
       let n: number | undefined = undefined
 
       if (agentTemplate.handleSteps) {
