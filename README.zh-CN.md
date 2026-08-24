@@ -1,104 +1,75 @@
-# Freebuff
+# Anybuff
 
 [English](./README.md) | 简体中文
 
-**面向编程、构建和研究的五款免费 AI 产品。** 无需订阅、积分或 API 密钥。
+**本地優先、自帶金鑰（BYOK）的 Windows 編程代理**，基於 [Freebuff](https://github.com/CodebuffAI/freebuff) 多智能體架構。
 
-[Freebuff](https://freebuff.com) 将专业化智能体和多种领先模型带到你的终端、桌面、浏览器和 GitHub 仓库中。内置模型由文字广告支持。
+Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無廣告、無點數。連接你自己的 OpenAI 相容或 Anthropic 相容端點（OpenAI、Anthropic、Mistral、DeepSeek、GLM、OpenRouter、Ollama、LM Studio、vLLM 等），直接向你的供應商付費。
 
-## 选择适合你的 Freebuff
-
-| 产品                 | 功能                         | 开始使用                                                        |
-| -------------------- | ---------------------------- | --------------------------------------------------------------- |
-| **Freebuff Desktop** | 在本地并行运行多个智能体     | [下载 macOS、Windows 或 Linux 版](https://freebuff.com/desktop) |
-| **Freebuff CLI**     | 从终端编程                   | [安装 CLI](https://freebuff.com/cli)                            |
-| **Freebuff Web**     | 构建和发布全栈应用           | [构建应用](https://freebuff.com/web)                            |
-| **Freebuff Cloud**   | 在任意 GitHub 仓库运行智能体 | [连接仓库](https://freebuff.com/cloud)                          |
-| **Freebuff Chat**    | 使用 AI 进行研究和思考       | [开始对话](https://freebuff.com/chat)                           |
-
-## 快速开始
-
-在任意项目中从终端运行 Freebuff：
-
-```bash
-npm install -g freebuff
-cd ~/my-project
-freebuff
+```
+┌─────────────────────────── Anybuff Desktop ───────────────────────────┐
+│  Electron + React 19 UI  │  main process embeds @codebuff/sdk         │
+│  chat · diff · agents    │  agent-runtime · tools · BYOK model layer  │
+└──────────────────────┬─────────────────────────────────────────────────┘
+                       │ apiKeyOverrides channel (never process.env)
+              anybuff.json provider routing (modes → agents → default)
+                       │
+        Your providers: OpenAI-compatible / Anthropic-compatible
 ```
 
-然后描述你想完成的任务。Freebuff 会找到相关文件、进行修改，并运行适合该项目的检查。
+## 狀態
 
-## 模型
+打包前開發者預覽版。`bun run dev` 啟動完整桌面應用；安裝包打包是下一個里程碑。
 
-Freebuff 提供经过筛选的模型目录。常规模型选择器目前包括：
+## 快速開始
 
-| 模型                        | 访问范围       | 适用场景                                         |
-| --------------------------- | -------------- | ------------------------------------------------ |
-| **DeepSeek V4 Flash 07/31** | 完整访问       | 完整模式下所有平台的默认模型；快速编程和工具调用 |
-| **GPT-5.6 Luna**            | 完整访问       | 综合能力强，原生支持图像；每天两次会话           |
-| **MiMo 2.5**                | 完整和受限访问 | 受限模式的默认模型；均衡性能并支持图像           |
-| **DeepSeek V4 Pro**         | 完整访问       | 推理最深入；每天一次会话                         |
-
-以下限制是**临时**的，原因是为 DeepSeek 提供服务的供应商收费已超出免费模式可承受的范围。V4 Pro 每天一次会话；GPT-5.6 Luna 每天两次会话；模型可能由量化（Q8_0）版本提供服务。MiMo 2.5 保持无限使用。这些调整都计划在之后恢复。
-
-常规模型选择器之外：
-
-- **GLM 5.2** 通过获得的会话使用，并非始终解锁。
-- **Gemini 3.1 Flash Lite** 用于查找文件和研究等专业任务，不会出现在主模型选择器中。
-
-可用模型和限制取决于你的访问级别、所用产品和当前容量。Freebuff Desktop 还可以通过你现有的提供商账户运行本地安装的 Claude Code 和 Codex 智能体；这些连接的模型不属于 Freebuff 的内置模型目录。
-
-## Freebuff 的工作原理
-
-Freebuff 使用专业化智能体，而不是把所有任务都交给同一个模型和同一条提示词。根据任务需要，智能体会收集上下文、制定计划、编辑或研究、运行工具并审查结果。
-
-- **代码库上下文** —— 文件查找智能体会在编辑前定位项目中的相关部分。
-- **实现与审查** —— 智能体可以拆分工作、修改文件、运行命令并检查结果。
-- **研究与浏览器操作** —— 智能体可以查阅文档，并在真实浏览器中测试应用。
-- **本地并行工作** —— Desktop 会将并发智能体隔离在各自的工作区中。
-- **托管环境** —— Web 和 Cloud 提供沙箱、预览、终端和部署工作流。
-
-## 免费访问
-
-Freebuff 在所有国家和地区均可使用。受支持的地区提供完整访问；其他地区以及使用 VPN 的用户获得受限访问，目前包括 MiMo 2.5，每天可使用六个一小时会话。
-
-内置模型由文字广告支持。开始前，Freebuff 会显示适用的会话限制以及模型特定的数据使用提示。
-
-## 数据使用与隐私
-
-**我的数据会用于训练 AI 吗？** 只有当模型或功能明确说明数据可能用于 AI 训练时才会。届时，Freebuff 或模型提供商可能保留提交内容，用于开发、训练、测试、评估、微调和改进 AI 模型或产品。
-
-**我的数据会如何使用和存储？** 我们会使用提示词、消息、代码、文件和仓库数据来提供服务。我们可能会分析提示词和消息（包括粘贴的内容），通过 Freebuff 系统及代表我们行事的服务提供商来个性化广告。单独上传的文件和已连接的仓库不会提供给广告服务商。在法律要求的地区，我们提供广告选择并遵循公认的退出信号；在其他地区，此类处理可能是使用免费服务的必要条件。留存期限与完整详情请参阅隐私政策。
-
-完整详情请参阅[隐私政策](https://freebuff.com/privacy-policy)。
-
-## 参与贡献
-
-Freebuff 是一个使用 Bun 构建的 TypeScript monorepo。欢迎为产品、智能体、工具、文档和底层运行时贡献代码。
-
-```bash
-git clone https://github.com/CodebuffAI/freebuff.git
-cd freebuff
+```powershell
 bun install
-bun up
+bun run build:sdk     # 將 @codebuff/sdk 打包至 sdk/dist
+bun run dev           # 啟動 Anybuff Desktop
 ```
 
-单独启动 CLI：
+首次使用：選擇專案資料夾（可試 `desktop/demo-project`），打開設定，
+新增 provider（填 baseURL + API key——金鑰經 Electron safeStorage 以
+DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話。
 
-```bash
-bun start-cli
+## 倉儲結構
+
+| 路徑 | 用途 |
+|---|---|
+| `desktop/` | Electron 應用（main / preload / renderer），自先前原型移植並適配 workspace SDK |
+| `sdk/` | `@codebuff/sdk` — 內嵌 Anybuff BYOK 層的進程內 agent runtime（`provider-config.ts`、`impl/model-provider.ts`、failover/retry、followups policy、env sanitization） |
+| `packages/agent-runtime` | 上游步驟引擎（未動） |
+| `packages/llm-providers` | 內嵌 AI-SDK v7 openai-compatible provider + 移植的互操作功能 |
+| `common/` | 上游共用類型/工具/契約（+ local-mode 常量） |
+| `agents/` | 上游 agent 模板；模型字串是經 anybuff.json 解析的*路由鍵* |
+| `scripts/generate-desktop-agents.ts` | 從上游 `agents/` 重新產生 `desktop/src/main/agents/bundled-agents.ts`（含桌面修補） |
+| `cli/` | 上游 CLI 原始碼保留在磁碟但不在建置圖中（v2 候選） |
+
+## 關鍵行為（詳見 PLAN.md §10 ledger）
+
+- **suggest_followups 預設停用**（設 `ANYBUFF_FOLLOWUPS=1` 可重新啟用）。
+- **context-pruner 活動在桌面 UI 中隱藏**（仍正常運作；零 LLM 呼叫）。
+- **web_search** 是本地 DuckDuckGo 實作，含 SSRF 防護——免 key、無後端。
+- Provider 相容性規則為資料驅動、只清除不抑制（絕不抑制推理）；
+  觀測日誌使用 `[anybuff-compat]` 前綴。
+- API 金鑰：靜態以 DPAPI 加密，經注入通道交付 SDK，
+  並從所有子程序環境中清洗移除。
+- 設定檔/檢查點原子寫入依 PLAN §9.5（fsync、rename-replace、
+  永不預先刪除）。
+
+## 開發
+
+```powershell
+bun run build:sdk        # 修改 sdk/、packages/、common/ 後重建 SDK
+bun --cwd desktop run typecheck
+cd desktop && bun test src/__tests__          # 或各套件本地測試
+bun scripts/smoke-sdk.ts # 無頭端到端 BYOK 檢查（需真實 key）
 ```
 
-环境配置及提交拉取请求前应运行的检查，请参阅[贡献指南](./CONTRIBUTING.md)、[开发指南](./docs/development.md)和[测试指南](./docs/testing.md)。
+上游同步：內部套件刻意保留 `@codebuff/*` 名稱，使 `git merge`
+CodebuffAI/freebuff 保持可行。刻意偏離項目記錄於 PLAN.md §10。
 
-## 基于 Codebuff 构建
+## 授權
 
-Freebuff 基于开放的多智能体框架 [Codebuff](https://codebuff.com) 构建，其编排、工具和 SDK 均由 Codebuff 提供。若要创建自定义智能体或将其嵌入其他应用，请参阅 [Codebuff 文档](https://codebuff.com/docs)和 [`@codebuff/sdk`](https://www.npmjs.com/package/@codebuff/sdk)。
-
-## 链接
-
-- [官网](https://freebuff.com)
-- [GitHub](https://github.com/CodebuffAI/freebuff)
-- [Discord](https://discord.gg/yXG3w7wxfs)
-- [隐私政策](https://freebuff.com/privacy-policy)
-- [许可证](./LICENSE)
+Apache-2.0（沿襲上游 Freebuff/Codebuff）。詳見 LICENSE 與 NOTICE。

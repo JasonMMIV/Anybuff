@@ -1,15 +1,15 @@
-# AnyBuff
+# Anybuff
 
 **A local-first, bring-your-own-key (BYOK) coding agent for Windows**, built on
 the [Freebuff](https://github.com/CodebuffAI/freebuff) multi-agent architecture.
 
-AnyBuff runs the Freebuff agent runtime **entirely in-process** — no hosted
+Anybuff runs the Freebuff agent runtime **entirely in-process** — no hosted
 backend, no ads, no credits. You connect your own OpenAI-compatible or
 Anthropic-compatible endpoints (OpenAI, Anthropic, Mistral, DeepSeek, GLM,
 OpenRouter, Ollama, LM Studio, vLLM …) and pay your providers directly.
 
 ```
-┌─────────────────────────── AnyBuff Desktop ───────────────────────────┐
+┌─────────────────────────── Anybuff Desktop ───────────────────────────┐
 │  Electron + React 19 UI  │  main process embeds @codebuff/sdk         │
 │  chat · diff · agents    │  agent-runtime · tools · BYOK model layer  │
 └──────────────────────┬─────────────────────────────────────────────────┘
@@ -29,7 +29,7 @@ installer packaging is the next milestone.
 ```powershell
 bun install
 bun run build:sdk     # bundle @codebuff/sdk into sdk/dist
-bun run dev           # launch AnyBuff Desktop
+bun run dev           # launch Anybuff Desktop
 ```
 
 First run: pick a project folder (try `desktop/demo-project`), open Settings,
@@ -41,7 +41,7 @@ safeStorage), fetch models, select one, and start chatting.
 | Path | Purpose |
 |---|---|
 | `desktop/` | Electron app (main / preload / renderer), ported from a prior prototype and adapted to the workspace SDK |
-| `sdk/` | `@codebuff/sdk` — in-process agent runtime with the AnyBuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
+| `sdk/` | `@codebuff/sdk` — in-process agent runtime with the Anybuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
 | `packages/agent-runtime` | Upstream step engine (untouched) |
 | `packages/llm-providers` | Vendored AI-SDK v7 openai-compatible provider + grafted interop features |
 | `common/` | Upstream shared types/tools/contracts (+ local-mode constants) |

@@ -1802,7 +1802,7 @@ export default function App() {
                       title={canSwitchProject ? 'Choose project' : 'Project is locked while a conversation is active'}
                     >
                       {projectName ? <FolderIcon size={13} /> : <AppIcon size={14} />}
-                      <span className="project-name">{projectName || 'AnyBuff'}</span>
+                      <span className="project-name">{projectName || 'Anybuff'}</span>
                       {canSwitchProject && <ChevronDownIcon size={12} />}
                     </button>
                     {projectMenuOpen && canSwitchProject && (
@@ -1894,7 +1894,7 @@ export default function App() {
                   <div className="welcome-logo">
                     <AppIcon size={72} />
                   </div>
-                  <h1>AnyBuff</h1>
+                  <h1>Anybuff</h1>
                   <button className="btn primary big" onClick={() => void selectFolder()}>
                     <FolderIcon size={16} /> Select a Project Folder
                   </button>
