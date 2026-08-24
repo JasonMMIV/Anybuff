@@ -21,8 +21,25 @@ OpenRouter, Ollama, LM Studio, vLLM …) and pay your providers directly.
 
 ## Status
 
-Pre-packaging developer preview. `bun run dev` launches the full desktop app;
-installer packaging is the next milestone.
+**v0.1.0-beta.1** — first public beta (unsigned NSIS installer; SmartScreen will
+show "Unknown publisher", which is expected). `bun run dev` launches the full
+desktop app from source.
+
+## ⚠️ Security notice (beta)
+
+The sensitive-file filter is **not yet implemented** (first post-beta item).
+Until it ships:
+
+- The agent can read **any file inside the project folder you open** —
+  including secrets like `.env`, `*.pem`, `*.key`, `id_rsa`, `kubeconfig`.
+- Anything the agent reads is sent to your configured LLM provider's API —
+  in other words, **it leaves your machine**.
+- DPAPI encryption only protects the provider keys you store in Anybuff's
+  settings. It does **not** protect files inside your projects.
+
+**Do not point Anybuff at a project containing unencrypted credentials.**
+Move secrets out of the project, use a secrets manager, or wait for the
+sensitive-file filter.
 
 ## Quick start
 
