@@ -1,109 +1,79 @@
-# Freebuff
+# AnyBuff
 
-English | [简体中文](./README.zh-CN.md)
+**A local-first, bring-your-own-key (BYOK) coding agent for Windows**, built on
+the [Freebuff](https://github.com/CodebuffAI/freebuff) multi-agent architecture.
 
-**Five free AI products for coding, building, and research.** No subscription, credits, or API key required.
+AnyBuff runs the Freebuff agent runtime **entirely in-process** — no hosted
+backend, no ads, no credits. You connect your own OpenAI-compatible or
+Anthropic-compatible endpoints (OpenAI, Anthropic, Mistral, DeepSeek, GLM,
+OpenRouter, Ollama, LM Studio, vLLM …) and pay your providers directly.
 
-[Freebuff](https://freebuff.com) brings specialized agents and a choice of leading models to your terminal, desktop, browser, and GitHub repositories. Text ads support access to the included models.
+```
+┌─────────────────────────── AnyBuff Desktop ───────────────────────────┐
+│  Electron + React 19 UI  │  main process embeds @codebuff/sdk         │
+│  chat · diff · agents    │  agent-runtime · tools · BYOK model layer  │
+└──────────────────────┬─────────────────────────────────────────────────┘
+                       │ apiKeyOverrides channel (never process.env)
+              anybuff.json provider routing (modes → agents → default)
+                       │
+        Your providers: OpenAI-compatible / Anthropic-compatible
+```
 
-## Choose your Freebuff
+## Status
 
-| Product              | What it does                        | Get started                                                           |
-| -------------------- | ----------------------------------- | --------------------------------------------------------------------- |
-| **Freebuff Desktop** | Run parallel agents locally         | [Download for macOS, Windows, or Linux](https://freebuff.com/desktop) |
-| **Freebuff CLI**     | Code from your terminal             | [Install the CLI](https://freebuff.com/cli)                           |
-| **Freebuff Web**     | Build and ship full-stack apps      | [Build an app](https://freebuff.com/web)                              |
-| **Freebuff Cloud**   | Run agents on any GitHub repository | [Connect a repository](https://freebuff.com/cloud)                    |
-| **Freebuff Chat**    | Research and think with AI          | [Start a chat](https://freebuff.com/chat)                             |
+Pre-packaging developer preview. `bun run dev` launches the full desktop app;
+installer packaging is the next milestone.
 
 ## Quick start
 
-Run Freebuff in any project from your terminal:
-
-```bash
-npm install -g freebuff
-cd ~/my-project
-freebuff
-```
-
-Then describe what you want. Freebuff finds the relevant files, makes changes, and runs the checks that matter for your project.
-
-## Models
-
-Freebuff includes a curated model catalog. The regular picker currently offers:
-
-| Model                       | Access                  | Best for                                                          |
-| --------------------------- | ----------------------- | ----------------------------------------------------------------- |
-| **DeepSeek V4 Flash 07/31** | Full access             | The default everywhere in full mode; fast coding and tool use     |
-| **GPT-5.6 Luna**            | Full access             | Strong all-around with native images; two sessions a day          |
-| **MiMo 2.5**                | Full and limited access | The limited-mode default; balanced performance with image support |
-| **DeepSeek V4 Pro**         | Full access             | Deepest reasoning; one session a day                              |
-
-These limits are **temporary**, and they exist because the providers serving DeepSeek now charge more than free mode can carry. V4 Pro is one session a day; GPT-5.6 Luna is two sessions a day; models may serve from a quantized (Q8_0) build. MiMo 2.5 stays unlimited. All of it is intended to be reverted.
-
-Beyond the regular picker:
-
-- **GLM 5.2** is available through earned sessions rather than as an always-unlocked model.
-- **Gemini 3.1 Flash Lite** powers specialist tasks such as file finding and research rather than appearing in the main picker.
-
-Availability and limits depend on your access tier, product, and current capacity. Freebuff Desktop can also run locally installed Claude Code and Codex agents using your existing provider account; those connected models are separate from Freebuff's included catalog.
-
-## How Freebuff works
-
-Freebuff uses specialized agents instead of sending every task through one model and one prompt. Depending on the task, agents gather context, plan, edit or research, run tools, and review the result.
-
-- **Codebase context** — File-finding agents map the relevant parts of a project before editing.
-- **Implementation and review** — Agents can divide work, make changes, run commands, and inspect the result.
-- **Research and browser use** — Agents can investigate documentation and test applications in a real browser.
-- **Parallel local work** — Desktop isolates concurrent agents in separate workspaces.
-- **Hosted environments** — Web and Cloud provide sandboxes, previews, terminals, and deployment workflows.
-
-## Free access
-
-Freebuff is available in every country. Supported regions receive full access; other regions and VPN users receive limited access, currently MiMo 2.5 with three one-hour sessions per day, earnable up to seven.
-
-Text ads support the included models. Freebuff shows the applicable session limits and any model-specific data-use notice before you start.
-
-<!-- BEGIN GENERATED FREEBUFF DATA USE -->
-
-**Is my data used to train AI?** Only when a model or feature says data may be used for AI training. Freebuff or the provider may then keep submissions to develop, train, test, evaluate, fine-tune, and improve AI models or products.
-
-**How is my data used and stored?** We use prompts, messages, code, files, and repository data to provide the service. We may analyze prompts and messages—including pasted content—to personalize ads, using Freebuff systems and service providers acting on our behalf. Separate uploads and connected repositories are not provided to advertising providers. Where required by law, we provide advertising choices and honor recognized opt-out signals; elsewhere, this processing may be required to use the free service. See the Privacy Policy for retention and details.
-
-See the [Privacy Policy](https://freebuff.com/privacy-policy) for complete details.
-
-<!-- END GENERATED FREEBUFF DATA USE -->
-
-## Contributing
-
-Freebuff is a TypeScript monorepo built with Bun. Contributions to the products, agents, tools, documentation, and underlying runtime are welcome.
-
-Local development requires Docker and a configured `.env.local`; see the
-[Contributing Guide](./CONTRIBUTING.md) before starting the services.
-
-```bash
-git clone https://github.com/CodebuffAI/freebuff.git
-cd freebuff
+```powershell
 bun install
-bun up
+bun run build:sdk     # bundle @codebuff/sdk into sdk/dist
+bun run dev           # launch AnyBuff Desktop
 ```
 
-Start the CLI separately with:
+First run: pick a project folder (try `desktop/demo-project`), open Settings,
+add a provider (baseURL + API key — keys are DPAPI-encrypted via Electron
+safeStorage), fetch models, select one, and start chatting.
 
-```bash
-bun start-cli
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| `desktop/` | Electron app (main / preload / renderer), ported from a prior prototype and adapted to the workspace SDK |
+| `sdk/` | `@codebuff/sdk` — in-process agent runtime with the AnyBuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
+| `packages/agent-runtime` | Upstream step engine (untouched) |
+| `packages/llm-providers` | Vendored AI-SDK v7 openai-compatible provider + grafted interop features |
+| `common/` | Upstream shared types/tools/contracts (+ local-mode constants) |
+| `agents/` | Upstream agent templates; model strings are *routing keys* resolved through anybuff.json |
+| `scripts/generate-desktop-agents.ts` | Regenerates `desktop/src/main/agents/bundled-agents.ts` from upstream `agents/` with desktop patches baked in |
+| `cli/` | Upstream CLI source kept on disk but OUT of the build graph (v2 candidate) |
+
+## Key behaviors (see PLAN.md §10 ledger)
+
+- **suggest_followups disabled by default** (`ANYBUFF_FOLLOWUPS=1` re-enables).
+- **context-pruner activity hidden** in the desktop UI (still runs; zero LLM).
+- **web_search** is a local DuckDuckGo implementation with SSRF guards — no key, no backend.
+- Provider compat rules are data-driven and strip-only (never suppress reasoning);
+  observability under `[anybuff-compat]`.
+- API keys: DPAPI-encrypted at rest, delivered to the SDK through an injection
+  channel, scrubbed from every child-process environment.
+- Atomic config/checkpoint writes per PLAN §9.5 (fsync, rename-replace,
+  never pre-delete).
+
+## Development
+
+```powershell
+bun run build:sdk        # rebuild SDK after touching sdk/, packages/, common/
+bun --cwd desktop run typecheck
+cd desktop && bun test src/__tests__          # or package-local suites
+bun scripts/smoke-sdk.ts # headless end-to-end BYOK check (needs a real key)
 ```
 
-See the [Contributing Guide](./CONTRIBUTING.md), [development guide](./docs/development.md), and [testing guide](./docs/testing.md) for environment setup and the checks to run before opening a pull request.
+Upstream sync: internal packages keep their `@codebuff/*` names on purpose so
+`git merge` from CodebuffAI/freebuff stays viable. Intentional deviations are
+logged in PLAN.md §10.
 
-## Built on Codebuff
+## License
 
-Freebuff is built on [Codebuff](https://codebuff.com), the open multi-agent framework that powers its orchestration, tools, and SDK. To create custom agents or embed them in another application, see the [Codebuff documentation](https://codebuff.com/docs) and [`@codebuff/sdk`](https://www.npmjs.com/package/@codebuff/sdk).
-
-## Links
-
-- [Website](https://freebuff.com)
-- [GitHub](https://github.com/CodebuffAI/freebuff)
-- [Discord](https://discord.gg/yXG3w7wxfs)
-- [Privacy Policy](https://freebuff.com/privacy-policy)
-- [License](./LICENSE)
+Apache-2.0 (inherited from upstream Freebuff/Codebuff). See LICENSE and NOTICE.

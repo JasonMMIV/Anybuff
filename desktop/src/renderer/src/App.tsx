@@ -443,14 +443,14 @@ export default function App() {
   // Initial state
   useEffect(() => {
     if (IS_PREVIEW) {
-      setCwd('C:/Users/w2bn1/Desktop/AnyBuff/demo-project')
+      setCwd('~/demo-project')
       setProjectName('demo-project')
       setBranch('main')
       setHasProvider(true)
       setSettings(PREVIEW_SETTINGS)
       setProjects([
         {
-          path: 'C:/Users/w2bn1/Desktop/AnyBuff/demo-project',
+          path: '~/demo-project',
           name: 'demo-project',
           tasks: [
             {

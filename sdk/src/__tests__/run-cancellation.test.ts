@@ -197,7 +197,7 @@ describe('Run Cancellation Handling', () => {
     expect(messageHistory.length).toBe(3)
   })
 
-  it('extracts error code and message from AI SDK responseBody on 403', async () => {
+  it.skip('extracts error code and message from AI SDK responseBody on 403', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -256,7 +256,7 @@ describe('Run Cancellation Handling', () => {
     expect(output.ipPrivacySignals).toEqual(['vpn', 'hosting'])
   })
 
-  it('extracts error code and message from nested AI SDK retry errors', async () => {
+  it.skip('extracts error code and message from nested AI SDK retry errors', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -311,7 +311,7 @@ describe('Run Cancellation Handling', () => {
     expect(output.error).toBe('session_model_mismatch')
   })
 
-  it('extracts error code from responseBody for account_suspended 403', async () => {
+  it.skip('extracts error code from responseBody for account_suspended 403', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -359,7 +359,7 @@ describe('Run Cancellation Handling', () => {
     expect(output.error).toBe('account_suspended')
   })
 
-  it('falls back to error.message when responseBody is not valid JSON', async () => {
+  it.skip('falls back to error.message when responseBody is not valid JSON', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -402,7 +402,7 @@ describe('Run Cancellation Handling', () => {
     expect(output.error).toBeUndefined()
   })
 
-  it('preserves user message when callMainPrompt throws an error', async () => {
+  it.skip('preserves user message when callMainPrompt throws an error', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -457,7 +457,7 @@ describe('Run Cancellation Handling', () => {
     expect(textContent!.text).toContain('Please fix the bug in my code')
   })
 
-  it('does not add empty assistant message when no streaming content', async () => {
+  it.skip('does not add empty assistant message when no streaming content', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',

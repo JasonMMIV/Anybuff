@@ -993,8 +993,15 @@ function warnIfAncestorConfigHasApiKeyEnv(
   cwd: string,
 ): void {
   const projectRoot = path.resolve(cwd)
+  // The user's own global config dir (e.g. %APPDATA%\anybuff) is
+  // user-owned and same trust level as the env vars it names — exempt it so
+  // the warning only fires for genuinely foreign ancestors.
+  const userConfigDir = path.resolve(getConfigDir())
   const ancestorPaths = sourceFilePaths.filter((p) => {
     const resolved = path.resolve(p)
+    if (resolved === userConfigDir || resolved.startsWith(userConfigDir + path.sep)) {
+      return false
+    }
     return (
       resolved !== projectRoot && !resolved.startsWith(projectRoot + path.sep)
     )
@@ -2238,6 +2245,7 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
     }
   })
 
+  const failedRollbackPaths = new Set<string>()
   try {
     for (const item of staged) {
       fs.writeFileSync(item.tempPath, item.serialized, { mode: 0o600 })
@@ -2262,19 +2270,23 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
     }
   } catch (error) {
     const rollbackErrors: string[] = []
+    const failedRollbackPaths = new Set<string>()
     for (const item of [...staged].reverse()) {
       try {
         if (item.installed && item.backupCreated && fs.existsSync(item.backupPath)) {
           fs.copyFileSync(item.backupPath, item.filePath)
         }
       } catch (rollbackError) {
+        failedRollbackPaths.add(item.backupPath)
         rollbackErrors.push(
           `${item.filePath}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
         )
       }
     }
+    // §9.5: a backup whose rollback failed is the only surviving copy of the
+    // original content — never delete it; surface it for manual recovery.
     const rollbackSuffix = rollbackErrors.length
-      ? ` Rollback errors: ${rollbackErrors.join('; ')}`
+      ? ` Rollback errors (keep .bak files): ${rollbackErrors.join('; ')}`
       : ''
     throw new Error(
       `Failed to commit fragmented provider config transaction: ${error instanceof Error ? error.message : String(error)}.${rollbackSuffix}`,
@@ -2282,6 +2294,12 @@ function writeJsonFilesTransaction(files: Map<string, unknown>): void {
   } finally {
     for (const item of staged) {
       for (const cleanupPath of [item.tempPath, item.backupPath]) {
+        if (
+          cleanupPath === item.backupPath &&
+          failedRollbackPaths.has(cleanupPath)
+        ) {
+          continue
+        }
         try {
           if (fs.existsSync(cleanupPath)) fs.unlinkSync(cleanupPath)
         } catch {

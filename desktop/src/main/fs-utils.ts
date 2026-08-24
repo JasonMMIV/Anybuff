@@ -12,7 +12,7 @@ export interface TreeNode {
   children?: TreeNode[]
 }
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '.freebuff', '__pycache__', 'AnyBuff-src'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '.freebuff', '__pycache__'])
 const SKIP_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', '.DS_Store'])
 
 /**

@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron'
+import { writeFileAtomic } from './atomic-write'
 import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 
 /**
  * Provider settings management (multi-provider).
@@ -249,10 +250,8 @@ export function loadSettings(): PersistedSettings {
 }
 
 function saveSettings(settings: PersistedSettings): void {
-  const file = settingsPath()
-  mkdirSync(app.getPath('userData'), { recursive: true })
-  writeFileSync(file, JSON.stringify(settings, null, 2), 'utf-8')
-}
+  writeFileAtomic(settingsPath(), JSON.stringify(settings, null, 2))
+  }
 
 export function getAppSettings(): AppSettings {
   const s = loadSettings()
@@ -454,7 +453,7 @@ export function writeProviderConfigFile(): string {
     if (Object.keys(efforts).length > 0) config.agentReasoningEfforts = efforts
   }
   const file = join(app.getPath('userData'), 'anybuff.json')
-  writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8')
+  writeFileAtomic(file, JSON.stringify(config, null, 2))
   return file
 }
 
@@ -513,9 +512,8 @@ export function saveTaskTranscript(taskId: string, messages: TaskMessage[]): boo
   try {
     const file = transcriptPath(taskId)
     if (!file) return false
-    const dir = join(app.getPath('userData'), 'tasks')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, JSON.stringify(messages), 'utf-8')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileAtomic(file, JSON.stringify(messages))
     return true
   } catch {
     return false
@@ -527,9 +525,8 @@ export function saveTaskRunState(taskId: string, runState: unknown): boolean {
   try {
     const file = runStatePath(taskId)
     if (!file) return false
-    const dir = join(app.getPath('userData'), 'tasks')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, JSON.stringify(runState), 'utf-8')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileAtomic(file, JSON.stringify(runState))
     return true
   } catch {
     return false
@@ -554,21 +551,9 @@ export function saveTaskCheckpoint(taskId: string, agentState: unknown): boolean
     if (!file) return false
     const dir = join(app.getPath('userData'), 'tasks')
     mkdirSync(dir, { recursive: true })
-    // Atomic write: temp file + rename, with fallback if Windows briefly locks the file
-    const tmp = `${file}.tmp`
-    writeFileSync(tmp, JSON.stringify(agentState), 'utf-8')
-    rmSync(file, { force: true })
-    try {
-      renameSync(tmp, file)
-    } catch {
-      // Fallback copy + remove if renameSync encounters lock contention on Windows
-      try {
-        writeFileSync(file, readFileSync(tmp))
-        rmSync(tmp, { force: true })
-      } catch {
-        return false
-      }
-    }
+    // PLAN 9.5: unique temp + fsync + rename-replace without pre-delete;
+    // on unrecoverable lock contention the previous checkpoint survives.
+    writeFileAtomic(file, JSON.stringify(agentState))
     return true
   } catch {
     return false

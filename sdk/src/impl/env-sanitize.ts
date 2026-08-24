@@ -32,9 +32,14 @@ const WELL_KNOWN_PROVIDER_KEY_ENV_VARS = [
 ] as const
 
 let cachedBlocklist: Set<string> | null = null
+let cachedAt = 0
+/** Re-read anybuff.json for newly declared apiKeyEnv names at most this often. */
+const BLOCKLIST_TTL_MS = 60_000
 
 export function getProviderApiKeyEnvBlocklist(): Set<string> {
-  if (cachedBlocklist) return cachedBlocklist
+  if (cachedBlocklist && Date.now() - cachedAt < BLOCKLIST_TTL_MS) {
+    return cachedBlocklist
+  }
   const blocklist = new Set<string>(WELL_KNOWN_PROVIDER_KEY_ENV_VARS)
   try {
     const loaded = loadProviderConfigSync()
@@ -51,6 +56,7 @@ export function getProviderApiKeyEnvBlocklist(): Set<string> {
     // Config unavailable: static list still applies.
   }
   cachedBlocklist = blocklist
+  cachedAt = Date.now()
   return blocklist
 }
 

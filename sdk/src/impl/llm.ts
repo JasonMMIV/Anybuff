@@ -35,6 +35,7 @@ import {
   resolveModelsToTry,
 } from './failover'
 import { getModelForRequest } from './model-provider'
+import type { ModelPricing } from './model-provider'
 import {
   classifyStreamEndRecovery,
   classifyThrownStreamRecovery,
@@ -70,6 +71,27 @@ function calculateUsedCredits(params: { costDollars: number }): number {
   const { costDollars } = params
 
   return Math.round(costDollars * 100)
+}
+
+/**
+ * M2-lite fallback: estimate spend from configured per-million pricing when
+ * an endpoint does not report OpenRouter-style cost fields.
+ */
+function estimateCostDollars(
+  usage:
+    | { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+    | undefined,
+  pricing?: ModelPricing,
+): number | undefined {
+  if (!usage || !pricing) return undefined
+  const inputPm = pricing.inputPerMillionTokens
+  const outputPm = pricing.outputPerMillionTokens
+  if (inputPm === undefined && outputPm === undefined) return undefined
+  const inT = usage.inputTokens ?? 0
+  const outT = usage.outputTokens ?? 0
+  const dollars =
+    (inT * (inputPm ?? 0) + outT * (outputPm ?? 0)) / 1_000_000
+  return dollars > 0 ? dollars : undefined
 }
 
 export function getProviderOptions(params: {
@@ -273,6 +295,8 @@ type StreamAttemptFlags = {
   yieldedContent: boolean
   /** A tool call was streamed: actionable even with no text. */
   yieldedToolCall: boolean
+  /** Native reasoning streamed: failover would duplicate the segment. */
+  yieldedReasoning: boolean
 }
 
 /**
@@ -311,6 +335,7 @@ export async function* promptAiSdkStream(
       const flags: StreamAttemptFlags = {
         yieldedContent: false,
         yieldedToolCall: false,
+        yieldedReasoning: false,
       }
       try {
         const result = yield* streamOnce(
@@ -322,7 +347,7 @@ export async function* promptAiSdkStream(
         )
         return result
       } catch (error) {
-        if (params.signal.aborted || flags.yieldedContent || flags.yieldedToolCall) {
+        if (params.signal.aborted || flags.yieldedContent || flags.yieldedToolCall || flags.yieldedReasoning) {
           throw error
         }
         const statusCode = getErrorStatusCode(error)
@@ -386,7 +411,7 @@ async function* streamOnce(
   const agentChunkMetadata =
     params.agentId != null ? { agentId: params.agentId } : undefined
 
-  const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
+  const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
     apiKey: params.apiKey,
     model: requestedModel ?? params.model,
     agentId: params.agentId,
@@ -572,15 +597,23 @@ async function* streamOnce(
 
   let costReported = false
   let finishProviderMetadata: ProviderMetadata | undefined
-  const reportCost = async (providerMetadata: ProviderMetadata | undefined) => {
+  const reportCost = async (
+    providerMetadata: ProviderMetadata | undefined,
+    fallbackDollars?: number,
+  ) => {
     if (costReported) return
     const openrouterUsage = providerMetadata?.codebuff?.usage as
       | OpenRouterUsageAccounting
       | undefined
-    const costOverrideDollars = openrouterUsage
+    let costOverrideDollars = openrouterUsage
       ? (openrouterUsage.cost ?? 0) +
         (openrouterUsage.costDetails?.upstreamInferenceCost ?? 0)
       : undefined
+    // M2-lite: endpoints that report no OpenRouter-style cost still get real
+    // spend when the provider config declares per-million pricing.
+    if (!costOverrideDollars && fallbackDollars) {
+      costOverrideDollars = fallbackDollars
+    }
     if (!params.onCostCalculated || !costOverrideDollars) return
     costReported = true
     await params.onCostCalculated(
@@ -728,6 +761,9 @@ async function* streamOnce(
     if (chunkValue.type === 'reasoning-delta') {
       if (chunkValue.text) {
         hasReceivedReasoning = true
+        // Reasoning is not answer content, but a failover restart after it
+        // streamed would duplicate the whole thinking segment in the UI.
+        flags.yieldedReasoning = true
       }
       const reasoningExcluded = (['openrouter', 'codebuff'] as const).some(
         (p) =>
@@ -862,7 +898,10 @@ async function* streamOnce(
   else reportUsageIncomplete()
 
   const providerMetadata = (await response.providerMetadata) ?? {}
-  await reportCost(providerMetadata as ProviderMetadata)
+  await reportCost(
+    providerMetadata as ProviderMetadata,
+    estimateCostDollars(usageResult, pricing),
+  )
 
   return promptSuccess(messageId)
 }
@@ -884,7 +923,7 @@ export async function promptAiSdk(
   }
 
   return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
-    const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -941,9 +980,14 @@ export async function promptAiSdk(
     }
 
     // Call the cost callback if provided
-    if (params.onCostCalculated && costOverrideDollars) {
+    // Pricing fallback (M2-lite) for endpoints without cost fields
+    let effectiveCostDollars = costOverrideDollars
+    if (!effectiveCostDollars) {
+      effectiveCostDollars = estimateCostDollars(response.usage, pricing)
+    }
+    if (params.onCostCalculated && effectiveCostDollars) {
       await params.onCostCalculated(
-        calculateUsedCredits({ costDollars: costOverrideDollars }),
+        calculateUsedCredits({ costDollars: effectiveCostDollars }),
       )
     }
 
@@ -968,7 +1012,7 @@ export async function promptAiSdkStructured<T>(
   }
 
   return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
-    const { model: aiSDKModel, reasoningEffort, compatibility } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -1025,9 +1069,14 @@ export async function promptAiSdkStructured<T>(
     }
 
     // Call the cost callback if provided
-    if (params.onCostCalculated && costOverrideDollars) {
+    // Pricing fallback (M2-lite) for endpoints without cost fields
+    let effectiveCostDollars = costOverrideDollars
+    if (!effectiveCostDollars) {
+      effectiveCostDollars = estimateCostDollars(response.usage, pricing)
+    }
+    if (params.onCostCalculated && effectiveCostDollars) {
       await params.onCostCalculated(
-        calculateUsedCredits({ costDollars: costOverrideDollars }),
+        calculateUsedCredits({ costDollars: effectiveCostDollars }),
       )
     }
 

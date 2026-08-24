@@ -1,35 +1,67 @@
-# Freebuff
+# AnyBuff — agent guide
 
-Freebuff is the public, free coding agent built from the Codebuff agent framework.
+AnyBuff = upstream Freebuff architecture + a minimal local-first BYOK layer +
+an Electron desktop shell. Read PLAN.md (§3 ADRs, §9 specs, §10 maintenance
+ledger) before making architectural changes.
 
-## Key Technologies
+## Non-negotiables
 
-- TypeScript monorepo
-- Bun runtime and package manager
-- OpenTUI + React CLI
-- JS/TS SDK
-- Composable agent runtime
+- **Upstream mergeability**: internal packages keep `@codebuff/*` names. Never
+  bulk-rename symbols/paths; PowerShell `-replace` is case-insensitive and has
+  already caused three regressions (see git log "Review round 1").
+- **只清除、不抑制** (PLAN §9.2): provider compat layers may strip parameters an
+  endpoint rejects; they must never actively suppress native reasoning
+  (no `thinking:{type:'disabled'}` injection).
+- **Keys never enter process.env** (ADR-12): Desktop decrypts →
+  `apiKeyOverrides` → SDK injection channel. Child processes get scrubbed env
+  (`impl/env-sanitize.ts`). Don't add new spawns that bypass it.
+- **Atomic writes** (PLAN §9.5 / ADR-13): unique same-dir temp + fsync +
+  rename-replace; never pre-delete targets; preserve old file on failure.
+  SDK side: `provider-config.ts`. Desktop side: `desktop/src/main/atomic-write.ts`.
+- **Compat rules have expiry dates** (PLAN §10.1): verify against live vendor
+  behavior before touching the deepseek/glm tool_choice list or stop-strip
+  defaults; observability logs use the `[anybuff-compat]` prefix.
 
-## Repo Map
+## Build & verify loop
 
-- `cli/` - TUI client and local UX
-- `sdk/` - JS/TS SDK used by the CLI and external users
-- `common/` - shared types, tools, schemas, and utilities
-- `agents/` - public agent definitions
-- `packages/agent-runtime/` - agent runtime and tool handling
-- `packages/code-map/` - source parsing helpers
-- `packages/llm-providers/` - public LLM provider shims
-- `freebuff/` - Freebuff CLI, release files, and e2e tests
-- `scripts/tmux/` - tmux helpers for CLI testing
+```powershell
+bun install                 # after workspace/package.json changes
+bun run build:sdk           # REQUIRED after sdk|packages|common edits (desktop consumes dist/)
+bun --cwd desktop run typecheck
+cd sdk && bun test src/impl/__tests__ src/__tests__/followups-policy.test.ts
+cd packages/agent-runtime && bun test src/__tests__/web-search-local.test.ts
+```
 
-## Conventions
+Desktop dev: root `bun run dev` → routes through
+`desktop/scripts/dev-launcher.mjs`, which MUST seed the NEXT_PUBLIC_* env
+defaults before electron-vite boots (ESM evaluates external deps before any
+module body; an in-bundle shim cannot satisfy common/env validation).
 
-- Use `bun install` and `bun run`.
-- Prefer dependency injection over module mocking.
-- Run interactive CLI tests in tmux.
-- Do not force-push `main`.
+## Architecture map
 
-## Docs
+- `sdk/src/provider-config.ts` — anybuff.json schema/loader/router/writer
+  (modes→agents→defaultModel routing, capabilities, presets, atomic writers).
+- `sdk/src/impl/model-provider.ts` — BYOK resolution + keyMap injection
+  (`setProviderApiKeyOverrides`) + compat rules v1.3 (§9.2.1 verification table).
+- `sdk/src/impl/llm.ts` — two-tier retry/failover (§9.1), zero-output gate via
+  StreamAttemptFlags {content, toolCall, reasoning}, pricing cost fallback,
+  reasoningEffort namespace injection.
+- `sdk/src/impl/local-database.ts` — hosted-backend stubs; run.ts imports from
+  here, never from impl/database.ts.
+- `desktop/src/main/start-run.ts` — run lifecycle, approval gate wiring,
+  SILENT_AGENT_TYPES (context-pruner hidden), followups policy consumed via SDK.
+- `desktop/src/main/settings.ts` — DPAPI-mandatory key storage (ADR-11),
+  getProviderApiKeyOverrides, self-healing model-id normalization.
+- `scripts/generate-desktop-agents.ts` — regenerates desktop bundled agents;
+  bakes tool-surface patches (run_terminal_command/web_search/code_search/
+  update_subgoal/think_deeply on base family) and prompt discipline.
 
-- `docs/agents-and-tools.md`
-- `docs/testing.md`
+## Known debts (do not silently re-add)
+
+- `cli/` source is on disk but out of the build graph (v2).
+- Electron binary currently copied from a sibling install (43.4.0); replace via
+  real postinstall download when network allows.
+- Hosted-semantics tests are skipped or rewritten-as-local
+  (`it.skip` blocks in sdk tests carry context).
+- Fork's ChatGPT/Codex OAuth, harness services, PTD tiers were intentionally
+  not ported — do not reintroduce without an ADR.

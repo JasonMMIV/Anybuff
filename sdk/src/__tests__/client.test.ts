@@ -1,142 +1,31 @@
-import { describe, expect, test, mock, afterEach } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 
 import { CodebuffClient } from '../client'
 
+// AnyBuff local BYOK contract: checkConnection has no backend to probe and
+// always reports healthy; the hosted API key is optional.
 describe('CodebuffClient', () => {
-  const originalFetch = globalThis.fetch
+  describe('constructor (local BYOK)', () => {
+    test('accepts a missing apiKey for keyless local providers', () => {
+      const client = new CodebuffClient({})
+      expect(client.options.apiKey).toBe('')
+    })
 
-  const setFetchMock = (mockFetch: ReturnType<typeof mock>) => {
-    globalThis.fetch = mockFetch as unknown as typeof fetch
-  }
+    test('keeps an explicitly provided apiKey', () => {
+      const client = new CodebuffClient({ apiKey: 'hosted-or-proxy-key' })
+      expect(client.options.apiKey).toBe('hosted-or-proxy-key')
+    })
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch
+    test('generates a random fingerprintId', () => {
+      const client = new CodebuffClient({})
+      expect(client.options.fingerprintId).toMatch(/^codebuff-sdk-/)
+    })
   })
 
-  describe('checkConnection', () => {
-    test('returns true when healthz responds with status ok', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ status: 'ok' }),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(true)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-    })
-
-    test('returns false when response is not ok', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: false,
-          json: () => Promise.resolve({ status: 'ok' }),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-    })
-
-    test('returns false when status is not ok', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ status: 'error' }),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-    })
-
-    test('returns false when response is not valid JSON', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.reject(new Error('Invalid JSON')),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-    })
-
-    test('returns false when fetch throws an error', async () => {
-      const mockFetch = mock(() => Promise.reject(new Error('Network error')))
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-    })
-
-    test('returns false when response body is not an object', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve('not an object'),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-    })
-
-    test('returns false when response body is null', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(null),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
-    })
-
-    test('returns false when response body has no status field', async () => {
-      const mockFetch = mock(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ message: 'healthy' }),
-        } as Response),
-      )
-
-      setFetchMock(mockFetch)
-
-      const client = new CodebuffClient({ apiKey: 'test-key' })
-      const result = await client.checkConnection()
-
-      expect(result).toBe(false)
+  describe('checkConnection (local no-op)', () => {
+    test('always reports healthy without any network access', async () => {
+      const client = new CodebuffClient({})
+      expect(await client.checkConnection()).toBe(true)
     })
   })
 })

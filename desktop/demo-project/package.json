@@ -1,7 +1,7 @@
 {
-  "name": "openbuff-demo-project",
+  "name": "AnyBuff-demo-project",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "用於測試 OpenBuff Desktop 的最小專案"
+  "description": "用於測試 AnyBuff Desktop 的最小專案"
 }

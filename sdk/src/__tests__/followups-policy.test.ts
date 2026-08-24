@@ -58,7 +58,7 @@ describe('applyFollowupsPolicy (ANYBUFF_FOLLOWUPS=1)', () => {
   test('passes definitions through untouched', async () => {
     // Re-evaluate module with flag set via Bun's import cache reset.
     process.env.ANYBUFF_FOLLOWUPS = '1'
-    const mod = await import('../impl/followups-policy?bypass-cache')
+    const mod = await import('../impl/followups-policy')
     const [out] = mod.applyFollowupsPolicy([sampleDef])
     expect(out).toBe(sampleDef)
     expect((out as Def).toolNames).toContain('suggest_followups')

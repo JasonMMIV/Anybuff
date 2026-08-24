@@ -543,11 +543,18 @@ function findProviderVisionFallback(params: {
     const provider = loadedConfig.config.providers[providerId]
     if (!provider) continue
     for (const candidate of getProviderRoutableModels(providerId, provider)) {
-      const candidateProviderModel = resolveConfiguredProviderModel({
-        model: candidate,
-        loadedConfig,
-        apiKeyOverrides: injectedApiKeyOverrides,
-      })
+      // Soft-skip candidates whose providers are misconfigured (e.g. missing
+      // key): one broken entry must not crash the whole fallback scan.
+      let candidateProviderModel: ResolvedProviderModel | undefined
+      try {
+        candidateProviderModel = resolveConfiguredProviderModel({
+          model: candidate,
+          loadedConfig,
+          apiKeyOverrides: injectedApiKeyOverrides,
+        })
+      } catch {
+        continue
+      }
       if (!candidateProviderModel) continue
       const support = getModelVisionSupport({
         configuredProviderModel: candidateProviderModel,
@@ -649,11 +656,17 @@ export function resolveModelContextWindow(params: {
   }).model
   const windows = resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
     (candidateModel) => {
-      const configured = resolveConfiguredProviderModel({
-        model: candidateModel,
-        loadedConfig,
-        apiKeyOverrides: injectedApiKeyOverrides,
-      })
+      let configured: ResolvedProviderModel | undefined
+      try {
+        configured = resolveConfiguredProviderModel({
+          model: candidateModel,
+          loadedConfig,
+          apiKeyOverrides: injectedApiKeyOverrides,
+        })
+      } catch {
+        // Unresolvable candidate (missing key etc.) contributes no window.
+        return []
+      }
       if (!configured) return []
       const windowTokens = resolveModelCapabilities({
         providerId: configured.providerId,
@@ -682,11 +695,16 @@ export function resolveModelContextWindows(params: {
   }).model
   const windows = resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
     (candidateModel) => {
-      const configured = resolveConfiguredProviderModel({
-        model: candidateModel,
-        loadedConfig,
-        apiKeyOverrides: injectedApiKeyOverrides,
-      })
+      let configured: ResolvedProviderModel | undefined
+      try {
+        configured = resolveConfiguredProviderModel({
+          model: candidateModel,
+          loadedConfig,
+          apiKeyOverrides: injectedApiKeyOverrides,
+        })
+      } catch {
+        return []
+      }
       const value = configured
         ? resolveModelCapabilities({
             providerId: configured.providerId,

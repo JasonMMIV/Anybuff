@@ -19,9 +19,9 @@
 
 const FOLLOWUPS_TOOL = 'suggest_followups'
 
-export const FOLLOWUPS_ENABLED =
-  process.env.ANYBUFF_FOLLOWUPS === '1' ||
-  process.env.ANYBUFF_FOLLOWUPS === 'true'
+function isFollowupsEnabled(): boolean {
+  return process.env.ANYBUFF_FOLLOWUPS === '1' || process.env.ANYBUFF_FOLLOWUPS === 'true'
+}
 
 function stripFollowupsFromDefinition<T extends object>(def: T): T {
   const patched = { ...(def as Record<string, unknown>) }
@@ -52,6 +52,6 @@ function stripFollowupsFromDefinition<T extends object>(def: T): T {
  * shallow-copied before mutation so caller-owned objects are never touched.
  */
 export function applyFollowupsPolicy<T extends object>(definitions: T[]): T[] {
-  if (FOLLOWUPS_ENABLED) return definitions
+  if (isFollowupsEnabled()) return definitions
   return definitions.map(stripFollowupsFromDefinition)
 }
