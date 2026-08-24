@@ -59,8 +59,6 @@ module body; an in-bundle shim cannot satisfy common/env validation).
 ## Known debts (do not silently re-add)
 
 - `cli/` source is on disk but out of the build graph (v2).
-- Electron binary currently copied from a sibling install (43.4.0); replace via
-  real postinstall download when network allows.
 - Hosted-semantics tests are skipped or rewritten-as-local
   (`it.skip` blocks in sdk tests carry context).
 - Fork's ChatGPT/Codex OAuth, harness services, PTD tiers were intentionally

@@ -45,8 +45,25 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Main process] Unhandled rejection:', reason)
 })
 
+// Packaged builds carry ripgrep via extraResources (<install>/resources/bin/rg.exe);
+// point the SDK at it before any tool runs (executables cannot be spawned from inside
+// app.asar). Dev mode resolves sdk/dist/vendor relative paths and needs no override.
+// Note: ESM imports below are hoisted above this assignment, but that is safe —
+// getBundledRgPath() is resolved lazily on first code-search tool call, never at
+// module-evaluation time.
+if (app.isPackaged) {
+  process.env.CODEBUFF_RG_PATH = join(process.resourcesPath, 'bin', 'rg.exe')
+}
+
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.AnyBuff.desktop')
+}
+
+// Smoke-test hook (scripts/smoke-packaged.mjs): point the test instance at a
+// throwaway userData dir so it never contends for the real single-instance
+// lock or touches the user's session data while the real app is running.
+if (process.env.ANYBUFF_SMOKE_USER_DATA) {
+  app.setPath('userData', process.env.ANYBUFF_SMOKE_USER_DATA)
 }
 
 // Single instance lock to prevent duplicate concurrent processes

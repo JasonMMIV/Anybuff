@@ -1,0 +1,38 @@
+# Minimal NSIS packaging — PLAN.md §9.6 subset（§12 首版發佈決策）：
+# GitHub Releases 手動上傳、無 electron-updater、無簽章
+# （SmartScreen「不明發行者」攔截為預期行為）。
+
+appId: com.AnyBuff.desktop # 必須與 src/main/index.ts 的 setAppUserModelId 一致
+productName: AnyBuff
+
+directories:
+  output: release-build
+
+files:
+  - out/**
+  - bootstrap.cjs # 打包版進入點：於 SDK 求值前注入 NEXT_PUBLIC_* 預設環境（見檔內註解）
+  - env-defaults.json # bootstrap.cjs 的環境預設值單一來源（與 env-shim/dev-launcher 共用）
+  - package.json
+  # SDK 內建的全平台 ripgrep 不進 asar（約 25MB 死重）；執行期只用
+  # extraResources 掛載的單一 win32 二進位（CODEBUFF_RG_PATH 指路）
+  - "!**/node_modules/@codebuff/sdk/**/vendor/ripgrep/**"
+
+extraResources:
+  # 主程序 icon fallback chain 預期 <install>/resources/icon.ico
+  - from: resources/icon.ico
+    to: icon.ico
+  # SDK 的 ripgrep；main 以 CODEBUFF_RG_PATH 指到這裡
+  - from: build/bin/rg.exe
+    to: bin/rg.exe
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+
+nsis:
+  oneClick: false # 允許自選安裝目錄
+  allowToChangeInstallationDirectory: true
+  perMachine: false # per-user 安裝（%LocalAppData%）、免 UAC
+  artifactName: ${productName}-Setup-${version}.${ext}

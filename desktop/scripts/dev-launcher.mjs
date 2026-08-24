@@ -3,28 +3,20 @@
  * the bundled main process importing @codebuff/sdk) boots. ESM evaluates
  * external dependencies before any module body runs, so an in-bundle shim
  * cannot satisfy common/env validation — it must exist in process.env up front.
+ * Defaults come from env-defaults.json — the single source of truth shared
+ * with bootstrap.cjs (packaged) and src/main/env-shim.ts.
  */
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 
-const defaults = {
-  NEXT_PUBLIC_CB_ENVIRONMENT: 'test',
-  NEXT_PUBLIC_CODEBUFF_APP_URL: 'http://localhost:3000',
-  NEXT_PUBLIC_WEB_PORT: '3000',
-  NEXT_PUBLIC_SUPPORT_EMAIL: 'support@anybuff.local',
-  NEXT_PUBLIC_POSTHOG_API_KEY: 'disabled-posthog-key',
-  NEXT_PUBLIC_POSTHOG_HOST_URL: 'https://us.i.posthog.com',
-  NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: 'pk_test_placeholder',
-  NEXT_PUBLIC_STRIPE_CUSTOMER_PORTAL:
-    'https://billing.stripe.com/p/login/test_placeholder'
-}
-
-for (const [k, v] of Object.entries(defaults)) {
-  if (!process.env[k]) process.env[k] = v
-}
-
 const require = createRequire(import.meta.url)
+const envDefaults = require('../env-defaults.json')
+
+for (const [k, v] of Object.entries(envDefaults)) {
+  if (!k.startsWith('_') && !process.env[k]) process.env[k] = v
+}
+
 const pkg = require('electron-vite/package.json')
 const cli = join(dirname(require.resolve('electron-vite/package.json')), pkg.bin['electron-vite'] ?? 'dist/cli.js')
 

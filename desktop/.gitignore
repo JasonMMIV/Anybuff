@@ -1,4 +1,6 @@
 node_modules
 out
 dist
+build
+release-build
 *.log
