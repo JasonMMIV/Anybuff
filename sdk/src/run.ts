@@ -37,6 +37,7 @@ import { cloneDeep } from 'lodash'
 import { executeComposioToolViaServer } from './composio'
 import { getErrorStatusCode } from './error-utils'
 import { getAgentRuntimeImpl } from './impl/agent-runtime'
+import { applyFollowupsPolicy } from './impl/followups-policy'
 import { setProviderApiKeyOverrides } from './impl/model-provider'
 import { localGetUserInfoFromApiKey as getUserInfoFromApiKey } from './impl/local-database'
 import { initialSessionState, applyOverridesToSessionState } from './run-state'
@@ -458,6 +459,12 @@ async function runOnce({
     agentId = agent.id
   } else {
     agentId = agent
+  }
+  // AnyBuff followups policy (PLAN.md §10.0): suggest_followups disabled by
+  // default — stripped from toolNames and prompt guidance so it costs zero
+  // tokens. Re-enable with ANYBUFF_FOLLOWUPS=1.
+  if (agentDefinitions && agentDefinitions.length > 0) {
+    agentDefinitions = applyFollowupsPolicy(agentDefinitions) as typeof agentDefinitions
   }
   let sessionState: SessionState
   if (previousRun?.sessionState) {
