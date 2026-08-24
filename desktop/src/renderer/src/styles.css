@@ -4812,6 +4812,144 @@ select option {
   margin-top: 4px;
 }
 
+/* ─── Settings: About ────────────────────────────────── */
+.about-card {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 30px 20px 22px;
+}
+
+.about-logo {
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.about-name {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.about-version-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  padding: 2px 12px;
+}
+
+.about-hero .hint {
+  margin-top: 2px;
+  text-align: center;
+}
+
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.about-link:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.about-update-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.about-update-row .btn {
+  flex-shrink: 0;
+}
+
+.about-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.about-status.up-to-date {
+  color: var(--green);
+}
+
+.about-status.fail {
+  color: var(--red);
+}
+
+/* Update Available Modal */
+.update-modal {
+  width: min(440px, calc(100vw - 32px));
+  gap: 14px;
+}
+
+.update-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+:root[data-theme='light'] .update-modal-header {
+  color: var(--accent-strong);
+}
+
+.update-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-0);
+}
+
+.update-modal-body strong {
+  color: inherit;
+}
+
+.update-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.update-modal-footer .btn.primary {
+  text-decoration: none;
+}
+
 .settings-theme-row {
   display: flex;
   align-items: center;

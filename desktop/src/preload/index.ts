@@ -57,6 +57,10 @@ const api = {
   },
 
   getState: () => ipcRenderer.invoke('AnyBuff:getState'),
+  /** Running app version (Electron, sourced from package.json). */
+  getAppVersion: () => ipcRenderer.invoke('AnyBuff:getAppVersion'),
+  /** Compare the running version against the latest GitHub release. */
+  checkForUpdates: () => ipcRenderer.invoke('AnyBuff:checkForUpdates'),
   selectFolder: () => ipcRenderer.invoke('AnyBuff:selectFolder'),
   selectFiles: () => ipcRenderer.invoke('AnyBuff:selectFiles'),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),

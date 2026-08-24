@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColorTheme } from '../App'
 import {
   ActivityIcon,
+  AppIcon,
+  CheckCircleIcon,
   ChevronLeftIcon,
   EditIcon,
+  GitHubIcon,
+  InfoIcon,
   LayersIcon,
   MoonIcon,
   PaletteIcon,
@@ -20,7 +24,7 @@ import {
 import CustomSelect from './CustomSelect'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'about'
 
 export interface LocalAgentItem {
   id: string
@@ -159,6 +163,17 @@ const COLOR_THEMES: { id: ColorTheme; label: string; previewColor: string; descr
   { id: 'teal', label: 'Teal', previewColor: '#14b8a6', description: 'Clean modern cyan-teal with high-tech marine undertones' }
 ]
 
+const GITHUB_URL = 'https://github.com/JasonMMIV/Anybuff'
+
+interface UpdateCheckResult {
+  ok: boolean
+  updateAvailable?: boolean
+  currentVersion?: string
+  latestVersion?: string
+  url?: string
+  error?: string
+}
+
 import { getReasoningOptionsForModel } from '../utils/reasoning'
 
 let draftSeq = 0
@@ -238,6 +253,23 @@ export default function SettingsModal({
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle')
+  const [updateError, setUpdateError] = useState('')
+  const [pendingUpdate, setPendingUpdate] = useState<{ latestVersion: string; url: string } | null>(null)
+
+  // App version for the About tab
+  useEffect(() => {
+    if (typeof window.AnyBuff === 'undefined') return
+    void (async () => {
+      try {
+        const res = (await window.AnyBuff.getAppVersion()) as { version?: string }
+        if (res?.version) setAppVersion(res.version)
+      } catch {
+        // non-critical — leave the version blank rather than blocking Settings
+      }
+    })()
+  }, [])
 
   // Load initial settings
   useEffect(() => {
@@ -481,6 +513,32 @@ export default function SettingsModal({
     }
   }
 
+  const handleCheckForUpdates = async () => {
+    if (typeof window.AnyBuff === 'undefined') {
+      setUpdateStatus('error')
+      setUpdateError('Update check is unavailable in browser preview mode.')
+      return
+    }
+    setUpdateStatus('checking')
+    setUpdateError('')
+    try {
+      const res = (await window.AnyBuff.checkForUpdates()) as UpdateCheckResult
+      if (!res.ok) {
+        setUpdateStatus('error')
+        setUpdateError(res.error ?? 'Failed to check for updates.')
+        return
+      }
+      if (res.updateAvailable && res.latestVersion && res.url) {
+        setPendingUpdate({ latestVersion: res.latestVersion, url: res.url })
+      } else {
+        setUpdateStatus('up-to-date')
+      }
+    } catch (err) {
+      setUpdateStatus('error')
+      setUpdateError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const updateProvider = (id: string, patch: Partial<ProviderDraft>) => {
     setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))
   }
@@ -681,6 +739,11 @@ export default function SettingsModal({
       id: 'agents',
       label: 'Custom Agents',
       icon: <SpecialistIcon size={16} />
+    },
+    {
+      id: 'about',
+      label: 'About',
+      icon: <InfoIcon size={16} />
     }
   ]
 
@@ -732,6 +795,7 @@ export default function SettingsModal({
               {activeTab === 'theme' && 'Theme & Appearance'}
               {activeTab === 'routing' && 'Agent Routing'}
               {activeTab === 'agents' && 'Custom Agents'}
+              {activeTab === 'about' && 'About'}
             </h2>
             <p className="hint">
               {activeTab === 'providers' &&
@@ -1468,6 +1532,59 @@ export default function SettingsModal({
               )}
             </div>
           )}
+
+          {/* 6. About Tab */}
+          {activeTab === 'about' && (
+            <div className="settings-tab-content">
+              <div className="settings-section-card about-card">
+                <div className="about-hero">
+                  <AppIcon size={64} className="about-logo" />
+                  <div className="about-name">Anybuff</div>
+                  {appVersion && <span className="about-version-badge">v{appVersion}</span>}
+                  <p className="hint">Use any model with a team of specialized sub-agents.</p>
+                </div>
+
+                <div className="about-row">
+                  <span className="settings-field-label">GitHub</span>
+                  <a
+                    className="about-link"
+                    href={GITHUB_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open the Anybuff repository on GitHub"
+                  >
+                    <GitHubIcon size={13} />
+                    <span>JasonMMIV/Anybuff</span>
+                  </a>
+                </div>
+
+                <div className="about-row about-update-row">
+                  <div className="about-update-info">
+                    <span className="settings-field-label">Updates</span>
+                    {updateStatus === 'up-to-date' && (
+                      <span className="about-status up-to-date">
+                        <CheckCircleIcon size={13} /> You&rsquo;re up to date
+                      </span>
+                    )}
+                    {updateStatus === 'error' && <span className="about-status fail">{updateError}</span>}
+                    {(updateStatus === 'idle' || updateStatus === 'checking') && (
+                      <span className="hint-inline">Check GitHub for newer releases.</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={() => void handleCheckForUpdates()}
+                    disabled={updateStatus === 'checking'}
+                    title="Check GitHub for a newer release"
+                  >
+                    <RefreshIcon size={12} className={updateStatus === 'checking' ? 'spin-icon' : ''} />
+                    {updateStatus === 'checking' ? 'Checking…' : 'Check Update'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -1619,6 +1736,47 @@ export default function SettingsModal({
                   {preset.description && <div className="preset-card-desc">{preset.description}</div>}
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update Available Modal */}
+      {pendingUpdate && (
+        <div className="modal-backdrop" onClick={() => setPendingUpdate(null)}>
+          <div className="modal update-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="update-modal-header">
+              <SparklesIcon size={18} />
+              <span>Update Available</span>
+            </div>
+            <div className="update-modal-body">
+              <p>
+                A new version <strong>v{pendingUpdate.latestVersion}</strong> is available
+                {appVersion && (
+                  <>
+                    {' '}(current: <code>v{appVersion}</code>)
+                  </>
+                )}
+                .
+              </p>
+              <p className="hint">
+                Update now opens the GitHub release page in your browser, where you can download the
+                latest installer.
+              </p>
+            </div>
+            <div className="update-modal-footer">
+              <button type="button" className="btn ghost" onClick={() => setPendingUpdate(null)}>
+                Later
+              </button>
+              <a
+                className="btn primary"
+                href={pendingUpdate.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setPendingUpdate(null)}
+              >
+                <GitHubIcon size={13} /> Update now
+              </a>
             </div>
           </div>
         </div>

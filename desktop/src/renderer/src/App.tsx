@@ -1896,6 +1896,7 @@ export default function App() {
                     <AppIcon size={72} />
                   </div>
                   <h1>Anybuff</h1>
+                  <p className="welcome-sub">Use any model with a team of specialized sub-agents.</p>
                   <button className="btn primary big" onClick={() => void selectFolder()}>
                     <FolderIcon size={16} /> Select a Project Folder
                   </button>

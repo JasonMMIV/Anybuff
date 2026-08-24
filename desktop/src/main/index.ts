@@ -260,6 +260,25 @@ function listSkills(cwd: string): SkillInfo[] {
   return [...project, ...home]
 }
 
+/* ─── Updates (About tab) ─────────────────────────────── */
+
+const GITHUB_REPO_URL = 'https://github.com/JasonMMIV/Anybuff'
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/JasonMMIV/Anybuff/releases/latest'
+
+/** Returns > 0 when a > b (numeric major.minor.patch comparison, "v" prefix tolerated).
+ *  Pre-release suffixes (e.g. v0.2.0-beta1) parse their numeric part only — good enough
+ *  for a manual update prompt, not a full semver implementation. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
 function registerIpc(): void {
   /* ─── Window Controls (frameless title bar) ─────── */
   ipcMain.on('AnyBuff:windowMinimize', () => {
@@ -559,6 +578,42 @@ function registerIpc(): void {
       return { ok: true, models }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('AnyBuff:getAppVersion', () => {
+    return { version: app.getVersion() }
+  })
+
+  ipcMain.handle('AnyBuff:checkForUpdates', async () => {
+    const currentVersion = app.getVersion()
+    try {
+      const res = await fetch(GITHUB_RELEASES_API_URL, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AnyBuff-Desktop' },
+        signal: AbortSignal.timeout(15000)
+      })
+      if (res.status === 404) {
+        // Repository reachable but no published releases yet.
+        return { ok: true, updateAvailable: false, currentVersion, latestVersion: '', url: `${GITHUB_REPO_URL}/releases` }
+      }
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}`, currentVersion }
+      const data = (await res.json()) as { tag_name?: string; html_url?: string }
+      const tagName = (data.tag_name ?? '').trim()
+      if (!tagName) return { ok: false, error: 'Malformed response from GitHub releases API', currentVersion }
+      // Defense in depth: only ever hand renderer/main-browser an https://github.com/ URL.
+      const releaseUrl =
+        data.html_url && /^https:\/\/github\.com\//.test(data.html_url)
+          ? data.html_url
+          : `${GITHUB_REPO_URL}/releases/latest`
+      return {
+        ok: true,
+        updateAvailable: compareVersions(tagName, currentVersion) > 0,
+        currentVersion,
+        latestVersion: tagName.replace(/^v/i, ''),
+        url: releaseUrl
+      }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), currentVersion }
     }
   })
 }
