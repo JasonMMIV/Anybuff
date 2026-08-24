@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import AskUserBanner from './components/AskUserBanner'
 import Sidebar, { type ProjectRecord, type TaskRecord, type SearchResult } from './components/Sidebar'
 import RightPanel, { type RightTab } from './components/RightPanel'
 import SettingsModal from './components/SettingsModal'
@@ -328,6 +329,10 @@ export default function App() {
   /** Ticking clock so the retry strip shows a live countdown. */
   const [nowTick, setNowTick] = useState(() => Date.now())
   const [approvalRequest, setApprovalRequest] = useState<{ message: string; raw?: unknown } | null>(null)
+  // ask_user override: questions awaiting user answers (rendered as a banner)
+  const [pendingAskUser, setPendingAskUser] = useState<Array<Record<string, any>> | null>(null)
+  const [askSelections, setAskSelections] = useState<Record<number, string[]>>({})
+  const [askOther, setAskOther] = useState<Record<number, string>>({})
   const [activeTodos, setActiveTodos] = useState<TodoTodo[]>([])
   const [todoPanelCollapsed, setTodoPanelCollapsed] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
@@ -595,6 +600,14 @@ export default function App() {
       }
 
       // Approval requests pause the single active run wherever it is — always surface.
+      if ((event as any).type === 'ask_user') {
+        const qs = (event as any).raw
+        setPendingAskUser(Array.isArray(qs) && qs.length > 0 ? qs : null)
+        setAskSelections({})
+        setAskOther({})
+        return
+      }
+
       if (event.type === 'approval_request') {
         setApprovalRequest({ message: event.message ?? 'Permission requested', raw: event.raw })
         return
@@ -755,10 +768,6 @@ export default function App() {
         }
         if (event.toolName === 'query_index') {
           setEvents((prev) => [...prev.slice(-299), event])
-          if (event.queryIndex) {
-            setRightOpen(true)
-            setRightTab('index')
-          }
         }
         return
       }
@@ -1773,6 +1782,7 @@ export default function App() {
               onRemoveProject={onRemoveProject}
               onSettings={() => setShowSettings(true)}
               currentProjectPath={cwd}
+              activeTaskId={activeViewTaskId}
             />
 
             <main className="main">
@@ -1792,7 +1802,7 @@ export default function App() {
                       title={canSwitchProject ? 'Choose project' : 'Project is locked while a conversation is active'}
                     >
                       {projectName ? <FolderIcon size={13} /> : <AppIcon size={14} />}
-                      <span className="project-name">{projectName || 'AnyBuff Desktop'}</span>
+                      <span className="project-name">{projectName || 'AnyBuff'}</span>
                       {canSwitchProject && <ChevronDownIcon size={12} />}
                     </button>
                     {projectMenuOpen && canSwitchProject && (
@@ -1884,12 +1894,10 @@ export default function App() {
                   <div className="welcome-logo">
                     <AppIcon size={72} />
                   </div>
-                  <h1>AnyBuff Desktop</h1>
-                  <p className="welcome-sub">Local-first AI coding assistant</p>
+                  <h1>AnyBuff</h1>
                   <button className="btn primary big" onClick={() => void selectFolder()}>
                     <FolderIcon size={16} /> Select a Project Folder
                   </button>
-                  <p className="hint">BYOK mode: use your own API key. Code stays local, never uploaded to any server.</p>
                   {!hasProvider && (
                     <button className="link-btn" onClick={() => setShowSettings(true)}>
                       No provider configured? Open Settings →
@@ -2062,6 +2070,15 @@ export default function App() {
                     </div>
                   )}
 
+                  {pendingAskUser && pendingAskUser.length > 0 && (
+                    <AskUserBanner
+                      questions={pendingAskUser}
+                      onRespond={(payload) => {
+                        setPendingAskUser(null)
+                        window.AnyBuff.respondAskUser(payload)
+                      }}
+                    />
+                  )}
                   {activeTodos.length > 0 && viewRunning && (
                     <div className="todo-panel-dock">
                       <TodoCard todos={activeTodos} collapsed={todoPanelCollapsed} onToggleCollapse={() => setTodoPanelCollapsed((c) => !c)} />

@@ -3,7 +3,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen } from 'electr
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { basename, join } from 'path'
-import { attachWindow, startRun, abortRun, isRunning, getLastLocalAgents, respondApproval } from './start-run'
+import { attachWindow, startRun, abortRun, isRunning, getLastLocalAgents, respondApproval, respondAskUser } from './start-run'
 import { createLocalAgent, loadProjectLocalAgents, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, type CreateLocalAgentInput } from './agents/local-agents'
 import {
   getAppSettings,
@@ -522,6 +522,10 @@ function registerIpc(): void {
 
   ipcMain.handle('AnyBuff:projectName', (_e, cwd: string) => {
     return projectName(cwd)
+  })
+
+  ipcMain.handle('AnyBuff:respondAskUser', (_e, payload: unknown) => {
+    respondAskUser(payload)
   })
 
   ipcMain.handle('AnyBuff:fetchModels', async (_e, payload: { baseURL: string; apiKey: string; providerType: string; providerId?: string }) => {

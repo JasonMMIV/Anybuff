@@ -1,9 +1,8 @@
 import FileTree, { type TreeNode } from './FileTree'
 import ActivityPanel from './ActivityPanel'
-import CodebaseIndexPanel from './CodebaseIndexPanel'
 import type { UiEvent } from '../../../preload'
 
-export type RightTab = 'files' | 'activity' | 'index'
+export type RightTab = 'files' | 'activity'
 
 interface RightPanelProps {
   open: boolean
@@ -35,10 +34,6 @@ export default function RightPanel(props: RightPanelProps) {
           Activity & Diff
           {running && <span className="rail-dot" />}
         </button>
-        <button className={`tab ${tab === 'index' ? 'active' : ''}`} onClick={() => onTab('index')}>
-          Codebase Index
-          {events.some((event) => event.queryIndex) && <span className="tab-count">{events.filter((event) => event.queryIndex).length}</span>}
-        </button>
       </div>
 
       {tab === 'files' && cwd &&
@@ -60,7 +55,6 @@ export default function RightPanel(props: RightPanelProps) {
       {tab === 'files' && !cwd && <div className="panel-empty">Select a project folder first.</div>}
 
       {tab === 'activity' && <ActivityPanel events={events} cwd={cwd} onOpenFile={onOpenFile} />}
-      {tab === 'index' && <CodebaseIndexPanel events={events} cwd={cwd} onOpenFile={onOpenFile} />}
     </aside>
   )
 }

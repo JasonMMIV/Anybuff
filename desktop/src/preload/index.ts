@@ -88,6 +88,7 @@ const api = {
     mode?: 'default' | 'plan'
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),
   abort: () => ipcRenderer.invoke('AnyBuff:abort'),
+  respondAskUser: (payload: unknown) => ipcRenderer.invoke('AnyBuff:respondAskUser', payload),
   respondApproval: (approved: boolean) => ipcRenderer.invoke('AnyBuff:approvalResponse', approved),
   listFiles: (root: string) => ipcRenderer.invoke('AnyBuff:listFiles', root),
   listDir: (dir: string) => ipcRenderer.invoke('AnyBuff:listDir', dir),

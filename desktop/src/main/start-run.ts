@@ -274,6 +274,17 @@ let activeRunTaskId: string | null = null
 let mainWindow: BrowserWindow | null = null
 let pendingApprovalResolver: ((approved: boolean) => void) | null = null
 
+let pendingAskUserResolver: ((answers: unknown) => void) | null = null
+
+/** Resolve the in-flight ask_user override (null answers = skipped). */
+export function respondAskUser(answers: unknown): void {
+  if (pendingAskUserResolver) {
+    const fn = pendingAskUserResolver
+    pendingAskUserResolver = null
+    fn(answers ?? { skipped: true })
+  }
+}
+
 export function respondApproval(approved: boolean): void {
   if (pendingApprovalResolver) {
     const fn = pendingApprovalResolver
@@ -641,6 +652,24 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
             pendingApprovalResolver = resolve
           })
         },
+        overrideTools: {
+          ask_user: async (input: { questions?: unknown }) => {
+            const questions = Array.isArray(input?.questions) ? input.questions : []
+            if (!mainWindow || mainWindow.isDestroyed() || questions.length === 0) {
+              return [{ type: 'json', value: { skipped: true } }]
+            }
+            if (pendingAskUserResolver) {
+              const prev = pendingAskUserResolver
+              pendingAskUserResolver = null
+              prev({ skipped: true })
+            }
+            sendEvent({ type: 'ask_user', raw: questions } as never)
+            const answers: unknown = await new Promise((resolve) => {
+              pendingAskUserResolver = resolve as (v: unknown) => void
+            })
+            return [{ type: 'json', value: answers ?? { skipped: true } }]
+          },
+        },
         handleEvent: (event) => {
           const normalized = normalizeEvent(event)
           if (normalized.type !== 'ignored') {
@@ -768,6 +797,13 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       reason: 'error'
     }
   } finally {
+    // ask_user parked across abort/run-end: resolve as skipped
+    
+if (pendingAskUserResolver) {
+      const fnAsk = pendingAskUserResolver
+      pendingAskUserResolver = null
+      fnAsk({ skipped: true })
+    }
     if (pendingApprovalResolver) {
       const fn = pendingApprovalResolver
       pendingApprovalResolver = null
@@ -838,6 +874,13 @@ function autoRetryHeadline(reason: string | undefined): string {
 }
 
 export function abortRun(): void {
+  // ask_user parked across abort/run-end: resolve as skipped
+  
+if (pendingAskUserResolver) {
+    const fnAsk = pendingAskUserResolver
+    pendingAskUserResolver = null
+    fnAsk({ skipped: true })
+  }
   if (pendingApprovalResolver) {
     const fn = pendingApprovalResolver
     pendingApprovalResolver = null

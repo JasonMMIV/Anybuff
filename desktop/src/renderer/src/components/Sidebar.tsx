@@ -56,6 +56,8 @@ interface SidebarProps {
   onRemoveProject?: (project: ProjectRecord) => void
   onSettings: () => void
   currentProjectPath: string | null
+  /** Task currently open in the chat view — highlighted in the list. */
+  activeTaskId?: string | null
 }
 
 function timeAgo(ts: number): string {
@@ -113,11 +115,31 @@ export default function Sidebar(props: SidebarProps) {
     }
     window.addEventListener('pointerdown', dismiss)
     window.addEventListener('keydown', handleKeyDown)
-    return () => {
+    // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
+  const sortedProjects = [...props.projects]
+    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
+    .sort((a, b) => {
+      const am = a.tasks[0]?.createdAt ?? 0
+      const bm = b.tasks[0]?.createdAt ?? 0
+      if (bm !== am) return bm - am
+      return a.name.localeCompare(b.name)
+    })
+
+  return () => {
       window.removeEventListener('pointerdown', dismiss)
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [contextMenu, projectContextMenu])
+
+  // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
+  const sortedProjects = [...props.projects]
+    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
+    .sort((a, b) => {
+      const am = a.tasks[0]?.createdAt ?? 0
+      const bm = b.tasks[0]?.createdAt ?? 0
+      if (bm !== am) return bm - am
+      return a.name.localeCompare(b.name)
+    })
 
   return (
     <aside className={`sidebar ${props.open ? 'open' : 'closed'}`}>
@@ -184,10 +206,20 @@ export default function Sidebar(props: SidebarProps) {
 
       <div className="projects-list">
         {props.projects.length === 0 && <div className="nav-muted">No projects yet. Open a folder to start.</div>}
-        {props.projects.slice(0, 12).map((p) => {
+        {sortedProjects.slice(0, 12).map((p) => {
           const isOpen = expandedProject === p.path
           const isCurrent = p.path === props.currentProjectPath
-          return (
+          // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
+  const sortedProjects = [...props.projects]
+    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
+    .sort((a, b) => {
+      const am = a.tasks[0]?.createdAt ?? 0
+      const bm = b.tasks[0]?.createdAt ?? 0
+      if (bm !== am) return bm - am
+      return a.name.localeCompare(b.name)
+    })
+
+  return (
             <div key={p.path} className={`project-item ${isCurrent ? 'current' : ''}`}>
               <div
                 className="project-row"
@@ -260,7 +292,7 @@ export default function Sidebar(props: SidebarProps) {
                     ) : (
                       <button
                         key={t.id}
-                        className="task-row"
+                        className={`task-row ${props.activeTaskId === t.id ? 'active' : ''}`}
                         onClick={() => props.onOpenTask(p, t)}
                         onContextMenu={(e) => {
                           e.preventDefault()

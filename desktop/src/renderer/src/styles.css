@@ -36,6 +36,7 @@
   --green: #4cc38a;
   --green-soft: rgba(76, 195, 138, 0.12);
   --red: #ef6a6a;
+  --on-accent: #ffffff;
   --red-soft: rgba(239, 106, 106, 0.12);
   --yellow: #e5b567;
   --yellow-soft: rgba(229, 181, 103, 0.12);
@@ -153,6 +154,7 @@
   --accent: #f4f4f5;
   --accent-strong: #ffffff;
   --accent-soft: rgba(244, 244, 245, 0.12);
+  --on-accent: #0a0a0a;
   --code-bg: #050507;
 }
 
@@ -1428,7 +1430,7 @@ textarea {
 .btn.primary {
   background: var(--accent-strong);
   border-color: transparent;
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .btn.primary:hover:not(:disabled) {
@@ -1442,7 +1444,7 @@ textarea {
 .btn.accent {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 :root[data-theme='light'] .btn.accent {
@@ -5049,7 +5051,7 @@ select option {
 .agent-template.selected,
 .agent-capability.selected { background: var(--bg-1); border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), 0 2px 6px var(--shadow-sm); }
 .agent-template-dot { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--bg-3); color: var(--accent); font-size: 12px; font-weight: 700; }
-.agent-template.selected .agent-template-dot { background: var(--accent-strong); color: #fff; }
+.agent-template.selected .agent-template-dot { background: var(--accent-strong); color: var(--on-accent); }
 .agent-template strong,
 .agent-template small,
 .agent-capability strong,
