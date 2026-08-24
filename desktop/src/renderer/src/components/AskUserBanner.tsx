@@ -62,7 +62,7 @@ export default function AskUserBanner({
           onClick={() => setCollapsed((v) => !v)}
           style={{ flexShrink: 0 }}
         >
-          {collapsed ? '▾' : '▴'}
+          {collapsed ? '▴' : '▾'}
         </button>
       </div>
       {!collapsed && questions.map((q: any, qi: number) => {

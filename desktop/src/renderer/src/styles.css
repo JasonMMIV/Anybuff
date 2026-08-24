@@ -4932,7 +4932,7 @@ select option {
   font-size: 10px;
 }
 
-.agent-wizard-step.active .agent-wizard-step-number { background: var(--accent-strong); border-color: transparent; color: #fff; }
+.agent-wizard-step.active .agent-wizard-step-number { background: var(--accent-strong); border-color: transparent; color: var(--on-accent); }
 .agent-wizard-step.complete .agent-wizard-step-number { border-color: rgba(76, 195, 138, .4); color: var(--green); }
 .agent-wizard-step strong,
 .agent-wizard-step small { display: block; }
