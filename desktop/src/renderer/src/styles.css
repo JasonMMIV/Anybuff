@@ -175,6 +175,7 @@
   --accent-strong: #09090b;
   --accent-soft: rgba(24, 24, 27, 0.08);
   --code-bg: #f4f4f5;
+  --on-accent: #ffffff;
 }
 
 /* 2. Neutral Grey (中性灰) */
@@ -658,11 +659,9 @@ textarea {
 
 .task-row.active,
 .task-row.selected {
-  background: var(--bg-1);
+  background: var(--bg-hover);
   color: var(--text-0);
-  font-weight: 600;
-  border-color: var(--border);
-  box-shadow: 0 1px 3px var(--shadow-sm);
+  border-color: transparent;
 }
 
 .task-row.editing {
@@ -863,7 +862,7 @@ textarea {
 
 /* ─── Right sidebar (tabs + content) ─────────────────── */
 .activity-panel.right-content-panel {
-  width: 306px;
+  width: 276px;
   flex: 0 0 auto;
   background: var(--bg-0);
   border-left: 1px solid var(--border);
@@ -1444,7 +1443,7 @@ textarea {
 .btn.accent {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: var(--on-accent);
+  color: #fff;
 }
 
 :root[data-theme='light'] .btn.accent {
@@ -3070,8 +3069,8 @@ select option {
 }
 
 .file-preview-content {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: inherit;
+  font-size: 13.5px;
   line-height: 1.6;
   padding: 12px 14px;
   overflow-x: hidden;

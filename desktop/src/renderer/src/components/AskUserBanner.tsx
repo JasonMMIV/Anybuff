@@ -28,8 +28,10 @@ export default function AskUserBanner({
 }) {
   const [selections, setSelections] = useState<Record<number, string[]>>({})
   const [other, setOther] = useState<Record<number, string>>({})
+  const [collapsed, setCollapsed] = useState(false)
 
   const submit = () => {
+    if (collapsed) return
     const answers: AskUserAnswer[] = []
     questions.forEach((q, qi) => {
       const sel = selections[qi] ?? []
@@ -49,8 +51,21 @@ export default function AskUserBanner({
 
   return (
     <div className="resume-banner" style={{ border: '1px solid var(--accent)', flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-      <span className="resume-text"><strong>The agent has questions:</strong></span>
-      {questions.map((q: any, qi: number) => {
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span className="resume-text">
+          <strong>The agent has questions</strong>
+          <span style={{ color: 'var(--text-2)', fontWeight: 400 }}> — {questions.length} question{questions.length > 1 ? 's' : ''}</span>
+        </span>
+        <button
+          className="mini-btn"
+          title={collapsed ? 'Expand' : 'Collapse'}
+          onClick={() => setCollapsed((v) => !v)}
+          style={{ flexShrink: 0 }}
+        >
+          {collapsed ? '▾' : '▴'}
+        </button>
+      </div>
+      {!collapsed && questions.map((q: any, qi: number) => {
         const opts: any[] = Array.isArray(q.options) ? q.options : []
         const sel = selections[qi] ?? []
         const multi = q.multiSelect === true
@@ -104,6 +119,7 @@ export default function AskUserBanner({
           </fieldset>
         )
       })}
+      {!collapsed && (
       <div style={{ display: 'flex', gap: 8 }}>
         <button className="btn primary small" onClick={submit}>
           Submit answers
@@ -115,6 +131,7 @@ export default function AskUserBanner({
           Skip
         </button>
       </div>
+      )}
     </div>
   )
 }

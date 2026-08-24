@@ -26,6 +26,7 @@ export interface TaskRecord {
   id: string
   prompt: string
   createdAt: number
+  updatedAt?: number
   messages?: unknown[]
 }
 
@@ -115,15 +116,6 @@ export default function Sidebar(props: SidebarProps) {
     }
     window.addEventListener('pointerdown', dismiss)
     window.addEventListener('keydown', handleKeyDown)
-    // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
-  const sortedProjects = [...props.projects]
-    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
-    .sort((a, b) => {
-      const am = a.tasks[0]?.createdAt ?? 0
-      const bm = b.tasks[0]?.createdAt ?? 0
-      if (bm !== am) return bm - am
-      return a.name.localeCompare(b.name)
-    })
 
   return () => {
       window.removeEventListener('pointerdown', dismiss)
@@ -131,16 +123,17 @@ export default function Sidebar(props: SidebarProps) {
     }
   }, [contextMenu, projectContextMenu])
 
-  // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
+
+  // Bug 3: newest-first — projects by latest task activity, tasks by recency
   const sortedProjects = [...props.projects]
-    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
+    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) =>
+      ((b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))) }))
     .sort((a, b) => {
-      const am = a.tasks[0]?.createdAt ?? 0
-      const bm = b.tasks[0]?.createdAt ?? 0
+      const am = a.tasks[0] ? (a.tasks[0].updatedAt ?? a.tasks[0].createdAt) : 0
+      const bm = b.tasks[0] ? (b.tasks[0].updatedAt ?? b.tasks[0].createdAt) : 0
       if (bm !== am) return bm - am
       return a.name.localeCompare(b.name)
     })
-
   return (
     <aside className={`sidebar ${props.open ? 'open' : 'closed'}`}>
       <div className="sidebar-top">
@@ -209,15 +202,6 @@ export default function Sidebar(props: SidebarProps) {
         {sortedProjects.slice(0, 12).map((p) => {
           const isOpen = expandedProject === p.path
           const isCurrent = p.path === props.currentProjectPath
-          // Bug 3: newest-first — projects by latest task activity, tasks by createdAt desc
-  const sortedProjects = [...props.projects]
-    .map((p) => ({ ...p, tasks: [...p.tasks].sort((a, b) => b.createdAt - a.createdAt) }))
-    .sort((a, b) => {
-      const am = a.tasks[0]?.createdAt ?? 0
-      const bm = b.tasks[0]?.createdAt ?? 0
-      if (bm !== am) return bm - am
-      return a.name.localeCompare(b.name)
-    })
 
   return (
             <div key={p.path} className={`project-item ${isCurrent ? 'current' : ''}`}>
@@ -309,7 +293,7 @@ export default function Sidebar(props: SidebarProps) {
                           <span className="spinner-ring task-running-spinner" />
                         ) : null}
                         <span className="task-text">{t.prompt}</span>
-                        <span className="task-time">{timeAgo(t.createdAt)}</span>
+                        <span className="task-time">{timeAgo(t.updatedAt ?? t.createdAt)}</span>
                       </button>
                     )
                   )}

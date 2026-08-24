@@ -49,6 +49,7 @@ export interface TaskRecord {
   id: string
   prompt: string
   createdAt: number
+  updatedAt?: number
 }
 
 export interface ProjectRecord {
@@ -251,7 +252,25 @@ export function loadSettings(): PersistedSettings {
 
 function saveSettings(settings: PersistedSettings): void {
   writeFileAtomic(settingsPath(), JSON.stringify(settings, null, 2))
+}
+
+
+/** Mark a task as recently active (drives sidebar newest-first sorting). */
+function touchTaskUpdated(taskId: string): void {
+  try {
+    const s = loadSettings()
+    for (const p of s.projects ?? []) {
+      const t = p.tasks.find((x) => x.id === taskId)
+      if (t) {
+        t.updatedAt = Date.now()
+        saveSettings(s)
+        return
+      }
+    }
+  } catch {
+    // best-effort
   }
+}
 
 export function getAppSettings(): AppSettings {
   const s = loadSettings()
@@ -485,7 +504,26 @@ export function listProjects(): ProjectRecord[] {
     }
   }
   if (migrated) saveSettings(s)
-  return projects
+    // Bug 3: newest-first — projects by latest task activity, tasks by recency
+  const stampedProjects = projects.map((p) => ({
+    ...p,
+    tasks: [...p.tasks].sort(
+      (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+    ),
+  }))
+  stampedProjects.sort((a, b) => {
+    const am = Math.max(
+      ...a.tasks.map((t) => t.updatedAt ?? t.createdAt),
+      0,
+    )
+    const bm = Math.max(
+      ...b.tasks.map((t) => t.updatedAt ?? t.createdAt),
+      0,
+    )
+    if (bm !== am) return bm - am
+    return a.name.localeCompare(b.name)
+  })
+  return stampedProjects
 }
 
 function isValidTaskId(taskId: string): boolean {
@@ -514,6 +552,7 @@ export function saveTaskTranscript(taskId: string, messages: TaskMessage[]): boo
     if (!file) return false
     mkdirSync(dirname(file), { recursive: true })
     writeFileAtomic(file, JSON.stringify(messages))
+    touchTaskUpdated(taskId)
     return true
   } catch {
     return false
@@ -527,6 +566,7 @@ export function saveTaskRunState(taskId: string, runState: unknown): boolean {
     if (!file) return false
     mkdirSync(dirname(file), { recursive: true })
     writeFileAtomic(file, JSON.stringify(runState))
+    touchTaskUpdated(taskId)
     return true
   } catch {
     return false
