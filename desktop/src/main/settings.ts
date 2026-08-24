@@ -31,7 +31,7 @@ export interface TaskMessage {
   text?: string
   reasoning?: string
   files?: FileChange[]
-  tool?: { toolName: string; status: string; agentType?: string; detail?: string; todos?: unknown[] }
+  tool?: { toolName: string; status: string; agentType?: string; agentName?: string; detail?: string; todos?: unknown[] }
 }
 
 export interface FileChange {

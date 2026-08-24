@@ -11,37 +11,13 @@ export interface ToolItem {
   toolName: string
   status: 'running' | 'done' | 'error'
   agentType?: string
+  /** Human-readable agent name; sub-agent cards title as `Sub-agent: <agentName ?? agentType>`. */
+  agentName?: string
   detail?: string
   todos?: TodoTodo[]
 }
 
 function toolLabel(name: string): string {
-  if (name.startsWith('agent:')) {
-    const type = name.slice(6)
-    switch (type) {
-      case 'researcher-web':
-      case 'researcher':
-        // Distinct from the web_search TOOL card ('Web search') to avoid confusion.
-        return 'Web research'
-      case 'researcher-docs':
-        return 'Docs search'
-      case 'file-picker':
-      case 'file-explorer':
-        return 'Find files'
-      case 'code-searcher':
-        return 'Search code'
-      case 'code-reviewer':
-      case 'reviewer':
-        return 'Code review'
-      case 'editor':
-        return 'Edit code'
-      case 'thinker':
-      case 'decomposing-thinker':
-        return 'Deep thinking'
-      default:
-        return `Sub-agent: ${type}`
-    }
-  }
   switch (name) {
     case 'read_files': return 'Read files'
     case 'edit_transaction': return 'Edit transaction'
@@ -246,6 +222,10 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
     ? `${tool.todos!.filter((t) => t.completed).length}/${tool.todos!.length} completed`
     : ''
 
+  const label = tool.toolName.startsWith('agent:')
+    ? `Sub-agent: ${tool.agentName || tool.toolName.slice('agent:'.length)}`
+    : toolLabel(tool.toolName)
+
   return (
     <div className={`tool-card ${tool.status}${running ? ' running' : ''}`}>
       <div className="tool-card-head" onClick={() => setOpen((o) => !o)}>
@@ -256,7 +236,7 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
             <TriangleIcon open={open} size={9} />
           </span>
         )}
-        <span className="tool-name">{toolLabel(tool.toolName)}</span>
+        <span className="tool-name">{label}</span>
         {tool.agentType && <span className="tool-agent">{tool.agentType}</span>}
         {hasTodos && <span className="todo-summary-badge">{todoSummary}</span>}
         {tool.status === 'running' && <span className="tool-status-text">Running…</span>}

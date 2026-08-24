@@ -21,6 +21,8 @@ export interface UiEvent {
   toolName?: string
   status?: string
   agentType?: string
+  /** Human-readable agent name from the runtime (falls back to agentType in the UI). */
+  agentName?: string
   model?: string
   message?: string
   files?: string[]

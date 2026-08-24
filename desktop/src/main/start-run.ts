@@ -44,6 +44,8 @@ export interface UiEvent {
   toolName?: string
   status?: string
   agentType?: string
+  /** Human-readable agent name from the runtime (falls back to agentType in the UI). */
+  agentName?: string
   model?: string
   message?: string
   files?: string[]
@@ -442,11 +444,12 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
     }
     case 'subagent_start':
       base.agentType = String(e.agentType ?? '')
-      base.model = e.model ? String(e.model) : undefined
+      base.agentName = typeof e.displayName === 'string' && e.displayName ? e.displayName : undefined
       if (e.prompt) base.message = String(e.prompt)
       break
     case 'subagent_finish':
       base.agentType = String(e.agentType ?? '')
+      base.agentName = typeof e.displayName === 'string' && e.displayName ? e.displayName : undefined
       base.status = 'done'
       if (e.output) {
         try {

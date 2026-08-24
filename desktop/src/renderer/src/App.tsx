@@ -799,6 +799,7 @@ export default function App() {
           toolName: `agent:${agentType}`,
           status: 'running',
           agentType: agentType,
+          agentName: event.agentName,
           detail: event.message
         }
         setChatItems((prev) => [...prev, { kind: 'tool', tool }])

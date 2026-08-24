@@ -26,6 +26,7 @@ export interface StoreEvent {
   toolName?: string
   status?: string
   agentType?: string
+  agentName?: string
   message?: string
   files?: string[]
   changedFiles?: FileChange[]
@@ -169,7 +170,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
       const agentType = ev.agentType ?? 'subagent'
       entry.transcript.push({
         kind: 'tool',
-        tool: { toolName: `agent:${agentType}`, status: 'running', agentType, detail: ev.message }
+        tool: { toolName: `agent:${agentType}`, status: 'running', agentType, agentName: ev.agentName, detail: ev.message }
       })
       persistSoon(entry)
       return
