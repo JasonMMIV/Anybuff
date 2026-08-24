@@ -1852,11 +1852,13 @@ textarea {
   color: var(--text-1);
 }
 
-/* Tables: the table itself becomes a horizontally scrollable block
-   (same technique as opencode), so it can never widen the page */
+/* Tables: constrained to the page width; long cell content wraps
+   (same word-break treatment as code blocks). Horizontal scroll kept
+   only as a safety net for unbreakable strings */
 .markdown table {
   border-collapse: collapse;
   width: 100%;
+  max-width: 100%;
   font-size: 13.5px;
   display: block;
   overflow-x: auto;
@@ -1867,7 +1869,9 @@ textarea {
 .markdown td {
   border: 1px solid var(--border);
   padding: 6px 10px;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .markdown th {
