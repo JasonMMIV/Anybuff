@@ -249,8 +249,14 @@ export const runAgentStep = async (
     onResponseChunk,
     promptAiSdk,
     additionalToolDefinitions,
+    resolveContextWindow,
   } = params
   let agentState = params.agentState
+
+  // Resolve the actual context window: provider-config value > hardcoded per-model budget.
+  const maxContextTokens =
+    resolveContextWindow?.(params.agentId, agentTemplate.model) ??
+    contextPrunerBudgetForModel(agentTemplate.model)
 
   const { agentContext } = agentState
 
@@ -653,7 +659,7 @@ export const runAgentStep = async (
   onResponseChunk({
     type: 'context_window',
     used: agentState.contextTokenCount,
-    max: contextPrunerBudgetForModel(agentTemplate.model),
+    max: maxContextTokens,
   })
 
   return {
@@ -807,7 +813,13 @@ export async function loopAgentSteps(
     userInputId,
     clientEnv,
     ciEnv,
+    resolveContextWindow: resolveContextWindowFromParams,
   } = params
+
+  // Resolve the actual context window for the loop scope (used by compaction).
+  const loopMaxContextTokens =
+    resolveContextWindowFromParams?.(params.agentId, agentTemplate.model) ??
+    contextPrunerBudgetForModel(agentTemplate.model)
 
   if (signal.aborted) {
     return {
@@ -1088,14 +1100,14 @@ export async function loopAgentSteps(
             : {}),
           messages: currentAgentState.messageHistory,
           contextTokenCount: currentAgentState.contextTokenCount,
-          maxContextLength: contextPrunerBudgetForModel(agentTemplate.model),
+          maxContextLength: loopMaxContextTokens,
           logger,
           runId,
           onCompaction: (trigger) => {
             if (initialAgentState.parentId) return
             params.onCompaction?.({
               trigger,
-              thresholdTokens: contextPrunerBudgetForModel(agentTemplate.model),
+              thresholdTokens: loopMaxContextTokens,
             })
           },
         })

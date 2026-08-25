@@ -58,6 +58,14 @@ export type AgentRuntimeDeps = {
   /** Optional debug trace of agent message histories (see TraceWriter) */
   traceWriter?: TraceWriter
   fetch: typeof globalThis.fetch
+
+  /**
+   * Resolve the actual context window for a given agent/model from the
+   * provider config. When provided, the context meter and pruner use the
+   * real window instead of the hardcoded 250k/400k per-model budget.
+   * Fallback: contextPrunerBudgetForModel(agentTemplate.model).
+   */
+  resolveContextWindow?: (agentId?: string, model?: string) => number | undefined
 }
 
 /** Per-run dependencies */

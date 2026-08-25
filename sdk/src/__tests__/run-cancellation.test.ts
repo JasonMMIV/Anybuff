@@ -197,7 +197,7 @@ describe('Run Cancellation Handling', () => {
     expect(messageHistory.length).toBe(3)
   })
 
-  it.skip('extracts error code and message from AI SDK responseBody on 403', async () => {
+  it('extracts status code and message from provider responseBody on 401', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -211,21 +211,20 @@ describe('Run Cancellation Handling', () => {
     spyOn(databaseModule, 'finishAgentRun').mockResolvedValue(undefined)
     spyOn(databaseModule, 'addAgentStep').mockResolvedValue('step-1')
 
-    // Simulate AI SDK's AI_APICallError with responseBody (what the server returns for free_mode_unavailable)
-    const apiError = new Error('Forbidden') as Error & {
+    // BYOK: provider returns 401 with JSON error body
+    const apiError = new Error('Unauthorized') as Error & {
       statusCode: number
       responseBody: string
     }
-    apiError.statusCode = 403
+    apiError.statusCode = 401
     apiError.responseBody = JSON.stringify({
-      error: 'free_mode_unavailable',
-      message: 'Free mode is not available in your country.',
-      countryCode: 'US',
-      countryBlockReason: 'anonymous_network',
-      ipPrivacySignals: ['vpn', 'hosting'],
+      error: 'invalid_api_key',
+      message: 'Invalid API key provided.',
     })
 
-    spyOn(mainPromptModule, 'callMainPrompt').mockRejectedValue(apiError)
+    spyOn(mainPromptModule, 'callMainPrompt').mockImplementation(async () => {
+      throw apiError
+    })
 
     const client = new CodebuffClient({
       apiKey: 'test-key',
@@ -242,21 +241,13 @@ describe('Run Cancellation Handling', () => {
       message: string
       statusCode?: number
       error?: string
-      countryCode?: string
-      countryBlockReason?: string
-      ipPrivacySignals?: string[]
     }
-    // Should use the message from the response body, not the generic "Forbidden"
-    expect(output.message).toBe('Free mode is not available in your country.')
-    expect(output.statusCode).toBe(403)
-    // Should propagate the error code so isFreeModeUnavailableError can match
-    expect(output.error).toBe('free_mode_unavailable')
-    expect(output.countryCode).toBe('US')
-    expect(output.countryBlockReason).toBe('anonymous_network')
-    expect(output.ipPrivacySignals).toEqual(['vpn', 'hosting'])
+    expect(output.message).toBe('Invalid API key provided.')
+    expect(output.statusCode).toBe(401)
+    expect(output.error).toBe('invalid_api_key')
   })
 
-  it.skip('extracts error code and message from nested AI SDK retry errors', async () => {
+  it('extracts error details from nested AI SDK retry errors', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -270,24 +261,24 @@ describe('Run Cancellation Handling', () => {
     spyOn(databaseModule, 'finishAgentRun').mockResolvedValue(undefined)
     spyOn(databaseModule, 'addAgentStep').mockResolvedValue('step-1')
 
-    const apiError = new Error('Conflict') as Error & {
+    // BYOK: provider returns 500 with JSON error body, wrapped in RetryError
+    const apiError = new Error('Internal Server Error') as Error & {
       statusCode: number
       responseBody: string
     }
-    apiError.statusCode = 409
+    apiError.statusCode = 500
     apiError.responseBody = JSON.stringify({
-      error: 'session_model_mismatch',
-      message:
-        'This session is bound to deepseek; restart freebuff to switch models.',
+      error: 'server_overloaded',
+      message: 'The provider is temporarily unavailable.',
     })
 
-    spyOn(mainPromptModule, 'callMainPrompt').mockRejectedValue(
-      new RetryError({
-        message: 'Failed after 4 attempts. Last error: Conflict',
+    spyOn(mainPromptModule, 'callMainPrompt').mockImplementation(async () => {
+      throw new RetryError({
+        message: 'Failed after 3 attempts. Last error: Internal Server Error',
         reason: 'maxRetriesExceeded',
         errors: [apiError],
-      }),
-    )
+      })
+    })
 
     const client = new CodebuffClient({
       apiKey: 'test-key',
@@ -304,14 +295,12 @@ describe('Run Cancellation Handling', () => {
       statusCode?: number
       error?: string
     }
-    expect(output.message).toBe(
-      'This session is bound to deepseek; restart freebuff to switch models.',
-    )
-    expect(output.statusCode).toBe(409)
-    expect(output.error).toBe('session_model_mismatch')
+    expect(output.message).toBe('The provider is temporarily unavailable.')
+    expect(output.statusCode).toBe(500)
+    expect(output.error).toBe('server_overloaded')
   })
 
-  it.skip('extracts error code from responseBody for account_suspended 403', async () => {
+  it('extracts error code from responseBody for content policy 403', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -325,17 +314,20 @@ describe('Run Cancellation Handling', () => {
     spyOn(databaseModule, 'finishAgentRun').mockResolvedValue(undefined)
     spyOn(databaseModule, 'addAgentStep').mockResolvedValue('step-1')
 
+    // BYOK: provider returns 403 content policy violation
     const apiError = new Error('Forbidden') as Error & {
       statusCode: number
       responseBody: string
     }
     apiError.statusCode = 403
     apiError.responseBody = JSON.stringify({
-      error: 'account_suspended',
-      message: 'Your account has been suspended due to billing issues.',
+      error: 'content_policy_violation',
+      message: 'Request blocked by content filter.',
     })
 
-    spyOn(mainPromptModule, 'callMainPrompt').mockRejectedValue(apiError)
+    spyOn(mainPromptModule, 'callMainPrompt').mockImplementation(async () => {
+      throw apiError
+    })
 
     const client = new CodebuffClient({
       apiKey: 'test-key',
@@ -352,14 +344,12 @@ describe('Run Cancellation Handling', () => {
       statusCode?: number
       error?: string
     }
-    expect(output.message).toBe(
-      'Your account has been suspended due to billing issues.',
-    )
+    expect(output.message).toBe('Request blocked by content filter.')
     expect(output.statusCode).toBe(403)
-    expect(output.error).toBe('account_suspended')
+    expect(output.error).toBe('content_policy_violation')
   })
 
-  it.skip('falls back to error.message when responseBody is not valid JSON', async () => {
+  it('falls back to error.message when responseBody is not valid JSON', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -380,7 +370,9 @@ describe('Run Cancellation Handling', () => {
     apiError.statusCode = 403
     apiError.responseBody = 'not valid json'
 
-    spyOn(mainPromptModule, 'callMainPrompt').mockRejectedValue(apiError)
+    spyOn(mainPromptModule, 'callMainPrompt').mockImplementation(async () => {
+      throw apiError
+    })
 
     const client = new CodebuffClient({
       apiKey: 'test-key',
@@ -402,7 +394,7 @@ describe('Run Cancellation Handling', () => {
     expect(output.error).toBeUndefined()
   })
 
-  it.skip('preserves user message when callMainPrompt throws an error', async () => {
+  it('preserves user message when callMainPrompt throws an error', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',
@@ -417,9 +409,9 @@ describe('Run Cancellation Handling', () => {
     spyOn(databaseModule, 'addAgentStep').mockResolvedValue('step-1')
 
     // Simulate callMainPrompt throwing an error (network failure, server error, etc.)
-    spyOn(mainPromptModule, 'callMainPrompt').mockRejectedValue(
-      new Error('Network connection failed'),
-    )
+    spyOn(mainPromptModule, 'callMainPrompt').mockImplementation(async () => {
+      throw new Error('Network connection failed')
+    })
 
     const client = new CodebuffClient({
       apiKey: 'test-key',
@@ -457,7 +449,7 @@ describe('Run Cancellation Handling', () => {
     expect(textContent!.text).toContain('Please fix the bug in my code')
   })
 
-  it.skip('does not add empty assistant message when no streaming content', async () => {
+  it('does not add empty assistant message when no streaming content', async () => {
     spyOn(databaseModule, 'getUserInfoFromApiKey').mockResolvedValue({
       id: 'user-123',
       email: 'test@example.com',

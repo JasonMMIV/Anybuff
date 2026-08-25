@@ -14,6 +14,7 @@ import {
   localStartAgentRun,
 } from './local-database'
 import { promptAiSdk, promptAiSdkStream, promptAiSdkStructured } from './llm'
+import { resolveModelContextWindow } from './model-provider'
 
 import type {
   AgentRuntimeDeps,
@@ -120,6 +121,9 @@ export function getAgentRuntimeImpl(
     traceWriter,
     fetch: globalThis.fetch,
 
+    // Context window: provider-config aware (falls back to hardcoded budget)
+    resolveContextWindow: (agentId, model) => resolveModelContextWindow({ agentId, model }),
+
     // Client callbacks (in-process; historically WebSocket seams)
     handleStepsLogChunk,
     requestToolCall,
@@ -129,8 +133,9 @@ export function getAgentRuntimeImpl(
     sendAction,
     sendSubagentChunk,
 
+
     apiKey,
-  }
+  } satisfies AgentRuntimeDeps & AgentRuntimeScopedDeps
 }
 
 const noopLogger: Logger = {
