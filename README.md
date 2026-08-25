@@ -1,12 +1,15 @@
 # Anybuff
 
-**A local-first, bring-your-own-key (BYOK) coding agent for Windows**, built on
-the [Freebuff](https://github.com/CodebuffAI/freebuff) multi-agent architecture.
+[English](./README.md) | [繁體中文](./README.zh-TW.md)
+
+**A bring-your-own-key (BYOK) coding agent for Windows**, built on the
+[Freebuff](https://github.com/CodebuffAI/freebuff) multi-agent architecture.
 
 Anybuff runs the Freebuff agent runtime **entirely in-process** — no hosted
 backend, no ads, no credits. You connect your own OpenAI-compatible or
-Anthropic-compatible endpoints (OpenAI, Anthropic, Mistral, DeepSeek, GLM,
-OpenRouter, Ollama, LM Studio, vLLM …) and pay your providers directly.
+Anthropic-compatible endpoints — cloud APIs (OpenAI, Anthropic, Mistral,
+DeepSeek, GLM, OpenRouter …) or fully local ones (Ollama, LM Studio, vLLM) —
+and pay your providers directly.
 
 ```
 ┌─────────────────────────── Anybuff Desktop ───────────────────────────┐
@@ -43,15 +46,13 @@ sensitive-file filter.
 
 ## Quick start
 
-```powershell
-bun install
-bun run build:sdk     # bundle @codebuff/sdk into sdk/dist
-bun run dev           # launch Anybuff Desktop
-```
-
-First run: pick a project folder (try `desktop/demo-project`), open Settings,
-add a provider (baseURL + API key — keys are DPAPI-encrypted via Electron
-safeStorage), fetch models, select one, and start chatting.
+1. Download **`AnyBuff-Setup-<version>.exe`** from the
+   [latest release](https://github.com/JasonMMIV/Anybuff/releases/latest) and
+   run it. The installer is unsigned, so SmartScreen shows "Unknown publisher"
+   — click *More info → Run anyway*.
+2. Pick a project folder (try `desktop/demo-project`), open Settings,
+   add a provider (baseURL + API key — keys are DPAPI-encrypted via Electron
+   safeStorage), fetch models, select one, and start chatting.
 
 ## Repository layout
 
@@ -66,7 +67,7 @@ safeStorage), fetch models, select one, and start chatting.
 | `scripts/generate-desktop-agents.ts` | Regenerates `desktop/src/main/agents/bundled-agents.ts` from upstream `agents/` with desktop patches baked in |
 | `cli/` | Upstream CLI source kept on disk but OUT of the build graph (v2 candidate) |
 
-## Key behaviors (see PLAN.md §10 ledger)
+## Key behaviors
 
 - **suggest_followups disabled by default** (`ANYBUFF_FOLLOWUPS=1` re-enables).
 - **context-pruner activity hidden** in the desktop UI (still runs; zero LLM).
@@ -75,10 +76,11 @@ safeStorage), fetch models, select one, and start chatting.
   observability under `[anybuff-compat]`.
 - API keys: DPAPI-encrypted at rest, delivered to the SDK through an injection
   channel, scrubbed from every child-process environment.
-- Atomic config/checkpoint writes per PLAN §9.5 (fsync, rename-replace,
-  never pre-delete).
+- Atomic config/checkpoint writes (fsync, rename-replace, never pre-delete).
 
 ## Development
+
+For contributors building from source (end users only need the installer):
 
 ```powershell
 bun run build:sdk        # rebuild SDK after touching sdk/, packages/, common/
@@ -88,8 +90,7 @@ bun scripts/smoke-sdk.ts # headless end-to-end BYOK check (needs a real key)
 ```
 
 Upstream sync: internal packages keep their `@codebuff/*` names on purpose so
-`git merge` from CodebuffAI/freebuff stays viable. Intentional deviations are
-logged in PLAN.md §10.
+`git merge` from CodebuffAI/freebuff stays viable.
 
 ## License
 

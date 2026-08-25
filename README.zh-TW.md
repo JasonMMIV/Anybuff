@@ -1,10 +1,10 @@
 # Anybuff
 
-[English](./README.md) | 简体中文
+[English](./README.md) | 繁體中文
 
-**本地優先、自帶金鑰（BYOK）的 Windows 編程代理**，基於 [Freebuff](https://github.com/CodebuffAI/freebuff) 多智能體架構。
+**自帶金鑰（BYOK）的 Windows 編程代理**，基於 [Freebuff](https://github.com/CodebuffAI/freebuff) 多智能體架構。
 
-Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無廣告、無點數。連接你自己的 OpenAI 相容或 Anthropic 相容端點（OpenAI、Anthropic、Mistral、DeepSeek、GLM、OpenRouter、Ollama、LM Studio、vLLM 等），直接向你的供應商付費。
+Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無廣告、無點數。連接你自己的 OpenAI 相容或 Anthropic 相容端點——雲端 API（OpenAI、Anthropic、Mistral、DeepSeek、GLM、OpenRouter 等）或全本地端點（Ollama、LM Studio、vLLM）——直接向你的供應商付費。
 
 ```
 ┌─────────────────────────── Anybuff Desktop ───────────────────────────┐
@@ -38,15 +38,12 @@ Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無�
 
 ## 快速開始
 
-```powershell
-bun install
-bun run build:sdk     # 將 @codebuff/sdk 打包至 sdk/dist
-bun run dev           # 啟動 Anybuff Desktop
-```
-
-首次使用：選擇專案資料夾（可試 `desktop/demo-project`），打開設定，
-新增 provider（填 baseURL + API key——金鑰經 Electron safeStorage 以
-DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話。
+1. 從[最新 release](https://github.com/JasonMMIV/Anybuff/releases/latest)
+   下載 **`AnyBuff-Setup-<version>.exe`** 並執行。安裝包未簽章，SmartScreen
+   會顯示「不明發行者」——點選*更多資訊 → 仍要執行*。
+2. 選擇專案資料夾（可試 `desktop/demo-project`），打開設定，
+   新增 provider（填 baseURL + API key——金鑰經 Electron safeStorage 以
+   DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話。
 
 ## 倉儲結構
 
@@ -61,7 +58,7 @@ DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話�
 | `scripts/generate-desktop-agents.ts` | 從上游 `agents/` 重新產生 `desktop/src/main/agents/bundled-agents.ts`（含桌面修補） |
 | `cli/` | 上游 CLI 原始碼保留在磁碟但不在建置圖中（v2 候選） |
 
-## 關鍵行為（詳見 PLAN.md §10 ledger）
+## 關鍵行為
 
 - **suggest_followups 預設停用**（設 `ANYBUFF_FOLLOWUPS=1` 可重新啟用）。
 - **context-pruner 活動在桌面 UI 中隱藏**（仍正常運作；零 LLM 呼叫）。
@@ -70,10 +67,11 @@ DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話�
   觀測日誌使用 `[anybuff-compat]` 前綴。
 - API 金鑰：靜態以 DPAPI 加密，經注入通道交付 SDK，
   並從所有子程序環境中清洗移除。
-- 設定檔/檢查點原子寫入依 PLAN §9.5（fsync、rename-replace、
-  永不預先刪除）。
+- 設定檔/檢查點原子寫入（fsync、rename-replace、永不預先刪除）。
 
 ## 開發
+
+供貢獻者從原始碼建置（一般使用者只需安裝檔）：
 
 ```powershell
 bun run build:sdk        # 修改 sdk/、packages/、common/ 後重建 SDK
@@ -83,7 +81,7 @@ bun scripts/smoke-sdk.ts # 無頭端到端 BYOK 檢查（需真實 key）
 ```
 
 上游同步：內部套件刻意保留 `@codebuff/*` 名稱，使 `git merge`
-CodebuffAI/freebuff 保持可行。刻意偏離項目記錄於 PLAN.md §10。
+CodebuffAI/freebuff 保持可行。
 
 ## 授權
 
