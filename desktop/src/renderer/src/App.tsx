@@ -6,6 +6,13 @@ import SettingsModal from './components/SettingsModal'
 import AgentWizardModal from './components/AgentWizardModal'
 import Composer, { type AgentMode, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
+import ReviewScopePanel from './components/ReviewScopePanel'
+import {
+  buildInterviewPrompt,
+  buildReviewPrompt,
+  REVIEW_SCOPE_OPTIONS,
+  type ReviewScope
+} from './utils/prompt-builders'
 import { AssistantBubble, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
@@ -310,6 +317,9 @@ export default function App() {
   const [totalCost, setTotalCost] = useState(0)
 
   const [searchOpen, setSearchOpen] = useState(false)
+  // #5 第二批：/review scope picker 與 /interview 模式狀態
+  const [reviewScopeOpen, setReviewScopeOpen] = useState(false)
+  const [interviewArmed, setInterviewArmed] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [followups, setFollowups] = useState<FollowupItem[]>([])
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
@@ -1017,16 +1027,52 @@ export default function App() {
 
   const send = useCallback(
     async (textOverride?: string, prebuiltPrompt?: string) => {
-      const text = (textOverride ?? prompt).trim()
+      let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
       if (/^\/init(?:\s|$)/i.test(text)) {
         setPrompt('')
         openAgentWizard()
         return
       }
+
+      /* ── #5 第二批：/review 與 /interview 斜線指令 ── */
+      let builtPrompt: string | undefined = prebuiltPrompt
+      // Bare /review（或從清單選取）→ 開啟範圍選擇面板。
+      if (/^\/review\s*$/i.test(text)) {
+        setPrompt('')
+        setReviewScopeOpen(true)
+        return
+      }
+      const reviewArgs = /^\/review\s+([\s\S]+)$/i.exec(text)
+      if (reviewArgs && !prebuiltPrompt) {
+        // 直接帶參數：等同 CLI 的 /review foo，自訂焦點立即送出。
+        builtPrompt = buildReviewPrompt('custom', reviewArgs[1])
+        text = `Code review — custom focus: ${reviewArgs[1].trim()}`
+      }
+      // Bare /interview → 武裝包裝器，下一則訊息自動套用訪談提示詞。
+      if (/^\/interview\s*$/i.test(text)) {
+        setPrompt('')
+        setInterviewArmed(true)
+        return
+      }
+      const interviewArgs = /^\/interview\s+([\s\S]+)$/i.exec(text)
+      let interviewWrap = false
+      if (interviewArgs && !prebuiltPrompt) {
+        // /interview <request>：立即包裝送出。
+        text = interviewArgs[1].trim()
+        interviewWrap = true
+      } else if (interviewArmed && !textOverride && !builtPrompt) {
+        // 已武裝：這則訊息就是訪談對象。
+        interviewWrap = true
+      }
+      if (interviewWrap) setInterviewArmed(false)
+
       // Bake @file contents etc. in BEFORE queueing so a queued message keeps
       // exactly what was selected when it was written (#2 執行中訊息佇列).
-      const finalPrompt = prebuiltPrompt ?? (await buildFinalPrompt(text))
+      const bakedBody = await buildFinalPrompt(text)
+      const finalPrompt = interviewWrap
+        ? `${buildInterviewPrompt('')}\n\n${bakedBody}`
+        : (builtPrompt ?? bakedBody)
 
       if (running) {
         if (IS_PREVIEW) return
@@ -1123,7 +1169,21 @@ export default function App() {
       setApprovalRequest(null)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask])
+  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask, interviewArmed])
+
+  /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
+  const runReviewScope = useCallback(
+    (scope: ReviewScope, customInput?: string) => {
+      setReviewScopeOpen(false)
+      const option = REVIEW_SCOPE_OPTIONS.find((o) => o.id === scope)
+      const display =
+        scope === 'custom'
+          ? `Code review — custom focus: ${(customInput ?? '').trim()}`
+          : `Code review — ${option?.label.toLowerCase() ?? scope}`
+      void send(display, buildReviewPrompt(scope, customInput))
+    },
+    [send]
+  )
 
   // When the current turn ends, automatically dispatch the first queued message.
   // drainingQueueRef serializes against re-entrant effect runs (StrictMode dev
@@ -1838,6 +1898,9 @@ export default function App() {
           />
         ) : (
           <>
+            {reviewScopeOpen && (
+              <ReviewScopePanel onClose={() => setReviewScopeOpen(false)} onRun={runReviewScope} />
+            )}
             <Sidebar
               open={leftOpen}
               onNewTask={newTask}
@@ -2176,6 +2239,10 @@ export default function App() {
                     onNewTask={newTask}
                     onInitRequest={openAgentWizard}
                     onSearchRequest={() => setSearchOpen(true)}
+                    onReviewRequest={() => setReviewScopeOpen(true)}
+                    onArmInterview={() => setInterviewArmed(true)}
+                    onDisarmInterview={() => setInterviewArmed(false)}
+                    interviewArmed={interviewArmed}
                     running={viewRunning}
                     stopping={viewStopping}
                     sendBlocked={busyElsewhere}

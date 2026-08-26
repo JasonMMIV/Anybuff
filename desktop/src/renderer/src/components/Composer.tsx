@@ -57,6 +57,14 @@ interface ComposerProps {
   skills: SkillInfo[]
   /** Increment to programmatically focus the textarea (e.g. after Revert restores a message). */
   focusSignal?: number
+  /** Open the /review scope picker (#5 第二批). */
+  onReviewRequest: () => void
+  /** Arm interview mode — the next sent message is wrapped in the interview prompt. */
+  onArmInterview: () => void
+  /** Disarm interview mode without sending. */
+  onDisarmInterview: () => void
+  /** Whether interview mode is currently armed (drives the chip indicator). */
+  interviewArmed?: boolean
 }
 
 import { getReasoningOptionsForModel } from '../utils/reasoning'
@@ -64,7 +72,9 @@ import { getReasoningOptionsForModel } from '../utils/reasoning'
 const SLASH_COMMANDS: { id: string; label: string; description: string }[] = [
   { id: 'new-task', label: 'new-task', description: 'Start a new task' },
   { id: 'init', label: 'init', description: 'Create a custom agent visually' },
-  { id: 'search', label: 'search', description: 'Search messages and files' }
+  { id: 'search', label: 'search', description: 'Search messages and files' },
+  { id: 'review', label: 'review', description: 'Structured code review with scope presets' },
+  { id: 'interview', label: 'interview', description: 'Interrogate your request into a detailed spec' }
 ]
 
 type Mention =
@@ -147,7 +157,11 @@ export default function Composer(props: ComposerProps) {
     totalCost,
     fileCandidates,
     skills,
-    focusSignal
+    focusSignal,
+    onReviewRequest,
+    onArmInterview,
+    onDisarmInterview,
+    interviewArmed
   } = props
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -222,9 +236,12 @@ export default function Composer(props: ComposerProps) {
   }
 
   const filteredFiles = mention?.kind === 'file' ? fileCandidates.filter((f) => f.toLowerCase().includes(mention.query)) : []
+  // Built-in slash commands come FIRST so they can never be pushed out of the
+  // 50-item menu window by a large skill list (they only ever match on prefix/
+  // substring of their short ids).
   const filteredSkills =
     mention?.kind === 'skill'
-      ? [...skills.filter((s) => s.name.toLowerCase().includes(mention.query)), ...SLASH_COMMANDS.filter((c) => c.id.includes(mention.query))]
+      ? [...SLASH_COMMANDS.filter((c) => c.id.includes(mention.query)), ...skills.filter((s) => s.name.toLowerCase().includes(mention.query))]
       : []
   const fileItems = filteredFiles.slice(0, 50)
   const skillItems = filteredSkills.slice(0, 50)
@@ -245,6 +262,9 @@ export default function Composer(props: ComposerProps) {
       if (skill.id === 'new-task') onNewTask()
       else if (skill.id === 'init') onInitRequest()
       else if (skill.id === 'search') onSearchRequest()
+      // #5 第二批：/review opens the scope picker; /interview arms the wrapper.
+      else if (skill.id === 'review') onReviewRequest()
+      else if (skill.id === 'interview') onArmInterview()
       return
     }
     replaceToken(`/skill:${(skill as SkillInfo).name} `)
@@ -258,6 +278,17 @@ export default function Composer(props: ComposerProps) {
 
   return (
     <div className="composer-wrap">
+      {interviewArmed && (
+        <div className="interview-chip">
+          <SparklesIcon size={12} />
+          <span>
+            Interview mode armed — your next message will be interrogated into a spec (no code changes)
+          </span>
+          <button className="chip-x" onClick={onDisarmInterview} title="Cancel interview mode">
+            <XIcon size={10} />
+          </button>
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="attachment-strip">
           {attachments.map((att) => (
