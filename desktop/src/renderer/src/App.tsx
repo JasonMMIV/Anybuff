@@ -2236,9 +2236,6 @@ export default function App() {
                     onChange={setPrompt}
                     onSend={() => void send()}
                     onStop={stop}
-                    onNewTask={newTask}
-                    onInitRequest={openAgentWizard}
-                    onSearchRequest={() => setSearchOpen(true)}
                     onReviewRequest={() => setReviewScopeOpen(true)}
                     onArmInterview={() => setInterviewArmed(true)}
                     onDisarmInterview={() => setInterviewArmed(false)}

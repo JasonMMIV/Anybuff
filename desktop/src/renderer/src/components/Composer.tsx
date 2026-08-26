@@ -31,9 +31,6 @@ interface ComposerProps {
   onChange: (v: string) => void
   onSend: () => void
   onStop: () => void
-  onNewTask: () => void
-  onInitRequest: () => void
-  onSearchRequest: () => void
   running: boolean
   stopping?: boolean
   /** Another conversation's run is active — sending is temporarily blocked. */
@@ -70,9 +67,6 @@ interface ComposerProps {
 import { getReasoningOptionsForModel } from '../utils/reasoning'
 
 const SLASH_COMMANDS: { id: string; label: string; description: string }[] = [
-  { id: 'new-task', label: 'new-task', description: 'Start a new task' },
-  { id: 'init', label: 'init', description: 'Create a custom agent visually' },
-  { id: 'search', label: 'search', description: 'Search messages and files' },
   { id: 'review', label: 'review', description: 'Structured code review with scope presets' },
   { id: 'interview', label: 'interview', description: 'Interrogate your request into a detailed spec' }
 ]
@@ -135,9 +129,6 @@ export default function Composer(props: ComposerProps) {
     onChange,
     onSend,
     onStop,
-    onNewTask,
-    onInitRequest,
-    onSearchRequest,
     running,
     stopping,
     sendBlocked,
@@ -236,16 +227,14 @@ export default function Composer(props: ComposerProps) {
   }
 
   const filteredFiles = mention?.kind === 'file' ? fileCandidates.filter((f) => f.toLowerCase().includes(mention.query)) : []
-  // Built-in slash commands come FIRST so they can never be pushed out of the
-  // 50-item menu window by a large skill list (they only ever match on prefix/
-  // substring of their short ids).
+  // Built-in slash commands come FIRST so they always sit at the top of the
+  // menu regardless of how many skills match (they only ever match on prefix/
+  // substring of their short ids). The full list is shown — the menu scrolls.
   const filteredSkills =
     mention?.kind === 'skill'
       ? [...SLASH_COMMANDS.filter((c) => c.id.includes(mention.query)), ...skills.filter((s) => s.name.toLowerCase().includes(mention.query))]
       : []
-  const fileItems = filteredFiles.slice(0, 50)
-  const skillItems = filteredSkills.slice(0, 50)
-  const mentionList = mention?.kind === 'file' ? fileItems : skillItems
+  const mentionList = mention?.kind === 'file' ? filteredFiles : filteredSkills
 
   const selectFile = (relPath: string) => {
     replaceToken(`@${relPath} `)
@@ -259,11 +248,8 @@ export default function Composer(props: ComposerProps) {
     if ('id' in skill && !('path' in skill)) {
       // Built-in command
       replaceToken('')
-      if (skill.id === 'new-task') onNewTask()
-      else if (skill.id === 'init') onInitRequest()
-      else if (skill.id === 'search') onSearchRequest()
       // #5 第二批：/review opens the scope picker; /interview arms the wrapper.
-      else if (skill.id === 'review') onReviewRequest()
+      if (skill.id === 'review') onReviewRequest()
       else if (skill.id === 'interview') onArmInterview()
       return
     }
@@ -359,10 +345,10 @@ export default function Composer(props: ComposerProps) {
         {mention && (
           <div className="mention-menu">
             {mention.kind === 'file' &&
-              (fileItems.length === 0 ? (
+              (filteredFiles.length === 0 ? (
                 <div className="mention-empty">No matching files</div>
               ) : (
-                fileItems.map((f, i) => (
+                filteredFiles.map((f, i) => (
                   <button
                     key={f}
                     ref={(el) => {
@@ -382,10 +368,10 @@ export default function Composer(props: ComposerProps) {
               ))}
 
             {mention.kind === 'skill' &&
-              (skillItems.length === 0 ? (
+              (filteredSkills.length === 0 ? (
                 <div className="mention-empty">No matching skills</div>
               ) : (
-                skillItems.map((item, i) => (
+                filteredSkills.map((item, i) => (
                   <button
                     key={'path' in item ? `${item.path}::${item.name}` : item.id}
                     ref={(el) => {
