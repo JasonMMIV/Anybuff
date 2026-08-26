@@ -5,6 +5,7 @@ import RightPanel, { type RightTab } from './components/RightPanel'
 import SettingsModal from './components/SettingsModal'
 import AgentWizardModal from './components/AgentWizardModal'
 import Composer, { type AgentMode, type Attachment, type SkillInfo } from './components/Composer'
+import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import { AssistantBubble, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
@@ -282,6 +283,8 @@ export default function App() {
   const [hasProvider, setHasProvider] = useState(false)
   const [running, setRunning] = useState(false)
   const [stopping, setStopping] = useState(false)
+  /** #2 執行中訊息佇列：messages parked while a run is in flight. */
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const [prompt, setPrompt] = useState('')
   const [chatItems, setChatItems] = useState<ChatItem[]>([])
   const [events, setEvents] = useState<UiEvent[]>([])
@@ -976,15 +979,71 @@ export default function App() {
     [attachments, skills, fileCandidates, cwd]
   )
 
+  /* ── #2 執行中訊息佇列：edit / reorder / delete / promote ── */
+
+  const queueEdit = useCallback(
+    async (id: string, text: string) => {
+      // Re-bake attachments for the edited text so the stored prompt stays valid.
+      const finalPrompt = await buildFinalPrompt(text)
+      setQueuedMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text, finalPrompt } : m)))
+    },
+    [buildFinalPrompt]
+  )
+
+  const queueDelete = useCallback((id: string) => {
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== id))
+  }, [])
+
+  const queueMove = useCallback((id: string, direction: -1 | 1) => {
+    setQueuedMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === id)
+      const to = idx + direction
+      if (idx < 0 || to < 0 || to >= prev.length) return prev
+      const next = [...prev]
+      ;[next[idx], next[to]] = [next[to], next[idx]]
+      return next
+    })
+  }, [])
+
+  /** 插隊：promote a queued message to the front of the queue. */
+  const queueSendNext = useCallback((id: string) => {
+    setQueuedMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === id)
+      if (idx <= 0) return prev
+      const item = prev[idx]
+      return [item, ...prev.filter((m) => m.id !== id)]
+    })
+  }, [])
+
   const send = useCallback(
-    async (textOverride?: string) => {
+    async (textOverride?: string, prebuiltPrompt?: string) => {
       const text = (textOverride ?? prompt).trim()
-      if (!text || !cwd || running) return
+      if (!text || !cwd) return
       if (/^\/init(?:\s|$)/i.test(text)) {
         setPrompt('')
         openAgentWizard()
         return
       }
+      // Bake @file contents etc. in BEFORE queueing so a queued message keeps
+      // exactly what was selected when it was written (#2 執行中訊息佇列).
+      const finalPrompt = prebuiltPrompt ?? (await buildFinalPrompt(text))
+
+      if (running) {
+        if (IS_PREVIEW) return
+        // A run is in flight → park the message in the execution queue instead
+        // of rejecting it; the queue drains automatically when the turn ends.
+        setQueuedMessages((prev) => [
+          ...prev,
+          {
+            id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            text,
+            finalPrompt
+          }
+        ])
+        setPrompt('')
+        return
+      }
+
       setPrompt('')
       changedFilesRef.current = []
       accumulatedFileChangesRef.current = []
@@ -1003,8 +1062,6 @@ export default function App() {
       }
       // Optimistic: this view owns the run until events say otherwise.
       if (!IS_PREVIEW) setRunningTaskId(currentTaskRef.current)
-
-    const finalPrompt = await buildFinalPrompt(text)
 
     if (IS_PREVIEW) {
       const reply =
@@ -1067,6 +1124,23 @@ export default function App() {
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
   }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask])
+
+  // When the current turn ends, automatically dispatch the first queued message.
+  // drainingQueueRef serializes against re-entrant effect runs (StrictMode dev
+  // double-invoke included); `send` flips `running` synchronously so the follow-up
+  // run sees the in-flight state immediately.
+  const drainingQueueRef = useRef(false)
+  useEffect(() => {
+    if (IS_PREVIEW) return
+    if (running || drainingQueueRef.current) return
+    const next = queuedMessages[0]
+    if (!next) return
+    drainingQueueRef.current = true
+    setQueuedMessages((prev) => prev.slice(1))
+    void send(next.text, next.finalPrompt).finally(() => {
+      drainingQueueRef.current = false
+    })
+  }, [running, queuedMessages, send])
 
   const stop = useCallback(() => {
     setApprovalRequest(null)
@@ -2087,6 +2161,13 @@ export default function App() {
                     </div>
                   )}
 
+                  <MessageQueuePanel
+                    items={queuedMessages}
+                    onEdit={(id, text) => void queueEdit(id, text)}
+                    onDelete={queueDelete}
+                    onMove={queueMove}
+                    onSendNext={queueSendNext}
+                  />
                   <Composer
                     prompt={prompt}
                     onChange={setPrompt}

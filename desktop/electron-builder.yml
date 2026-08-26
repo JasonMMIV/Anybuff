@@ -1,9 +1,16 @@
 # Minimal NSIS packaging — PLAN.md §9.6 subset（§12 首版發佈決策）：
-# GitHub Releases 手動上傳、無 electron-updater、無簽章
-# （SmartScreen「不明發行者」攔截為預期行為）。
+# GitHub Releases 發佈、無簽章（SmartScreen「不明發行者」攔截為預期行為）。
+# 第一批新增：electron-updater 自動更新 —— publish 指向 GitHub Releases，
+# electron-builder 會一併產生 latest.yml 與 .blockmap；發佈時這三個檔案
+# （exe + blockmap + latest.yml）都必須附加到 Release，更新才能被偵測。
 
 appId: com.AnyBuff.desktop # 必須與 src/main/index.ts 的 setAppUserModelId 一致
 productName: AnyBuff
+
+publish:
+  provider: github
+  owner: JasonMMIV
+  repo: Anybuff
 
 directories:
   output: release-build

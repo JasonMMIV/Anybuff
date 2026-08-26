@@ -1,24 +1,24 @@
 # AnyBuff — agent guide
 
 AnyBuff = upstream Freebuff architecture + a minimal local-first BYOK layer +
-an Electron desktop shell. Read PLAN.md (§3 ADRs, §9 specs, §10 maintenance
-ledger) before making architectural changes.
+an Electron desktop shell. Read "AnyBuff 專案全貌與維護者指南.md" (§2 non-negotiables,
+§4 ADRs, §5 maintenance ledger, §8 appendices) before making architectural changes.
 
 ## Non-negotiables
 
 - **Upstream mergeability**: internal packages keep `@codebuff/*` names. Never
   bulk-rename symbols/paths; PowerShell `-replace` is case-insensitive and has
   already caused three regressions (see git log "Review round 1").
-- **只清除、不抑制** (PLAN §9.2): provider compat layers may strip parameters an
+- **只清除、不抑制** (ADR-10): provider compat layers may strip parameters an
   endpoint rejects; they must never actively suppress native reasoning
   (no `thinking:{type:'disabled'}` injection).
 - **Keys never enter process.env** (ADR-12): Desktop decrypts →
   `apiKeyOverrides` → SDK injection channel. Child processes get scrubbed env
   (`impl/env-sanitize.ts`). Don't add new spawns that bypass it.
-- **Atomic writes** (PLAN §9.5 / ADR-13): unique same-dir temp + fsync +
+- **Atomic writes** (ADR-13): unique same-dir temp + fsync +
   rename-replace; never pre-delete targets; preserve old file on failure.
   SDK side: `provider-config.ts`. Desktop side: `desktop/src/main/atomic-write.ts`.
-- **Compat rules have expiry dates** (PLAN §10.1): verify against live vendor
+- **Compat rules have expiry dates** (§2 non-negotiable #5): verify against live vendor
   behavior before touching the deepseek/glm tool_choice list or stop-strip
   defaults; observability logs use the `[anybuff-compat]` prefix.
 
@@ -58,7 +58,7 @@ module body; an in-bundle shim cannot satisfy common/env validation).
 
 ## Known debts (do not silently re-add)
 
-- `cli/` source is on disk but out of the build graph (v2).
+- `cli/` source is on disk but out of the build graph (not maintained).
 - Hosted-semantics tests are skipped or rewritten-as-local
   (`it.skip` blocks in sdk tests carry context).
 - Fork's ChatGPT/Codex OAuth, harness services, PTD tiers were intentionally

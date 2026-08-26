@@ -174,6 +174,16 @@ interface UpdateCheckResult {
   error?: string
 }
 
+type UpdaterStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
+
+/** Flat shape so electron-updater events can merge functionally without losing context. */
+interface UpdaterUiState {
+  status: UpdaterStatus
+  version: string
+  percent: number
+  message: string
+}
+
 import { getReasoningOptionsForModel } from '../utils/reasoning'
 
 let draftSeq = 0
@@ -254,8 +264,8 @@ export default function SettingsModal({
   const [testMsg, setTestMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'error'>('idle')
-  const [updateError, setUpdateError] = useState('')
+  // electron-updater lifecycle (#3 自動更新)；dev/unpackaged 走舊的 GitHub API 比對。
+  const [updater, setUpdater] = useState<UpdaterUiState>({ status: 'idle', version: '', percent: 0, message: '' })
   const [pendingUpdate, setPendingUpdate] = useState<{ latestVersion: string; url: string } | null>(null)
 
   // App version for the About tab
@@ -269,6 +279,34 @@ export default function SettingsModal({
         // non-critical — leave the version blank rather than blocking Settings
       }
     })()
+  }, [])
+
+  // Live updater events (packaged builds): availability, download progress,
+  // ready-to-install and errors arrive asynchronously from the main process.
+  useEffect(() => {
+    if (typeof window.AnyBuff === 'undefined' || !window.AnyBuff.onUpdateEvent) return
+    return window.AnyBuff.onUpdateEvent((event) => {
+      switch (event.type) {
+        case 'checking-for-update':
+          setUpdater((prev) => ({ ...prev, status: 'checking', message: '' }))
+          break
+        case 'update-available':
+          setUpdater((prev) => ({ ...prev, status: 'available', version: event.version || prev.version }))
+          break
+        case 'update-not-available':
+          setUpdater((prev) => ({ ...prev, status: 'up-to-date' }))
+          break
+        case 'download-progress':
+          setUpdater((prev) => ({ ...prev, status: 'downloading', percent: typeof event.percent === 'number' ? event.percent : prev.percent }))
+          break
+        case 'update-downloaded':
+          setUpdater((prev) => ({ ...prev, status: 'downloaded', percent: 100 }))
+          break
+        case 'update-error':
+          setUpdater((prev) => ({ ...prev, status: 'error', message: event.message ?? 'Update failed.' }))
+          break
+      }
+    })
   }, [])
 
   // Load initial settings
@@ -515,27 +553,49 @@ export default function SettingsModal({
 
   const handleCheckForUpdates = async () => {
     if (typeof window.AnyBuff === 'undefined') {
-      setUpdateStatus('error')
-      setUpdateError('Update check is unavailable in browser preview mode.')
+      setUpdater({ status: 'error', version: '', percent: 0, message: 'Update check is unavailable in browser preview mode.' })
       return
     }
-    setUpdateStatus('checking')
-    setUpdateError('')
+    setUpdater((prev) => ({ ...prev, status: 'checking', message: '' }))
     try {
+      // Packaged installs go through electron-updater (auto-download kicks in
+      // main-side); dev runs fall back to the plain GitHub API check.
+      if (typeof window.AnyBuff.updateCheck === 'function') {
+        const res = (await window.AnyBuff.updateCheck()) as UpdateCheckResult
+        if (!res.ok) {
+          setUpdater({ status: 'error', version: '', percent: 0, message: res.error ?? 'Failed to check for updates.' })
+          return
+        }
+        if (res.updateAvailable) {
+          setUpdater({ status: 'available', version: res.latestVersion ?? '', percent: 0, message: '' })
+          void window.AnyBuff.updateDownload?.()
+        } else {
+          setUpdater({ status: 'up-to-date', version: res.currentVersion ?? '', percent: 0, message: '' })
+        }
+        return
+      }
       const res = (await window.AnyBuff.checkForUpdates()) as UpdateCheckResult
       if (!res.ok) {
-        setUpdateStatus('error')
-        setUpdateError(res.error ?? 'Failed to check for updates.')
+        setUpdater({ status: 'error', version: '', percent: 0, message: res.error ?? 'Failed to check for updates.' })
         return
       }
       if (res.updateAvailable && res.latestVersion && res.url) {
         setPendingUpdate({ latestVersion: res.latestVersion, url: res.url })
+        setUpdater({ status: 'idle', version: '', percent: 0, message: '' })
       } else {
-        setUpdateStatus('up-to-date')
+        setUpdater({ status: 'up-to-date', version: res.currentVersion ?? '', percent: 0, message: '' })
       }
     } catch (err) {
-      setUpdateStatus('error')
-      setUpdateError(err instanceof Error ? err.message : String(err))
+      setUpdater({ status: 'error', version: '', percent: 0, message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  /** Quit and apply a downloaded update (NSIS silent install handoff). */
+  const handleInstallUpdate = async () => {
+    try {
+      await window.AnyBuff.updateInstall()
+    } catch (err) {
+      setUpdater({ status: 'error', version: '', percent: 0, message: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -1561,26 +1621,54 @@ export default function SettingsModal({
                 <div className="about-row about-update-row">
                   <div className="about-update-info">
                     <span className="settings-field-label">Updates</span>
-                    {updateStatus === 'up-to-date' && (
+                    {updater.status === 'up-to-date' && (
                       <span className="about-status up-to-date">
                         <CheckCircleIcon size={13} /> You&rsquo;re up to date
                       </span>
                     )}
-                    {updateStatus === 'error' && <span className="about-status fail">{updateError}</span>}
-                    {(updateStatus === 'idle' || updateStatus === 'checking') && (
-                      <span className="hint-inline">Check GitHub for newer releases.</span>
+                    {updater.status === 'error' && <span className="about-status fail">{updater.message}</span>}
+                    {(updater.status === 'idle' || updater.status === 'checking') && (
+                      <span className="hint-inline">
+                        {updater.status === 'checking' ? 'Checking…' : 'Background checks run every 4 hours.'}
+                      </span>
+                    )}
+                    {updater.status === 'available' && (
+                      <span className="hint-inline">
+                        v{updater.version} available — downloading in background…
+                      </span>
+                    )}
+                    {updater.status === 'downloading' && (
+                      <span className="hint-inline">
+                        Downloading v{updater.version}… {Math.round(updater.percent)}%
+                      </span>
+                    )}
+                    {updater.status === 'downloaded' && (
+                      <span className="about-status up-to-date">
+                        <CheckCircleIcon size={13} /> v{updater.version || 'New version'} ready to install
+                      </span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    className="btn ghost small"
-                    onClick={() => void handleCheckForUpdates()}
-                    disabled={updateStatus === 'checking'}
-                    title="Check GitHub for a newer release"
-                  >
-                    <RefreshIcon size={12} className={updateStatus === 'checking' ? 'spin-icon' : ''} />
-                    {updateStatus === 'checking' ? 'Checking…' : 'Check Update'}
-                  </button>
+                  {updater.status === 'downloaded' ? (
+                    <button
+                      type="button"
+                      className="btn primary small"
+                      onClick={() => void handleInstallUpdate()}
+                      title="Quit AnyBuff and install the downloaded update"
+                    >
+                      Restart &amp; Install
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => void handleCheckForUpdates()}
+                      disabled={updater.status === 'checking'}
+                      title="Check GitHub for a newer release"
+                    >
+                      <RefreshIcon size={12} className={updater.status === 'checking' ? 'spin-icon' : ''} />
+                      {updater.status === 'checking' ? 'Checking…' : 'Check Update'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

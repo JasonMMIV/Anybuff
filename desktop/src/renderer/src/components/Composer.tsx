@@ -314,13 +314,15 @@ export default function Composer(props: ComposerProps) {
             }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              if (!running && !sendBlocked) onSend()
+              // While a run is in flight App.tsx routes this into the message
+              // queue instead of rejecting it (#2 執行中訊息佇列).
+              if (!disabled) onSend()
             }
           }}
           onClick={() => setMention(detectMention(prompt, textareaRef.current?.selectionStart ?? prompt.length))}
           placeholder="Type a message -/ for skills, @ for files"
           rows={1}
-          disabled={running || disabled}
+          disabled={disabled}
         />
 
         {mention && (
@@ -379,15 +381,27 @@ export default function Composer(props: ComposerProps) {
         )}
 
         {running ? (
-          <button className={`btn danger send-btn stop-btn ${stopping ? 'stopping' : ''}`} onClick={onStop} disabled={stopping} title={stopping ? "Stopping..." : "Stop"}>
-            <StopIcon size={14} />
-          </button>
+          <>
+            {/* Queue-send stays available mid-run: the message parks in the
+                execution queue and fires when the current turn ends. */}
+            <button
+              className="btn primary send-btn queue-send-btn"
+              onClick={onSend}
+              disabled={!prompt.trim()}
+              title="Queue this message — it will send when the current turn finishes"
+            >
+              <PlusIcon size={14} />
+            </button>
+            <button className={`btn danger send-btn stop-btn ${stopping ? 'stopping' : ''}`} onClick={onStop} disabled={stopping} title={stopping ? "Stopping..." : "Stop"}>
+              <StopIcon size={14} />
+            </button>
+          </>
         ) : (
           <button
             className="btn primary send-btn"
             onClick={onSend}
-            disabled={disabled || sendBlocked || !prompt.trim()}
-            title={sendBlocked ? (sendBlockedHint ?? 'Another task is running') : 'Send (Enter)'}
+            disabled={disabled || !prompt.trim()}
+            title={sendBlocked ? 'Another task is running — this will be queued' : 'Send (Enter)'}
           >
             <ArrowUpIcon size={16} />
           </button>

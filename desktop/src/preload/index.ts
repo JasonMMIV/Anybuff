@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type { QueryIndexData, QueryIndexQuery } from '../shared/codebase-index'
+import type { UpdateUiEvent } from '../main/updater'
 
 export interface TodoItem {
   task: string
@@ -61,6 +62,20 @@ const api = {
   getAppVersion: () => ipcRenderer.invoke('AnyBuff:getAppVersion'),
   /** Compare the running version against the latest GitHub release. */
   checkForUpdates: () => ipcRenderer.invoke('AnyBuff:checkForUpdates'),
+  /** electron-updater manual check (packaged builds only; dev falls back to checkForUpdates). */
+  updateCheck: () => ipcRenderer.invoke('AnyBuff:updateCheck'),
+  /** Download a discovered update (auto-download is on; this is a retry path). */
+  updateDownload: () => ipcRenderer.invoke('AnyBuff:updateDownload'),
+  /** Quit and install a downloaded update. */
+  updateInstall: () => ipcRenderer.invoke('AnyBuff:updateInstall'),
+  /** Subscribe to updater lifecycle events (checking/available/progress/downloaded/error). */
+  onUpdateEvent: (callback: (event: UpdateUiEvent) => void) => {
+    const listener = (_e: IpcRendererEvent, event: UpdateUiEvent) => callback(event)
+    ipcRenderer.on('AnyBuff:updateEvent', listener)
+    return () => {
+      ipcRenderer.removeListener('AnyBuff:updateEvent', listener)
+    }
+  },
   selectFolder: () => ipcRenderer.invoke('AnyBuff:selectFolder'),
   selectFiles: () => ipcRenderer.invoke('AnyBuff:selectFiles'),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),

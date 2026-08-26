@@ -1,5 +1,6 @@
-import { CodebuffClient, type PrintModeEvent, type RunState } from '@codebuff/sdk'
+import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } from '@codebuff/sdk'
 import type { BrowserWindow } from 'electron'
+import { isSensitiveFile } from './file-filter'
 import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides } from './settings'
 import { bundledAgents } from './agents/bundled-agents'
 import { loadProjectLocalAgents, type LocalAgentsResult } from './agents/local-agents'
@@ -716,6 +717,11 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // channel, not process.env.
         apiKeyOverrides: getProviderApiKeyOverrides(),
         // Upstream emits full RunState snapshots every ~5s while in flight;
+        // #1 資安級防護：敏感檔（.env、SSH 金鑰、kubeconfig、憑證…）一律
+        // 擋在 agent 可讀範圍外，避免金鑰內容隨 LLM context 離開本機。
+        fileFilter: ((filePath: string) =>
+          isSensitiveFile(filePath) ? { status: 'blocked' as const } : { status: 'allow' as const }
+        ) satisfies FileFilter,
         // persist them so a crashed session resumes mid-turn.
         onStateSnapshot: (snapshot) => {
           try {
