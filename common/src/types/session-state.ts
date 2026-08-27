@@ -48,12 +48,13 @@ export type AgentState = {
    * Estimated size of the next prompt: message history + system prompt + tool
    * schemas, counted locally with a GPT-4o BPE tokenizer.
    *
-   * NOT a provider's number. The round trip that used to make it
-   * Anthropic-exact was deleted (run-agent-step.ts, "Always count locally")
-   * because it added seconds of serial overhead per step and nothing left needs
-   * a provider-exact count: the context-limit check only needs an estimate, and
-   * counting models that have their own tokenizers with this one biases the
-   * estimate low — headroom contextPrunerBudgetForModel absorbs deliberately.
+   * NOT a provider's number, and deliberately not exact. The round trip that
+   * used to make it Anthropic-exact was deleted (run-agent-step.ts, "Always
+   * count locally") because it added seconds of serial overhead per step and
+   * nothing left needs a provider-exact count: the context-limit check only
+   * needs an estimate, and counting models that have their own tokenizers with
+   * this one biases the estimate low, which the runtime's compaction budget
+   * (contextPrunerBudgetForModel) leaves headroom for.
    *
    * Updated on every agent step before the model call, again after a mechanical
    * compaction rewrites the history, and once more when the turn ends so the
