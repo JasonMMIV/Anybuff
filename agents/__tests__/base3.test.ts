@@ -1,57 +1,32 @@
 import {
-  FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL,
   hasFreebuffRootSystemPromptOpening,
 } from '@codebuff/common/constants/free-agents'
-import { SUPPORTED_FREEBUFF_MODELS } from '@codebuff/common/constants/freebuff-models'
 import { describe, test, expect } from 'bun:test'
 
 import base3, { createBase3, createBase3CliRoot } from '../base3'
 import base3Evals from '../base3-evals'
-import base3FreeDeepseek from '../base3-free-deepseek'
-import base3FreeDeepseekFlash from '../base3-free-deepseek-flash'
-import base3FreeDeepseekFlashEvals from '../base3-free-deepseek-flash-evals'
-import base3FreeFable from '../base3-free-fable'
-import base3FreeGlm from '../base3-free-glm'
-import base3FreeLuna from '../base3-free-luna'
-import base3FreeMimo from '../base3-free-mimo'
-import base3FreeMinimaxM3 from '../base3-free-minimax-m3'
 import base3Lite from '../base3-lite'
 
 /**
- * The CLI's base3 roots.
+ * The base3 roots that still ship in AnyBuff.
  *
- * `CLI_HARNESS` routes DEFAULT, LITE, and Freebuff turns here. These definitions
- * ship compiled into the CLI binary, so a regression requires a new release to
- * repair rather than a server-side kill switch (see
- * docs/freebuff-base3-harness.md).
+ * `base3` is Codebuff's DEFAULT mode (also the desktop thread harness base);
+ * `base3-lite` is the paid LITE mode on a cheaper model; `base3-evals` is the
+ * buffbench arm. The Freebuff per-model roots (`base3-free-*`) were removed —
+ * AnyBuff routes models through anybuff.json (BYOK) instead of a root per
+ * model.
  *
  * What makes base3 cheaper rides on the DEFINITION, not the call site — the
  * runtime reads `windowedFileReads` and `compactContext` straight off the agent
  * template. A root that loses one keeps working and quietly costs base2 money
- * again. The Web bundle has the same assertions for its own roots
- * (freebuff_bundled_agents.test.ts); these are the CLI's, which ship compiled
- * into the binary instead.
+ * again.
  */
-const CLI_ROOTS = [
-  base3,
-  base3Lite,
-  base3Evals,
-  // The benchmark's own arm. If it lost a lever, the next run would compare
-  // base3-minus-that-lever against base2 and report it as base3's score.
-  base3FreeDeepseekFlashEvals,
-  base3FreeDeepseek,
-  base3FreeDeepseekFlash,
-  base3FreeMinimaxM3,
-  base3FreeMimo,
-  base3FreeGlm,
-  base3FreeLuna,
-  base3FreeFable,
-]
+const RETAINED_ROOTS = [base3, base3Lite, base3Evals]
 
-describe('base3 CLI roots', () => {
+describe('base3 roots', () => {
   test('keeps the efficiency flags the runtime reads', () => {
-    expect(CLI_ROOTS.length).toBe(11)
-    for (const agent of CLI_ROOTS) {
+    expect(RETAINED_ROOTS.length).toBe(3)
+    for (const agent of RETAINED_ROOTS) {
       // Windowed reads + the 100-entry glob cap + search-first tool wording.
       expect(agent.windowedFileReads).toBe(true)
       // Mechanical compaction in-process, instead of spawning context-pruner.
@@ -65,43 +40,11 @@ describe('base3 CLI roots', () => {
     }
   })
 
-  test('declares no reasoning, leaving the catalog the single authority', () => {
-    // An agent-declared reasoning reaches the wire as `body.reasoning`, which
-    // makes the agent the authority on effort and leaves
-    // applyFreebuffReasoningDefaults unable to tell a model default apart from
-    // a user's pick — so the effort control silently does nothing on exactly
-    // the models people most want to tune. The Web roots make this structural
-    // by having no such parameter; the CLI roots spread object literals, so
-    // this test is what stops the next one reintroducing it.
-    for (const agent of CLI_ROOTS) {
-      expect(agent.reasoningOptions).toBeUndefined()
-    }
-  })
-
   test('opens with a prompt the free-mode gate accepts', () => {
     // The appendix is appended, never prepended: the chat-completions gate
     // requires a canonical opening at byte 0, so prepending 403s every turn.
-    for (const agent of CLI_ROOTS) {
+    for (const agent of RETAINED_ROOTS) {
       expect(hasFreebuffRootSystemPromptOpening(agent.systemPrompt!)).toBe(true)
-    }
-  })
-
-  test('every Freebuff root is pinned to the model its id is registered under', () => {
-    const byId = new Map(CLI_ROOTS.map((a) => [a.id, a]))
-    for (const [model, agentId] of Object.entries(
-      FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL,
-    )) {
-      // A root whose model disagrees with the allowlist 403s with
-      // free_mode_invalid_agent_model on every request.
-      expect(byId.get(agentId)?.model).toBe(model)
-    }
-  })
-
-  test('ships a root for every model the picker offers', () => {
-    for (const model of SUPPORTED_FREEBUFF_MODELS) {
-      const agentId = FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL[model.id]
-      expect(agentId).toBeDefined()
-      expect(CLI_ROOTS.some((a) => a.id === agentId)).toBe(true)
     }
   })
 
@@ -137,7 +80,7 @@ describe('base3 CLI roots', () => {
     expect(withoutUser.systemPrompt).not.toContain('suggest_followups')
 
     // Otherwise identical: the eval variant must stay a like-for-like
-    // comparison against base2-evals, not a differently-equipped agent.
+    // comparison, not a differently-equipped agent.
     expect(withoutUser.toolNames).toEqual(
       withUser.toolNames!.filter(
         (name) => name !== 'ask_user' && name !== 'suggest_followups',
@@ -145,10 +88,8 @@ describe('base3 CLI roots', () => {
     )
   })
 
-  test('brands Freebuff roots as Freebuff, and Codebuff roots as Codebuff', () => {
-    expect(base3FreeDeepseek.systemPrompt).toContain('Freebuff')
-    expect(base3FreeDeepseek.systemPrompt).not.toContain('/usage')
-    // Codebuff's paid modes explain credits; Freebuff has none to explain.
+  test('brands Codebuff roots as Codebuff', () => {
     expect(base3.systemPrompt).toContain('/usage')
+    expect(base3.systemPrompt).not.toContain('Freebuff')
   })
 })

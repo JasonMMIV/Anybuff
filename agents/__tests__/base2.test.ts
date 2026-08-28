@@ -17,6 +17,16 @@ const FREEBUFF_KIMI_MODEL_ID = 'moonshotai/kimi-k2.7-code'
 const FREEBUFF_MIMO_V25_PRO_MODEL_ID = 'mimo/mimo-v2.5-pro'
 
 describe('base2 reviewer selection', () => {
+  // NOTE (AnyBuff): several assertions below reference reviewer ids whose
+  // definition FILES were removed from this repo (code-reviewer-deepseek,
+  // code-reviewer-fable, code-reviewer-glm, code-reviewer-luna,
+  // code-reviewer-mimo, code-reviewer-minimax-m3). The ids still resolve here
+  // because the FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL map in common/ is retained
+  // verbatim for upstream-merge compatibility (ADR-1/ADR-6). createBase2('free')
+  // has no runtime consumer in AnyBuff (desktop runs only default/plan modes), so
+  // these are dormant strings, not live spawns. Do not reintroduce the agent
+  // files; a future full Freebuff-mode removal should strip this map and these
+  // tests together.
   test('Codebuff lite uses GPT-5.6 Luna and the lite reviewer', () => {
     const base2 = createBase2('lite')
 
