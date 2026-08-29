@@ -23,7 +23,15 @@ export const createReviewer = (
   toolNames: [],
   spawnableAgents: [],
 
-  inheritParentSystemPrompt: true,
+  // AnyBuff fix (ADR): a no-tool reviewer must NOT inherit the parent's system
+  // prompt or tool surface. With inheritParentSystemPrompt: true the runtime
+  // (run-agent-step.ts useParentTools) hands the reviewer the parent's full
+  // tool set (spawn_agents, code_reviewer, think_deeply, ...) and the parent's
+  // system prompt, whose "Spawn a code-reviewer" instructions make the reviewer
+  // mimic the orchestrator — it then calls tools it doesn't have and every call
+  // bounces with "Tool `X` is not currently available" (tool-executor 338/703),
+  // and it ends up echoing the inherited message history instead of reviewing.
+  inheritParentSystemPrompt: false,
   includeMessageHistory: true,
 
   instructionsPrompt: `You are a subagent that reviews code changes and gives helpful critical feedback. Do not use any tools. For reference, here is the original user request:

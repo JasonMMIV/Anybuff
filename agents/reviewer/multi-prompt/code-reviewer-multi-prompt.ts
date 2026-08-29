@@ -23,7 +23,16 @@ export function createCodeReviewerMultiPrompt(): Omit<
       'Reviews code by spawning multiple code-reviewer agents with different focus prompts, then combines all review outputs into a comprehensive review. Make sure to read relevant files before spawning this agent. Pass an input array of short prompts specifying several different review focuses or perspectives.',
 
     includeMessageHistory: true,
-    inheritParentSystemPrompt: true,
+    // AnyBuff fix (ADR): this agent is itself a spawner that should keep its own
+    // identity instead of inheriting the parent's system prompt/tool surface
+    // (which leaks the orchestrator's tool set into a subagent and makes it
+    // mimic the parent). It spawns code-reviewer explicitly via handleSteps, so
+    // it needs its own minimal systemPrompt — required because getAgentPrompt
+    // crashes when both inheritParentSystemPrompt is false and systemPrompt is
+    // undefined (formatPrompt calls .replaceAll on undefined).
+    inheritParentSystemPrompt: false,
+    systemPrompt:
+      'You are the multi-prompt code reviewer. You do not review code yourself: you spawn a code-reviewer subagent per focus prompt and combine their outputs. Do not call any tools other than spawn_agents and set_output.',
 
     toolNames: ['spawn_agents', 'set_output'],
     // AnyBuff: per-model reviewers removed (ADR-15 follow-up); the generic
