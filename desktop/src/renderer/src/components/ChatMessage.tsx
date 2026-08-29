@@ -1,6 +1,27 @@
 import { useState } from 'react'
 import { renderMarkdown } from '../utils/markdown'
-import { ChevronDownIcon, CopyIcon, LightbulbIcon, ListIcon, TriangleIcon, UndoIcon } from './Icons'
+import {
+  AlertCircleIcon,
+  BoltIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  EditIcon,
+  FileIcon,
+  FolderIcon,
+  GaugeIcon,
+  LayersIcon,
+  LightbulbIcon,
+  ListIcon,
+  PanelLeftIcon,
+  PaperclipIcon,
+  RobotIcon,
+  SearchIcon,
+  SparklesIcon,
+  SpecialistIcon,
+  TerminalIcon,
+  UndoIcon
+} from './Icons'
 
 export interface TodoTodo {
   task: string
@@ -23,54 +44,53 @@ export interface ToolItem {
 
 /* ─── #12 工具具名卡片：語意化標題規格表 ─── */
 
-/** Emoji glyph per tool family (shown left of the title). */
-function toolIcon(name: string): string {
+/** Monochrome SVG glyph per tool family (shown left of the title). */
+function toolIcon(name: string): React.ReactNode {
   switch (name) {
     case 'read_files':
     case 'read_subtree':
-    case 'list_directory':
     case 'find_files':
-      return '📁'
+      return <FileIcon size={16} />
+    case 'list_directory':
+      return <FolderIcon size={16} />
     case 'code_search':
-      return '🔍'
-    case 'glob':
-      return '🗂'
     case 'web_search':
-      return '🌐'
+      return <SearchIcon size={16} />
+    case 'glob':
+      return <FolderIcon size={16} />
     case 'read_url':
-      return '🔗'
+      return <PaperclipIcon size={16} />
     case 'read_docs':
-      return '📚'
+      return <LayersIcon size={16} />
     case 'run_terminal_command':
     case 'basher':
-      return '⌘'
+      return <TerminalIcon size={16} />
     case 'edit_transaction':
     case 'apply_patch':
     case 'str_replace':
     case 'propose_str_replace':
     case 'write_file':
     case 'propose_write_file':
-      return '✏️'
+      return <EditIcon size={16} />
     case 'write_todos':
-      return '☑'
+      return <ListIcon size={16} />
     case 'query_index':
-      return '⚡'
-    case 'think_deeply':
-      return '🧠'
-    case 'update_subgoal':
-      return '🎯'
-    case 'skill':
-      return '🧰'
     case 'gravity_index':
-      return '🧭'
+      return <GaugeIcon size={16} />
+    case 'think_deeply':
+      return <LightbulbIcon size={16} />
+    case 'update_subgoal':
+      return <CheckCircleIcon size={16} />
+    case 'skill':
+      return <SparklesIcon size={16} />
     case 'ask_user':
-      return '❓'
+      return <AlertCircleIcon size={16} />
     case 'spawn_agents':
-      return '🤖'
+      return <RobotIcon size={16} />
     case 'render_ui':
-      return '🖥'
+      return <PanelLeftIcon size={16} />
     default:
-      return '⚙️'
+      return <BoltIcon size={16} />
   }
 }
 
@@ -200,10 +220,14 @@ function toolSummaryChips(tool: ToolItem): { text: string; blocked?: boolean }[]
 
 /** #12 結果數 chip：從已完成工具的 detail/output 提取簡短計數（code_search / glob / web_search…）。 */
 function toolResultCount(tool: ToolItem): string | null {
-  if (tool.status !== 'done' || !tool.detail) return null
+  if (tool.status !== 'done' || typeof tool.detail !== 'string') return null
   const d = tool.detail.trim()
-  const m = d.match(/(\d+)\s+(?:matches?|results?|files?|snippets?)/i)
-  return m ? `${m[1]} ${m[2].toLowerCase()}` : null
+  // m[2] is the unit ("matches"/"results"/…). The group MUST be capturing:
+  // the original non-capturing (?:…) made m[2] always undefined and crashed
+  // with 'Cannot read properties of undefined (reading toLowerCase)' whenever
+  // a detail contained "N matches/results" (e.g. inside JSON payloads).
+  const m = d.match(/(\d+)\s+(matches?|results?|files?|snippets?)/i)
+  return m && m[2] ? `${m[1]} ${m[2].toLowerCase()}` : null
 }
 
 function copyText(text: string): void {
@@ -253,6 +277,8 @@ export interface WebResult {
 
 /** Extract <think>...</think> blocks and strip any leaked function calls from raw text. */
 export function extractThinkTags(rawText: string): { reasoning?: string; text: string; isThinking: boolean } {
+  // Legacy transcripts may carry assistant items without a text field — never crash on them.
+  if (typeof rawText !== 'string') return { text: '', isThinking: false }
   // Strip any raw function:suggest_followups blocks from visible assistant text
   let cleanedText = rawText.replace(/function:suggest_followups\s*\{[\s\S]*?\}/gi, '')
   cleanedText = cleanedText.replace(/<suggest_followups>[\s\S]*?<\/suggest_followups>/gi, '')
@@ -399,10 +425,14 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
   // Collapsed by default; click the header to expand the output
   const [open, setOpen] = useState(false)
 
+  // Legacy transcripts may omit optional fields — never crash on them.
+  const name = tool.toolName ?? 'tool'
+  const isAgentCard = name.startsWith('agent:')
+
   const hasDetail = Boolean(tool.detail?.trim())
-  const hasTodos = tool.toolName === 'write_todos' && Array.isArray(tool.todos) && tool.todos.length > 0
+  const hasTodos = name === 'write_todos' && Array.isArray(tool.todos) && tool.todos.length > 0
   // Skip parsing/formatting entirely while the card stays collapsed
-  const webResults = open && hasDetail && isSearchTool(tool.toolName) ? parseWebResults(tool.detail ?? '') : null
+  const webResults = open && hasDetail && isSearchTool(name) ? parseWebResults(tool.detail ?? '') : null
   const formattedDetail = open && hasDetail && !webResults && !hasTodos ? formatToolDetail(tool.detail ?? '') : null
 
   // For write_todos: show a summary in the header and render the checklist inline
@@ -410,30 +440,24 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
     ? `${tool.todos!.filter((t) => t.completed).length}/${tool.todos!.length} completed`
     : ''
 
-  const label = tool.toolName.startsWith('agent:')
-    ? `Sub-agent: ${tool.agentName || tool.toolName.slice('agent:'.length)}`
-    : toolLabel(tool.toolName)
+  const label = isAgentCard
+    ? `Sub-agent: ${tool.agentName || name.slice('agent:'.length)}`
+    : toolLabel(name)
 
   // #12 樣式 B：常駐語意化標題（icon + label + agent）與摘要 chips。
-  const icon = tool.toolName.startsWith('agent:') ? '🤖' : toolIcon(tool.toolName)
-  const chips = tool.toolName.startsWith('agent:') ? [] : toolSummaryChips(tool)
+  const icon = isAgentCard ? <SpecialistIcon size={16} /> : toolIcon(name)
+  const chips = isAgentCard ? [] : toolSummaryChips(tool)
   const resultCount = toolResultCount(tool)
   const blockedCount = tool.blockedPaths?.length ?? 0
   const allowedCount =
-    tool.toolName === 'read_files' && Array.isArray(tool.toolInput?.paths)
+    name === 'read_files' && Array.isArray(tool.toolInput?.paths)
       ? (tool.toolInput.paths as string[]).length - blockedCount
       : null
 
   return (
     <div className={`tool-card ${tool.status}${running ? ' running' : ''}`}>
       <div className="tool-card-head" onClick={() => setOpen((o) => !o)}>
-        {running ? (
-          <span className="tool-spinner">⟳</span>
-        ) : (
-          <span className="tool-toggle">
-            <TriangleIcon open={open} size={9} />
-          </span>
-        )}
+        {running && <span className="tool-spinner">⟳</span>}
         <span className="tool-icon" aria-hidden="true">{icon}</span>
         <span className="tool-name">{label}</span>
         {tool.agentType && <span className="tool-agent">{tool.agentType}</span>}

@@ -2034,7 +2034,7 @@ textarea {
 
 /* ─── Tool cards ─────────────────────────────────────── */
 .tool-card {
-  margin: 1px max(var(--space-6), calc((100% - 760px) / 2));
+  margin: 1px max(24px, calc((100% - 760px) / 2));
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
@@ -2069,20 +2069,6 @@ textarea {
   color: var(--text-2);
 }
 
-.tool-toggle {
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-0);
-  flex-shrink: 0;
-}
-
-:root[data-theme='light'] .tool-toggle {
-  color: #000000;
-}
-
 .tool-card.running .tool-spinner {
   color: var(--accent);
   animation: spin 1s linear infinite;
@@ -2091,7 +2077,6 @@ textarea {
 
 .tool-card.done .tool-spinner { color: var(--green); }
 .tool-card.error .tool-spinner { color: var(--red); }
-.tool-card.error .tool-toggle { color: var(--red); }
 
 .tool-name {
   font-family: var(--font-mono);
@@ -2106,9 +2091,20 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12.5px;
   flex-shrink: 0;
   opacity: 0.85;
+  /* 單色 SVG：與 thinking 卡片的 thought-icon 一致，隨主題黑白變色 */
+  color: var(--text-0);
+  line-height: 1;
+  transition: opacity var(--transition-base);
+}
+
+:root[data-theme='light'] .tool-icon {
+  color: #000000;
+}
+
+.tool-card-head:hover .tool-icon {
+  opacity: 1;
 }
 
 .tool-result-count {
@@ -5530,13 +5526,52 @@ select option {
   align-self: flex-end;
 }
 
-/* #21 訊息 footer 完成時間戳：常駐顯示（細小淡色，不佔版面） */
+/* #21 訊息 footer 完成時間戳：常駐顯示（細小淡色，與複製按鈕同色） */
 .msg-time {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-2);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+/* ─── Render error boundary（異常/舊版 transcript 不再白屏） ─── */
+.error-boundary {
+  margin: 16px max(24px, calc((100% - 760px) / 2));
+  padding: 18px 22px;
+  background: var(--red-soft);
+  border: 1px solid rgba(239, 106, 106, 0.35);
+  border-radius: var(--radius);
+  color: var(--text-0);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.error-boundary-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.error-boundary-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.error-boundary-message {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.error-boundary-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
 }
 
 /* Copy / revert actions are revealed on hover, inside the footer */

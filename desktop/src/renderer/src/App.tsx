@@ -4,6 +4,7 @@ import Sidebar, { type ProjectRecord, type TaskRecord, type SearchResult } from 
 import RightPanel, { type RightTab } from './components/RightPanel'
 import SettingsModal from './components/SettingsModal'
 import AgentWizardModal from './components/AgentWizardModal'
+import ErrorBoundary from './components/ErrorBoundary'
 import Composer, { type AgentMode, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
@@ -1655,36 +1656,45 @@ export default function App() {
         setPrompt('')
         return
       }
-      // Re-attach = load the full snapshot (transcript + status + resume info)
-      // from the main-process session store. The event gate opens only AFTER
-      // the snapshot lands so live deltas apply on top of it, never under it.
-      const view = (await window.AnyBuff.getTaskView(task.id)) as {
-        ok: boolean
-        transcript?: ChatItem[]
-        status?: string
-        canResume?: boolean
-        resumeReason?: string
-        resumeErrorMessage?: string
-      }
       setHistoryTask({ id: task.id, prompt: task.prompt })
-      // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
-      const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
-      const items = transcript.map((m) => {
-        const ts = m.updatedAt ?? m.createdAt
-        if (ts && (m.kind === 'user' || m.kind === 'assistant')) {
-          return { ...m, ts }
+      try {
+        // Re-attach = load the full snapshot (transcript + status + resume info)
+        // from the main-process session store. The event gate opens only AFTER
+        // the snapshot lands so live deltas apply on top of it, never under it.
+        const view = (await window.AnyBuff.getTaskView(task.id)) as {
+          ok: boolean
+          transcript?: ChatItem[]
+          status?: string
+          canResume?: boolean
+          resumeReason?: string
+          resumeErrorMessage?: string
         }
-        return m
-      }) as ChatItem[]
-      setChatItems(items)
-      setViewTask(task.id)
-      if (view.ok && view.canResume && view.status !== 'running') {
-        setResumeInfo({
-          prompt: task.prompt,
-          reason: view.resumeReason ?? 'error',
-          errorMessage: view.resumeErrorMessage
-        })
-      } else {
+        // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
+        const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
+        const items = transcript.map((m) => {
+          const ts = m.updatedAt ?? m.createdAt
+          if (ts && (m.kind === 'user' || m.kind === 'assistant')) {
+            return { ...m, ts }
+          }
+          return m
+        }) as ChatItem[]
+        setChatItems(items)
+        setViewTask(task.id)
+        if (view.ok && view.canResume && view.status !== 'running') {
+          setResumeInfo({
+            prompt: task.prompt,
+            reason: view.resumeReason ?? 'error',
+            errorMessage: view.resumeErrorMessage
+          })
+        } else {
+          setResumeInfo(null)
+        }
+      } catch (err) {
+        // A malformed or legacy conversation must never white-screen the app:
+        // surface the failure in the chat view so it stays navigable.
+        console.error('[anybuff] failed to load conversation snapshot', task.id, err)
+        setChatItems([{ kind: 'system', text: `Failed to load this conversation: ${String(err)}` }])
+        setViewTask(task.id)
         setResumeInfo(null)
       }
       setPrompt('')
@@ -2095,15 +2105,17 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* key: remount on conversation switch so a stale boundary error never blocks healthy conversations */}
+                    <ErrorBoundary key={activeViewTaskId ?? historyTask?.id ?? 'chat'}>
                     {chatItems.map((item, i) => {
                       if (item.kind === 'user') {
                         const isLastUser = chatItems.slice(i + 1).every((it) => it.kind !== 'user')
                         return (
                           <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
                             <UserBubble
-                              text={item.text}
+                              text={item.text ?? ''}
                               ts={item.ts}
-                              onCopy={() => void navigator.clipboard?.writeText(item.text)}
+                              onCopy={() => void navigator.clipboard?.writeText(item.text ?? '')}
                               onRevert={isLastUser && !viewRunning && !historyTask ? () => void requestRevert() : undefined}
                             />
                           </div>
@@ -2114,16 +2126,16 @@ export default function App() {
                         return (
                           <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
                             <AssistantBubble
-                              text={item.text}
+                              text={item.text ?? ''}
                               reasoning={item.reasoning}
                               ts={item.ts}
                               streaming={isStreaming}
-                              onCopy={() => void navigator.clipboard?.writeText(item.text)}
+                              onCopy={() => void navigator.clipboard?.writeText(item.text ?? '')}
                             />
                           </div>
                         )
                       }
-                      if (item.kind === 'tool') {
+                      if (item.kind === 'tool' && item.tool) {
                         const isLastTool = i === chatItems.length - 1
                         return (
                           <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
@@ -2145,21 +2157,23 @@ export default function App() {
                           </div>
                         )
                       }
+                      const itemText = (item as { text?: string }).text ?? ''
                       if (
-                        item.text.includes('suggest_followups already ended') ||
-                        item.text.includes('No more non-terminal tools are available after followups') ||
-                        item.text.includes('Invalid parameters for') ||
-                        item.text.includes('Raw validation issues:') ||
-                        item.text.includes('Stop requested. Waiting for agent to safely halt')
+                        itemText.includes('suggest_followups already ended') ||
+                        itemText.includes('No more non-terminal tools are available after followups') ||
+                        itemText.includes('Invalid parameters for') ||
+                        itemText.includes('Raw validation issues:') ||
+                        itemText.includes('Stop requested. Waiting for agent to safely halt')
                       ) {
                         return null
                       }
                       return (
                         <div key={i} className="msg-row system" ref={(el) => { msgRefs.current[i] = el }}>
-                          <span className="system-bubble">⚠ {item.text}</span>
+                          <span className="system-bubble">⚠ {itemText}</span>
                         </div>
                       )
                     })}
+                    </ErrorBoundary>
 
                     {followups.length > 0 && (
                       <div className="followups">
