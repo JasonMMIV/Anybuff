@@ -38,8 +38,10 @@ export const gravityIndexGuidance = (deeperResearch = '') =>
 
 /**
  * The Opus-tier model shared by DEFAULT and MAX mode and every subagent they
- * spawn. Agent ids like `code-reviewer-opus` name the tier, not the generation,
- * so the generation lives here: bumping it is one edit instead of a dozen.
+ * spawn. AnyBuff: per-model subagents were removed (ADR-15 follow-up), so the
+ * generic reviewers/thinkers/editors all run on this tier's model via BYOK
+ * routing; the generation lives here: bumping it is one edit instead of a
+ * dozen.
  *
  * Keeping these in sync by hand did not work — the 4.7 bump left stragglers
  * behind and the docs drifted two generations out of date.

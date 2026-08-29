@@ -1,15 +1,6 @@
 import { buildArray } from '@codebuff/common/util/array'
 import { COMPOSIO_META_TOOL_NAMES } from '@codebuff/common/constants/composio'
-import {
-  FREEBUFF_GEMINI_THINKER_AGENT_ID,
-  FREEBUFF_GEMINI_THINKER_INSTRUCTIONS_PROMPT,
-  FREEBUFF_GEMINI_THINKER_SYSTEM_INSTRUCTION,
-} from '@codebuff/common/constants/freebuff-gemini-thinker'
-import { FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL } from '@codebuff/common/constants/free-agents'
-import {
-  canFreebuffModelSpawnGeminiThinker,
-  FREEBUFF_MINIMAX_M3_MODEL_ID,
-} from '@codebuff/common/constants/freebuff-models'
+import { FREEBUFF_MINIMAX_M3_MODEL_ID } from '@codebuff/common/constants/freebuff-models'
 import { contextPrunerBudgetForModel } from '@codebuff/common/constants/model-config'
 
 import {
@@ -48,18 +39,12 @@ const MODEL_BY_MODE = {
   free: FREEBUFF_MINIMAX_M3_MODEL_ID,
 } satisfies Record<Base2Mode, SecretAgentDefinition['model']>
 
-/**
- * The reviewer each lean model reviews with, per product. Codebuff adds lite's
- * own reviewer on top of the shared ones; Freebuff deliberately gets only the
- * free-tier map, so no free session can resolve to code-reviewer-lite even if a
- * freebuff agent were pointed at lite's model. Anything unmapped falls back to
- * DeepSeek Flash — cheap, and allowed in a free session.
- */
-const CODEBUFF_REVIEWER_BY_MODEL: Record<string, string> = {
-  ...FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL,
-  [LITE_MODEL]: 'code-reviewer-lite',
-}
-const FALLBACK_REVIEWER_AGENT_ID = 'code-reviewer-deepseek-flash'
+// AnyBuff: per-model reviewers were removed (ADR-15 follow-up). All lean modes
+// fall back to the generic reviewer; BYOK model routing (anybuff.json) makes
+// per-model reviewer files unnecessary. Only lite keeps its own reviewer
+// (code-reviewer-lite, on the same model as the orchestrator).
+const FALLBACK_REVIEWER_AGENT_ID = 'code-reviewer'
+const LITE_REVIEWER_AGENT_ID = 'code-reviewer-lite'
 
 export function createBase2(
   mode: Base2Mode,
@@ -95,20 +80,14 @@ export function createBase2(
   const isLean = mode === 'free' || mode === 'lite'
 
   const model = modelOverride ?? MODEL_BY_MODE[mode]
-  // Both lean modes can offload deeper reasoning to the Gemini thinker, which
-  // is the only sanctioned way to reach Gemini Pro.
-  //
-  // Freebuff gates it on the parent model: that set is a free-session admission
-  // rule (see canFreebuffModelSpawnGeminiThinker and free-session/public-api),
-  // limiting which free picks may pull a premium model on an unbilled path.
-  // Lite is billed, so the completions gate leaves it alone and no such
-  // restriction applies.
-  const hasGeminiThinker =
-    isLite || (isFreebuff && canFreebuffModelSpawnGeminiThinker(model))
-  const leanCodeReviewerAgentId =
-    (isFreebuff
-      ? FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL
-      : CODEBUFF_REVIEWER_BY_MODEL)[model] ?? FALLBACK_REVIEWER_AGENT_ID
+  // Both lean modes can offload deeper reasoning to the generic thinker agent.
+  // AnyBuff: per-model gemini thinkers were removed (ADR-15 follow-up); the
+  // lean modes escalate to the shared 'thinker', whose model anybuff.json can
+  // override.
+  const hasGeminiThinker = isLite
+  const leanCodeReviewerAgentId = isLite
+    ? LITE_REVIEWER_AGENT_ID
+    : FALLBACK_REVIEWER_AGENT_ID
   const contextPrunerMaxContextLength = contextPrunerBudgetForModel(model)
   const defaultProviderOptions = getBase2ProviderOptions(model)
 
@@ -164,8 +143,8 @@ export function createBase2(
       'researcher-docs',
       'basher',
       isDefault && 'thinker',
-      (isDefault || isMax) && ['opus-agent', 'gpt-5-agent'],
-      isMax && 'thinker-best-of-n-opus',
+      (isDefault || isMax) && 'base-deep',
+      isMax && 'thinker-best-of-n',
       isDefault && 'editor',
       isMax && 'editor-multi-prompt',
       'tmux-cli',
@@ -173,8 +152,7 @@ export function createBase2(
       isLean && !noReview && leanCodeReviewerAgentId,
       isDefault && 'code-reviewer',
       isMax && 'code-reviewer-multi-prompt',
-      hasGeminiThinker && FREEBUFF_GEMINI_THINKER_AGENT_ID,
-      !isFreebuff && 'thinker-gpt',
+      hasGeminiThinker && 'thinker',
       'context-pruner',
     ),
 
@@ -225,13 +203,14 @@ Use the spawn_agents tool to spawn specialized agents to help you complete the u
 - **Sequence agents properly:** Keep in mind dependencies when spawning different agents. Don't spawn agents in parallel that depend on each other.
   ${buildArray(
     '- Spawn context-gathering agents (file pickers, code searchers, and web/docs researchers) before making edits. Use the list_directory and glob tools directly for searching and exploring the codebase.',
-    hasGeminiThinker && FREEBUFF_GEMINI_THINKER_SYSTEM_INSTRUCTION,
+    hasGeminiThinker &&
+      "- Spawn the thinker agent for problems worth reasoning about -- non-trivial bugs, uncertain approaches, and tricky decisions, not just the hardest tasks. Skip it for routine, clearly-scoped edits. It sees the full conversation, so give it a short, focused prompt.",
     isLite &&
-      "- The thinker-with-files-gemini agent is lite mode's one escalation path. It runs a model several times more expensive per token than lite itself and the user is billed for every spawn, so escalate when a problem genuinely needs it rather than routinely. Do not spawn thinker-gpt unless the user asks for it: it costs about the same per token and adds nothing over the gemini thinker here. If the work needs sustained deep reasoning rather than one hard question, say so and suggest the user switch to DEFAULT or MAX mode.",
+      "- The thinker agent is lite mode's escalation path for genuinely hard problems. It runs a more expensive model than lite itself and the user is billed for every spawn, so escalate when a problem genuinely needs it rather than routinely. If the work needs sustained deep reasoning rather than one hard question, say so and suggest the user switch to DEFAULT or MAX mode.",
     isDefault &&
       '- Spawn the editor agent to implement the changes after you have gathered all the context you need.',
     (isDefault || isMax) &&
-      `- Spawn the ${isDefault ? 'thinker' : 'thinker-best-of-n-opus'} after gathering context to solve complex problems or when the user asks you to think about a problem. (gpt-5-agent is a last resort for complex problems)`,
+      `- Spawn the ${isDefault ? 'thinker' : 'thinker-best-of-n'} after gathering context to solve complex problems or when the user asks you to think about a problem. (base-deep is a last resort for complex problems)`,
     isMax &&
       `- IMPORTANT: You must spawn the editor-multi-prompt agent to implement the changes after you have gathered all the context you need. You must spawn this agent for non-trivial changes, since it writes much better code than you would with the str_replace or write_file tools. Don't spawn the editor in parallel with context-gathering agents.`,
     isLean &&
@@ -519,9 +498,10 @@ ${buildArray(
   (isDefault || isMax || isLean) &&
     `- For any task requiring 3+ steps, use the write_todos tool to write out your step-by-step implementation plan. Include ALL of the applicable tasks in the list.${isFast || noReview ? '' : ' You should include a step to review the changes after you have implemented the changes.'}:${hasNoValidation ? '' : ' You should include at least one step to validate/test your changes: be specific about whether to typecheck, run tests, run lints, etc.'} You may be able to do reviewing and validation in parallel in the same step. Skip write_todos for simple tasks like quick edits or answering questions.`,
   `- ${THINKER_SPAWN_LIMIT}`,
-  hasGeminiThinker && FREEBUFF_GEMINI_THINKER_INSTRUCTIONS_PROMPT,
+  hasGeminiThinker &&
+    '- For problems worth thinking through -- non-trivial bugs, uncertain approaches, or tricky decisions -- spawn the thinker agent after gathering context, not just for the hardest tasks. Skip it for routine, clearly-scoped edits.',
   (isDefault || isMax) &&
-    `- For quick problems, briefly explain your reasoning to the user. If you need to think longer, write your thoughts within the <think> tags. Finally, for complex problems, spawn the thinker agent to help find the best solution. (gpt-5-agent is a last resort for complex problems)`,
+    `- For quick problems, briefly explain your reasoning to the user. If you need to think longer, write your thoughts within the <think> tags. Finally, for complex problems, spawn the thinker agent to help find the best solution. (base-deep is a last resort for complex problems)`,
   isDefault &&
     '- IMPORTANT: You must spawn the editor agent to implement the changes after you have gathered all the context you need. This agent will do the best job of implementing the changes so you must spawn it for all non-trivial changes. Do not pass any prompt or params to the editor agent when spawning it. It will make its own best choices of what to do.',
   isMax &&

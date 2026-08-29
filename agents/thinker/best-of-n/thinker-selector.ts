@@ -1,24 +1,14 @@
-import { OPUS_MODEL, publisher } from '../../constants'
+import { publisher } from '../../constants'
 import { type SecretAgentDefinition } from '../../types/secret-agent-definition'
 
-export function createThinkerSelector(
-  model: 'sonnet' | 'opus',
-): Omit<SecretAgentDefinition, 'id'> {
-  const isOpus = model === 'opus'
-
+// AnyBuff: per-model variant (thinker-selector-opus) was removed (ADR-15
+// follow-up). This is the single generic selector; anybuff.json can override
+// its model per user configuration.
+export function createThinkerSelector(): Omit<SecretAgentDefinition, 'id'> {
   return {
     publisher,
-    model: isOpus
-      ? OPUS_MODEL
-      : 'anthropic/claude-sonnet-4.5',
-    ...(isOpus && {
-      providerOptions: {
-        only: ['amazon-bedrock'],
-      },
-    }),
-    displayName: isOpus
-      ? 'Opus Thinker Output Selector'
-      : 'Thinker Output Selector',
+    model: 'anthropic/claude-sonnet-4.5',
+    displayName: 'Thinker Output Selector',
     spawnerPrompt: 'Analyzes multiple thinking outputs and selects the best one',
 
     includeMessageHistory: true,
@@ -89,7 +79,7 @@ Then, do not write any other explanations AT ALL. You should directly output a s
 }
 
 const definition: SecretAgentDefinition = {
-  ...createThinkerSelector('sonnet'),
+  ...createThinkerSelector(),
   id: 'thinker-selector',
 }
 

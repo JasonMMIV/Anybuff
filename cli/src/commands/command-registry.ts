@@ -497,19 +497,6 @@ const ALL_COMMANDS: CommandDefinition[] = [
     },
   }),
   defineCommand({
-    name: 'gpt-5-agent',
-    handler: (params) => {
-      // Insert @ GPT-5 Agent into the input field (UI shortcut, not a real command)
-      params.setInputValue({
-        text: '@GPT-5 Agent ',
-        cursorPosition: '@GPT-5 Agent '.length,
-        lastEditDueToNav: false,
-      })
-      params.inputRef.current?.focus()
-      // Don't save to history - this is just a UI shortcut
-    },
-  }),
-  defineCommand({
     name: 'history',
     aliases: ['chats'],
     handler: (params) => {

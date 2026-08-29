@@ -1,14 +1,15 @@
 export const FREEBUFF_GEMINI_THINKER_AGENT_ID = 'thinker-with-files-gemini'
 
-/** Agent id the freebuff WEB CHAT uses for its gemini-thinker child (see
- *  agents/thinker/thinker-gemini.ts, spawned from agents/base-chat.ts). Distinct
- *  from the CLI's FREEBUFF_GEMINI_THINKER_AGENT_ID. */
+/** Agent id the freebuff WEB CHAT used for its gemini-thinker child. The
+ *  per-model thinker files were removed in AnyBuff (ADR-15 follow-up); these
+ *  constants are retained verbatim for upstream-merge compatibility and the
+ *  hosted backend. Distinct from the CLI's FREEBUFF_GEMINI_THINKER_AGENT_ID. */
 export const FREEBUFF_CHAT_GEMINI_THINKER_AGENT_ID = 'thinker-gemini'
 
 /** The ONLY agents permitted to call the premium Gemini Pro model. Gemini Pro is
- *  not a user-pickable model — its only legitimate callers are these two thinker
- *  subagents (CLI + chat). The chat-completions endpoint rejects any other agent
- *  that requests Gemini Pro on an unbilled path. */
+ *  not a user-pickable model — its only legitimate callers were these two
+ *  thinker subagents (CLI + chat). The chat-completions endpoint rejects any
+ *  other agent that requests Gemini Pro on an unbilled path. */
 export const FREEBUFF_GEMINI_PRO_AGENT_IDS: ReadonlySet<string> = new Set([
   FREEBUFF_GEMINI_THINKER_AGENT_ID,
   FREEBUFF_CHAT_GEMINI_THINKER_AGENT_ID,

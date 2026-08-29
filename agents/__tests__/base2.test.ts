@@ -17,16 +17,9 @@ const FREEBUFF_KIMI_MODEL_ID = 'moonshotai/kimi-k2.7-code'
 const FREEBUFF_MIMO_V25_PRO_MODEL_ID = 'mimo/mimo-v2.5-pro'
 
 describe('base2 reviewer selection', () => {
-  // NOTE (AnyBuff): several assertions below reference reviewer ids whose
-  // definition FILES were removed from this repo (code-reviewer-deepseek,
-  // code-reviewer-fable, code-reviewer-glm, code-reviewer-luna,
-  // code-reviewer-mimo, code-reviewer-minimax-m3). The ids still resolve here
-  // because the FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL map in common/ is retained
-  // verbatim for upstream-merge compatibility (ADR-1/ADR-6). createBase2('free')
-  // has no runtime consumer in AnyBuff (desktop runs only default/plan modes), so
-  // these are dormant strings, not live spawns. Do not reintroduce the agent
-  // files; a future full Freebuff-mode removal should strip this map and these
-  // tests together.
+  // NOTE (AnyBuff, ADR-15 follow-up): per-model reviewers/thinkers were
+  // removed. createBase2 now resolves every lean mode to the generic
+  // code-reviewer (lite keeps code-reviewer-lite), regardless of model.
   test('Codebuff lite uses GPT-5.6 Luna and the lite reviewer', () => {
     const base2 = createBase2('lite')
 
@@ -35,72 +28,66 @@ describe('base2 reviewer selection', () => {
     expect(base2.instructionsPrompt).toContain('Spawn a code-reviewer-lite')
   })
 
-  test('free mode still uses MiniMax M3 and its matching reviewer', () => {
+  test('free mode uses the generic reviewer, not a per-model one', () => {
     const base2 = createBase2('free')
 
     expect(base2.model).toBe(FREEBUFF_MINIMAX_M3_MODEL_ID)
-    expect(base2.spawnableAgents).toContain('code-reviewer-minimax-m3')
-    expect(base2.instructionsPrompt).toContain(
-      'Spawn a code-reviewer-minimax-m3',
-    )
+    expect(base2.spawnableAgents).toContain('code-reviewer')
+    expect(base2.spawnableAgents).not.toContain('code-reviewer-minimax-m3')
+    expect(base2.instructionsPrompt).toContain('Spawn a code-reviewer')
   })
 
   test('the lite reviewer runs the same model as lite mode', () => {
     expect(codeReviewerLite.model).toBe('openai/gpt-5.6-luna')
   })
 
-  test('a free model without a matching reviewer falls back to DeepSeek Flash', () => {
+  test('any free model resolves to the generic reviewer, never lite\u2019s', () => {
     // Never code-reviewer-lite: that one runs Codebuff's paid lite model now,
     // which free mode is not allowed to spend on.
     const base2 = createBase2('free', { model: 'some/unmapped-free-model' })
 
-    expect(base2.spawnableAgents).toContain('code-reviewer-deepseek-flash')
+    expect(base2.spawnableAgents).toContain('code-reviewer')
     expect(base2.spawnableAgents).not.toContain('code-reviewer-lite')
-    expect(base2.instructionsPrompt).toContain(
-      'Spawn a code-reviewer-deepseek-flash',
-    )
+    expect(base2.instructionsPrompt).toContain('Spawn a code-reviewer')
   })
 
   test('free mode cannot reach the paid reviewer even on lite’s own model', () => {
-    // Reviewer lookup is per product. Sharing one model-keyed table between
-    // them let a freebuff agent pointed at lite's model resolve to the paid
-    // code-reviewer-lite, which a free session is not allowed to spend on.
-    // Freebuff now offers GPT-5.6 Luna too, so free mode on this model gets its
-    // own free reviewer — still never lite's.
+    // Per-model reviewers are gone; free mode on any model resolves to the
+    // generic code-reviewer, never lite's.
     const base2 = createBase2('free', { model: 'openai/gpt-5.6-luna' })
 
     expect(base2.spawnableAgents).not.toContain('code-reviewer-lite')
-    expect(base2.spawnableAgents).toContain('code-reviewer-luna')
+    expect(base2.spawnableAgents).toContain('code-reviewer')
     expect(base2.systemPrompt).not.toContain('code-reviewer-lite')
     expect(base2.instructionsPrompt).not.toContain('code-reviewer-lite')
   })
 
   test.each([
-    [FREEBUFF_MINIMAX_M3_MODEL_ID, 'code-reviewer-minimax-m3'],
-    [FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID, 'code-reviewer-deepseek'],
-    [FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID, 'code-reviewer-deepseek-flash'],
-    [FREEBUFF_MIMO_V25_MODEL_ID, 'code-reviewer-mimo'],
-  ])('uses matching reviewer for model %p', (model, expectedReviewer) => {
+    FREEBUFF_MINIMAX_M3_MODEL_ID,
+    FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID,
+    FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID,
+    FREEBUFF_MIMO_V25_MODEL_ID,
+  ])('every free model resolves to the generic reviewer (%p)', (model) => {
     const base2 = createBase2('free', { model })
 
-    expect(base2.spawnableAgents).toContain(expectedReviewer)
-    expect(base2.instructionsPrompt).toContain(`Spawn a ${expectedReviewer}`)
+    expect(base2.spawnableAgents).toContain('code-reviewer')
+    expect(base2.instructionsPrompt).toContain('Spawn a code-reviewer')
   })
 
-  test('the reviewer follows the model, not the mode', () => {
-    // Overriding lite's model moves the reviewer with it, the same way the
-    // context-pruner budget and provider routing follow the model.
+  test('lite keeps its own reviewer regardless of model override', () => {
+    // AnyBuff: per-model reviewers are gone, so lite always gets
+    // code-reviewer-lite (same model as the orchestrator).
     const base2 = createBase2('lite', { model: FREEBUFF_MIMO_V25_MODEL_ID })
 
-    expect(base2.spawnableAgents).toContain('code-reviewer-mimo')
-    expect(base2.spawnableAgents).not.toContain('code-reviewer-lite')
+    expect(base2.spawnableAgents).toContain('code-reviewer-lite')
+    expect(base2.spawnableAgents).not.toContain('code-reviewer-mimo')
   })
 
-  test('an unmapped model falls back to the cheap reviewer', () => {
+  test('an unmapped model still resolves to a valid reviewer', () => {
     // Kimi was removed from Freebuff on 2026-07-31 along with its reviewer,
-    // and MiMo 2.5 Pro on 2026-08-04, so both are now just unmapped models: no
-    // reviewer of their own is resolvable in any mode, and the lean fallback
-    // takes over.
+    // and MiMo 2.5 Pro on 2026-08-04, so both are now just unmapped models.
+    // AnyBuff: per-model reviewers are gone, so every lean mode resolves to
+    // the generic code-reviewer (lite keeps its own).
     for (const mode of ['free', 'lite'] as const) {
       const base2 = createBase2(mode, { model: FREEBUFF_KIMI_MODEL_ID })
       expect(base2.spawnableAgents).not.toContain('code-reviewer-kimi')
@@ -108,39 +95,52 @@ describe('base2 reviewer selection', () => {
         model: FREEBUFF_MIMO_V25_PRO_MODEL_ID,
       })
       expect(mimoPro.spawnableAgents).not.toContain('code-reviewer-mimo-pro')
-      expect(base2.spawnableAgents).toContain('code-reviewer-deepseek-flash')
+      const expected = mode === 'lite' ? 'code-reviewer-lite' : 'code-reviewer'
+      expect(base2.spawnableAgents).toContain(expected)
     }
   })
 })
 
-describe('base2 gemini thinker', () => {
-  const GEMINI_THINKER = 'thinker-with-files-gemini'
+describe('base2 lean thinker escalation', () => {
+  // AnyBuff: per-model gemini thinkers (thinker-gemini, thinker-with-files-
+  // gemini) were removed (ADR-15 follow-up). Lean modes escalate to the shared
+  // 'thinker', whose model anybuff.json can override.
 
-  test('lite gets the same gemini thinker as free mode', () => {
+  test('lite gets the shared thinker escalation', () => {
     const lite = createBase2('lite')
 
-    expect(lite.spawnableAgents).toContain(GEMINI_THINKER)
-    expect(lite.systemPrompt).toContain(GEMINI_THINKER)
-    expect(lite.instructionsPrompt).toContain(GEMINI_THINKER)
+    expect(lite.spawnableAgents).toContain('thinker')
+    expect(lite.systemPrompt).toContain('Spawn the thinker agent')
+    expect(lite.instructionsPrompt).toContain('spawn the thinker agent')
   })
 
-  test('lite keeps it regardless of model, unlike free mode', () => {
-    // The parent-model set gates free-session admission to Gemini Pro on an
-    // unbilled path. Lite is billed, so the completions gate exempts it.
+  test('lite keeps it regardless of model; free mode does not', () => {
+    // lite is billed, so its escalation path survives any model override.
+    // free mode resolves the generic reviewer but does not get the extra
+    // thinker escalation (its root already carries direct reasoning guidance).
     expect(
       createBase2('lite', { model: FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID })
         .spawnableAgents,
-    ).toContain(GEMINI_THINKER)
+    ).toContain('thinker')
     expect(
       createBase2('free', { model: FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID })
         .spawnableAgents,
-    ).not.toContain(GEMINI_THINKER)
-    expect(createBase2('free').spawnableAgents).toContain(GEMINI_THINKER)
+    ).not.toContain('thinker')
+    expect(createBase2('free').spawnableAgents).not.toContain('thinker')
   })
 
-  test.each(['default', 'max'] as const)('%s mode does not get it', (mode) => {
-    expect(createBase2(mode).spawnableAgents).not.toContain(GEMINI_THINKER)
-  })
+  test.each(['default', 'max'] as const)(
+    '%s mode does not get the lean escalation',
+    (mode) => {
+      // default/max carry the thinker too, but not the lean escalation
+      // language that lite gets (escalation path / more expensive model).
+      const systemPrompt = createBase2(mode).systemPrompt!
+      expect(systemPrompt).not.toContain('escalation path')
+      expect(systemPrompt).not.toContain(
+        'more expensive model than lite itself',
+      )
+    },
+  )
 })
 
 describe('production agent step prompts', () => {
@@ -167,51 +167,44 @@ describe('production agent step prompts', () => {
 
 describe('base2 escalation guidance', () => {
   test('lite names one escalation path and prices it honestly', () => {
-    // Per million tokens: lite ~$0.25/$1.50, gemini-3.1-pro $1.00/$6.00,
-    // gpt-5.4 $1.25/$7.50. The two thinkers sit in the same band, so lite
-    // cannot claim one is cheap and the other extravagant.
+    // lite's only escalation is the shared thinker, which runs a more
+    // expensive model. The prompt must be honest about the cost delta.
     const systemPrompt = createBase2('lite').systemPrompt!
 
     expect(systemPrompt).toContain(
-      "thinker-with-files-gemini agent is lite mode's one escalation path",
+      "thinker agent is lite mode's escalation path",
     )
     expect(systemPrompt).toContain(
-      'several times more expensive per token than lite itself',
+      'more expensive model than lite itself',
     )
-    expect(systemPrompt).toContain(
-      'Do not spawn thinker-gpt unless the user asks for it',
-    )
-    expect(systemPrompt).toContain('costs about the same per token')
+    expect(systemPrompt).not.toContain('thinker-gpt')
     expect(systemPrompt).toContain('DEFAULT or MAX mode')
     // The rationale must be Codebuff's cost story, not Freebuff's.
     expect(systemPrompt).not.toContain('ChatGPT subscription')
   })
 
   test('lite never argues against its own escalation path', () => {
-    // The incoherence this replaces: lite was told thinker-gpt was too
-    // expensive while being encouraged toward a thinker costing about as much.
     const systemPrompt = createBase2('lite').systemPrompt!
 
-    expect(systemPrompt).toContain('Spawn the thinker-with-files-gemini agent')
-    expect(systemPrompt).not.toMatch(/Do not spawn[^.]*thinker-with-files/)
+    expect(systemPrompt).toContain('Spawn the thinker agent')
+    expect(systemPrompt).not.toMatch(/Do not spawn[^.]*thinker/)
   })
 
-  test('both thinkers stay spawnable so an explicit request still works', () => {
+  test('the shared thinker stays spawnable so an explicit request works', () => {
     const lite = createBase2('lite')
 
-    expect(lite.spawnableAgents).toContain('thinker-gpt')
-    expect(lite.spawnableAgents).toContain('thinker-with-files-gemini')
+    expect(lite.spawnableAgents).toContain('thinker')
+    expect(lite.spawnableAgents).not.toContain('thinker-gpt')
+    expect(lite.spawnableAgents).not.toContain('thinker-with-files-gemini')
   })
 
   test.each([
     ['default free root', undefined],
     ['Fable', FREEBUFF_FABLE_5_MODEL_ID],
     ['DeepSeek Flash', FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID],
-  ] as const)('%s has no thinker-gpt to restrict', (_label, model) => {
-    // Freebuff reached thinker-gpt only through /connect-chatgpt, on the user's
-    // own subscription. With that integration gone the agent 403s for every
-    // free session, so it is off the list — and the prompt must not name it
-    // either, which would just invite a spawn that cannot succeed.
+  ] as const)('%s has no per-model thinker to restrict', (_label, model) => {
+    // AnyBuff: per-model thinkers were removed entirely, so no mode names
+    // them — which would just invite a spawn that cannot succeed.
     const free = createBase2('free', model ? { model } : undefined)
     const prompts = [
       free.systemPrompt,
@@ -481,11 +474,11 @@ describe('Claude Fable 5 root', () => {
     model: FREEBUFF_FABLE_5_MODEL_ID,
   })
 
-  test('reviews with a Fable reviewer, not the cross-model fallback', () => {
-    // The session gate rejects any subagent whose model differs from the one the
-    // session was admitted on, so the reviewer must run Fable itself. The
-    // fallback (code-reviewer-deepseek-flash) 403s with session_model_mismatch.
-    expect(fable.spawnableAgents).toContain('code-reviewer-fable')
+  test('reviews with the generic reviewer, not a per-model one', () => {
+    // AnyBuff: per-model reviewers were removed; free mode always resolves to
+    // the generic code-reviewer.
+    expect(fable.spawnableAgents).toContain('code-reviewer')
+    expect(fable.spawnableAgents).not.toContain('code-reviewer-fable')
     expect(fable.spawnableAgents).not.toContain('code-reviewer-deepseek-flash')
   })
 })

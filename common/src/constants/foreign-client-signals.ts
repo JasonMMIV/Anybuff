@@ -235,13 +235,13 @@ export type ForeignClientDecision = ForeignClientVerdict & {
  * The other two are reported but never enforced, both because they fire on our
  * own traffic:
  *
- *  - `sampling_params` — 568 requests / 13 users on
- *    `code-reviewer-deepseek-flash` in a 24h sample, plus the CLI's own
- *    free-mode shape, which sends `max_completion_tokens` with no tools. It
- *    now only reports NON-root agents: `root_agent_no_tools` is checked first,
- *    so the 8,884 requests / 395 users this used to cite on
- *    `base2-free-deepseek-flash` classify under that signal instead. Neither
- *    enforces, so the reclassification changes measurement, not behavior.
+ *  - `sampling_params` — 568 requests / 13 users on the free-mode reviewer in
+ *    a 24h sample, plus the CLI's own free-mode shape, which sends
+ *    `max_completion_tokens` with no tools. It now only reports NON-root
+ *    agents: `root_agent_no_tools` is checked first, so the 8,884 requests /
+ *    395 users this used to cite on the free-mode root classify under that
+ *    signal instead. Neither enforces, so the reclassification changes
+ *    measurement, not behavior.
  *  - `root_agent_no_tools` — 3,729 users who also do real agentic work, 999 of
  *    whose sessions mix it with tool-bearing root calls. See the backtest in
  *    `detectForeignFreebuffClient`. Catching the 417 genuine proxies inside

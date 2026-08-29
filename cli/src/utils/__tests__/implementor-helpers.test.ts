@@ -608,11 +608,11 @@ describe('isImplementorAgent', () => {
     expect(
       isImplementorAgent({ agentType: 'editor-implementor', blocks: [] }),
     ).toBe(true)
+    // AnyBuff: per-model implementors were removed; the id matcher still
+    // recognizes old variant names (e.g. from historical sessions) via the
+    // generic 'editor-implementor' substring.
     expect(
       isImplementorAgent({ agentType: 'editor-implementor-opus', blocks: [] }),
-    ).toBe(true)
-    expect(
-      isImplementorAgent({ agentType: 'editor-implementor-gpt-5', blocks: [] }),
     ).toBe(true)
     expect(
       isImplementorAgent({ agentType: 'editor-implementor2', blocks: [] }),
@@ -633,19 +633,25 @@ describe('isImplementorAgent', () => {
 })
 
 describe('getImplementorDisplayName', () => {
-  test('returns model names', () => {
+  test('returns the generic implementor name', () => {
     expect(getImplementorDisplayName('editor-implementor')).toBe('Sonnet')
-    expect(getImplementorDisplayName('editor-implementor-opus')).toBe('Opus')
-    expect(getImplementorDisplayName('editor-implementor-gpt-5')).toBe('GPT-5')
-    expect(getImplementorDisplayName('editor-implementor-gemini')).toBe(
-      'Gemini',
+  })
+
+  test('falls back to Implementor for unknown variants', () => {
+    // AnyBuff: per-model implementors were removed; old variant ids (e.g. from
+    // historical sessions) fall back to the generic label.
+    expect(getImplementorDisplayName('editor-implementor-opus')).toBe(
+      'Implementor',
+    )
+    expect(getImplementorDisplayName('editor-implementor-gpt-5')).toBe(
+      'Implementor',
     )
   })
 
   test('adds index when provided', () => {
     expect(getImplementorDisplayName('editor-implementor', 0)).toBe('Sonnet #1')
     expect(getImplementorDisplayName('editor-implementor-opus', 2)).toBe(
-      'Opus #3',
+      'Implementor #3',
     )
   })
 })
@@ -674,7 +680,7 @@ describe('getImplementorIndex', () => {
       type: 'agent',
       agentId: 'a3',
       agentName: 'Impl 3',
-      agentType: 'editor-implementor-opus',
+      agentType: 'editor-implementor',
       content: '',
       status: 'complete',
       blocks: [],
@@ -881,8 +887,8 @@ describe('groupConsecutiveImplementors', () => {
   test('groups consecutive implementor agents', () => {
     const blocks: ContentBlock[] = [
       createImplementorAgent('impl-1'),
-      createImplementorAgent('impl-2', 'editor-implementor-opus'),
-      createImplementorAgent('impl-3', 'editor-implementor-gpt-5'),
+      createImplementorAgent('impl-2', 'editor-implementor'),
+      createImplementorAgent('impl-3', 'editor-implementor'),
       createNonImplementorAgent('fp-1', 'file-picker'),
     ]
     const result = groupConsecutiveImplementors(blocks, 0)
@@ -1102,7 +1108,7 @@ describe('getMultiPromptProgress', () => {
       type: 'agent',
       agentId: id,
       agentName: 'Implementor',
-      agentType: 'editor-implementor-opus',
+      agentType: 'editor-implementor',
       content: '',
       status,
       blocks: [],
@@ -1210,7 +1216,7 @@ describe('getMultiPromptPreview', () => {
       type: 'agent',
       agentId: id,
       agentName: 'Implementor',
-      agentType: 'editor-implementor-opus',
+      agentType: 'editor-implementor',
       content: '',
       status,
       blocks: [],

@@ -26,7 +26,9 @@ export function createCodeReviewerMultiPrompt(): Omit<
     inheritParentSystemPrompt: true,
 
     toolNames: ['spawn_agents', 'set_output'],
-    spawnableAgents: ['code-reviewer-opus'],
+    // AnyBuff: per-model reviewers removed (ADR-15 follow-up); the generic
+    // code-reviewer covers all focus prompts.
+    spawnableAgents: ['code-reviewer'],
 
     inputSchema: {
       params: {
@@ -88,7 +90,7 @@ function* handleStepsMultiPrompt({
   // Spawn one code-reviewer per prompt
   const reviewerAgents: { agent_type: string; prompt: string }[] = prompts.map(
     (prompt) => ({
-      agent_type: 'code-reviewer-opus',
+      agent_type: 'code-reviewer',
       prompt: `Review the above code changes with the following focus: ${prompt}`,
     }),
   )

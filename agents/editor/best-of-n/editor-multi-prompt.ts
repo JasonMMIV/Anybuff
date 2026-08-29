@@ -29,11 +29,10 @@ export function createMultiPromptEditor(): Omit<SecretAgentDefinition, 'id'> {
       'set_messages',
       'set_output',
     ],
-    spawnableAgents: [
-      'best-of-n-selector2',
-      'editor-implementor-opus',
-      'editor-implementor-gpt-5',
-    ],
+    // AnyBuff: per-model implementors removed (ADR-15 follow-up); the generic
+    // editor-implementor covers all strategies, and anybuff.json can route its
+    // model per user configuration.
+    spawnableAgents: ['best-of-n-selector2', 'editor-implementor'],
 
     inputSchema: {
       params: {
@@ -94,10 +93,10 @@ function* handleStepsMultiPrompt({
     includeToolCall: false,
   } satisfies ToolCall<'set_messages'>
 
-  // Spawn one opus implementor per prompt
+  // Spawn one implementor per prompt
   const implementorAgents: { agent_type: string; prompt?: string }[] =
     prompts.map((prompt) => ({
-      agent_type: 'editor-implementor-opus',
+      agent_type: 'editor-implementor',
       prompt: `Strategy: ${prompt}`,
     }))
 

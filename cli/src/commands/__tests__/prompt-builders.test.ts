@@ -10,6 +10,8 @@ describe('prompt-builders base prompts', () => {
   // These used to branch on whether the user had connected a ChatGPT account,
   // delegating the deep-thinking step to @thinker-gpt if so. That integration
   // is gone, so there is one branch: the user's selected model does the work.
+  // (The per-model thinker agents were removed with the rest of the model-
+  // specific leftovers; the prompts never reference an agent by name.)
   test('/plan runs on the selected model', () => {
     const prompt = buildPlanPrompt('add OAuth login')
     expect(prompt).not.toContain('@thinker-gpt')

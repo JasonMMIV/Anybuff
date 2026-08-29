@@ -4,12 +4,10 @@ import type {
   ToolContentBlock,
 } from '../types/chat'
 
-export const IMPLEMENTOR_AGENT_IDS = [
-  'editor-implementor',
-  'editor-implementor-opus',
-  'editor-implementor-gemini',
-  'editor-implementor-gpt-5',
-] as const
+// AnyBuff: per-model implementors (editor-implementor-opus / -gpt-5 / -gemini)
+// were removed (ADR-15 follow-up); the generic editor-implementor is the only
+// variant.
+export const IMPLEMENTOR_AGENT_IDS = ['editor-implementor'] as const
 
 /** All edit tool names (both direct and proposed variants) */
 const ALL_EDIT_TOOL_NAMES = [
@@ -59,12 +57,7 @@ export const isImplementorAgent = (
   return IMPLEMENTOR_AGENT_IDS.some((id) => agentBlock.agentType.includes(id))
 }
 
-// Order matters: more specific substrings must be checked before the
-// generic 'editor-implementor' suffix, since every variant contains it.
 const IMPLEMENTOR_DISPLAY_NAMES = [
-  ['editor-implementor-opus', 'Opus'],
-  ['editor-implementor-gemini', 'Gemini'],
-  ['editor-implementor-gpt-5', 'GPT-5'],
   ['editor-implementor', 'Sonnet'],
 ] as const
 

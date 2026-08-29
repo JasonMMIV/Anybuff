@@ -40,7 +40,6 @@ const SPAWN_AGENTS_OUTPUT_BLACKLIST = [
   'researcher-docs',
   'basher',
   'code-reviewer',
-  'code-reviewer-opus',
   'code-reviewer-multi-prompt',
   'librarian',
   'tmux-cli',
