@@ -8,10 +8,6 @@
 # 觸發方式：
 #   git tag v0.1.0-beta.3
 #   git push origin v0.1.0-beta.3
-#
-# 若使用者偏好手動上傳 exe（檔案較大），可在 workflow 上傳後再自行
-# 以瀏覽器對該 Release 附加 AnyBuff-Setup-<version>.exe；blockmap 與
-# latest.yml 已由此 workflow 上傳，exe 補上後即可被自動更新偵測。
 
 name: release
 
@@ -59,12 +55,35 @@ jobs:
           body: |
             ## AnyBuff ${{ github.ref_name }}
 
-            Windows 桌面端安裝包（NSIS，x64，per-user 免 UAC）。
+            Windows 桌面端 BYOK 本地 AI Coding Agent。
 
-            > 注意：SmartScreen 會提示「不明發行者」——未簽章開源自簽安裝包為預期行為，點「其他資訊 → 仍要執行」即可。
+            ### ✨ 本版新功能
 
-            自動更新：exe + `.blockmap` + `latest.yml` 三個檔案缺一不可；若 exe 尚未上傳（檔案較大由維護者手動補傳），請補上後自動更新才會被偵測。
-          draft: true
+            **🃏 工具具名卡片**
+            - 每種工具呼叫都有語意化小卡：code search 顯示 pattern／目錄／結果數、read files 顯示檔案清單、read URL 顯示網址、run command 顯示指令…
+            - 常駐摘要 chips，不用展開也能一眼掃讀 agent 剛做了什麼
+            - **敏感檔視覺標記**：read files 若碰 `.env`、`id_rsa`、憑證檔等，會被主行程以與擋檔完全相同的規則標記，卡片上以紅色刪除線＋ `blocked` 徽章呈現，並顯示 `1/3 allowed` 計數
+
+            **🕐 訊息完成時間戳**
+            - 每則使用者與助理訊息 footer 常駐顯示完成時間（同天 `HH:MM`、跨天補日期）
+            - 複製／還原按鈕維持 hover 才浮現，不佔版面
+
+            **📜 歷史列表無限捲動**
+            - Sidebar 不再限制 12 專案／20 任務，移除「Show N more」按鈕，持續往下滑即可看完整歷史
+
+            ### 🔧 更新與修正
+
+            - **Agent 精簡**：移除已無作用的 per-model Agent 定義（Freebuff 免費模式 26 檔 + Codebuff 付費產品線 15 檔），打包體積與啟動更快
+            - **Reviewer 修正**：修復 code-reviewer 誤繼承父 agent 工具面與系統提示、導致審查呼叫被拒的問題
+
+            ### ⚠️ 安裝與使用說明
+
+            - **SmartScreen 提示**：未簽章開源安裝包會出現「不明發行者」警示，點「其他資訊 → 仍要執行」即可（預期行為）
+            - **BYOK**：自備 API Key，支援 OpenAI-compatible／Anthropic-compatible Provider（OpenAI、Claude、OpenRouter、DeepSeek、Ollama、LM Studio…）
+            - **自動更新**：App 啟動約 20 秒後靜默檢查、每 4 小時複查，找到新版自動下載，About 頁可手動檢查並重新安裝
+            - **金鑰安全**：API Key 以 Windows DPAPI 加密儲存，絕不寫入環境變數；敏感檔一律擋在 Agent 可讀範圍外
+          prerelease: true
+          draft: false
           files: |
             desktop/release-build/*.exe
             desktop/release-build/*.exe.blockmap
