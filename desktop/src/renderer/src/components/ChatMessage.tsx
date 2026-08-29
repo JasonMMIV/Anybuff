@@ -445,8 +445,11 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
     : toolLabel(name)
 
   // #12 樣式 B：常駐語意化標題（icon + label + agent）與摘要 chips。
+  // 摘要 chips 直接併入標題列：只顯示前 3 個，其餘收斂為「+N」，單行 ellipsis。
   const icon = isAgentCard ? <SpecialistIcon size={16} /> : toolIcon(name)
   const chips = isAgentCard ? [] : toolSummaryChips(tool)
+  const visibleChips = chips.slice(0, 3)
+  const hiddenChips = chips.length - visibleChips.length
   const resultCount = toolResultCount(tool)
   const blockedCount = tool.blockedPaths?.length ?? 0
   const allowedCount =
@@ -461,6 +464,23 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
         <span className="tool-icon" aria-hidden="true">{icon}</span>
         <span className="tool-name">{label}</span>
         {tool.agentType && <span className="tool-agent">{tool.agentType}</span>}
+        {visibleChips.length > 0 && !hasTodos && (
+          <span className="tool-summary" aria-label="tool-call-summary">
+            {visibleChips.map((c, i) => (
+              <span key={i} className={`chip${c.blocked ? ' blocked-chip' : ''}`}>
+                {c.blocked ? (
+                  <>
+                    <s className="blocked">{c.text}</s>
+                    <span className="blocked-badge">blocked</span>
+                  </>
+                ) : (
+                  c.text
+                )}
+              </span>
+            ))}
+            {hiddenChips > 0 && <span className="chip chip-more">+{hiddenChips}</span>}
+          </span>
+        )}
         {hasTodos && <span className="todo-summary-badge">{todoSummary}</span>}
         {tool.status === 'running' && <span className="tool-status-text">Running…</span>}
         {tool.status === 'error' && <span className="tool-status-text error">Failed</span>}
@@ -470,22 +490,6 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
           </span>
         )}
       </div>
-      {chips.length > 0 && !hasTodos && (
-        <div className="tool-summary">
-          {chips.map((c, i) => (
-            <span key={i} className={`chip${c.blocked ? ' blocked-chip' : ''}`}>
-              {c.blocked ? (
-                <>
-                  <s className="blocked">{c.text}</s>
-                  <span className="blocked-badge">blocked</span>
-                </>
-              ) : (
-                c.text
-              )}
-            </span>
-          ))}
-        </div>
-      )}
       {hasTodos && open ? (
         <TodoCard todos={tool.todos!} inline />
       ) : open && hasDetail ? (
