@@ -199,7 +199,7 @@ export default function Sidebar(props: SidebarProps) {
 
       <div className="projects-list">
         {props.projects.length === 0 && <div className="nav-muted">No projects yet. Open a folder to start.</div>}
-        {sortedProjects.slice(0, 12).map((p) => {
+        {sortedProjects.map((p) => {
           const isOpen = expandedProject === p.path
           const isCurrent = p.path === props.currentProjectPath
 
@@ -242,7 +242,7 @@ export default function Sidebar(props: SidebarProps) {
               {isOpen && (
                 <div className="task-list">
                   {p.tasks.length === 0 && <div className="nav-muted small">No tasks</div>}
-                  {p.tasks.slice(0, 20).map((t) =>
+                  {p.tasks.map((t) =>
                     editingTaskId === t.id ? (
                       <div key={t.id} className="task-row editing" onClick={(e) => e.stopPropagation()}>
                         <input

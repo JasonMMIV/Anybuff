@@ -31,7 +31,11 @@ export interface TaskMessage {
   text?: string
   reasoning?: string
   files?: FileChange[]
-  tool?: { toolName: string; status: string; agentType?: string; agentName?: string; detail?: string; todos?: unknown[] }
+  tool?: { toolName: string; status: string; agentType?: string; agentName?: string; detail?: string; todos?: unknown[]; toolInput?: Record<string, unknown>; blockedPaths?: string[] }
+  /** Epoch ms when the message was created (assistant: first token / user: send time). */
+  createdAt?: number
+  /** Epoch ms when the message completed (assistant: turn finished). */
+  updatedAt?: number
 }
 
 export interface FileChange {

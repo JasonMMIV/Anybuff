@@ -42,8 +42,8 @@ interface UiSettings {
 }
 
 type ChatItem =
-  | { kind: 'user'; text: string }
-  | { kind: 'assistant'; text: string; reasoning?: string }
+  | { kind: 'user'; text: string; ts?: number }
+  | { kind: 'assistant'; text: string; reasoning?: string; ts?: number }
   | { kind: 'tool'; tool: ToolItem }
   | { kind: 'file-changes'; files: FileChange[] }
   | { kind: 'compaction'; text: string }
@@ -127,15 +127,19 @@ const PREVIEW_SKILLS: SkillInfo[] = [
 ]
 
 const PREVIEW_ITEMS: ChatItem[] = [
-  { kind: 'user', text: 'Add zero-division error handling to the divide function' },
+  { kind: 'user', text: 'Add zero-division error handling to the divide function', ts: Date.now() - 240_000 },
   {
     kind: 'assistant',
-    text: 'Let me look at the current `calculator.js` before planning the change.\n\n```js\n// src/calculator.js\nexport function divide(a, b) {\n  return a / b\n}\n```\n\nThis function divides directly, so it returns `Infinity` when `b` is 0. I\'ll add an explicit zero-division check.'
+    text: 'Let me look at the current `calculator.js` before planning the change.\n\n```js\n// src/calculator.js\nexport function divide(a, b) {\n  return a / b\n}\n```\n\nThis function divides directly, so it returns `Infinity` when `b` is 0. I\'ll add an explicit zero-division check.',
+    ts: Date.now() - 210_000
   },
+  { kind: 'tool', tool: { toolName: 'code_search', status: 'done', detail: '12 matches in 4 files', toolInput: { pattern: 'zero\\s+division', flags: '-n -g *.ts', cwd: 'src', maxResults: 15 } } },
+  { kind: 'tool', tool: { toolName: 'read_files', status: 'done', detail: '3 files inspected', toolInput: { paths: ['src/config.ts', '.env', 'id_rsa'] }, blockedPaths: ['.env', 'id_rsa'] } },
   { kind: 'tool', tool: { toolName: 'edit_transaction', status: 'done', agentType: 'editor', detail: 'applied 1 edit: src/calculator.js\n+  if (b === 0) {\n+    throw new RangeError(\'Cannot divide by zero\')\n+  }' } },
   {
     kind: 'assistant',
-    text: 'Done:\n\n- `divide` now throws a `RangeError` when the divisor is 0\n- The original calculation logic is preserved\n\n```js\nexport function divide(a, b) {\n  if (b === 0) {\n    throw new RangeError(\'Cannot divide by zero\')\n  }\n  return a / b\n}\n```'
+    text: 'Done:\n\n- `divide` now throws a `RangeError` when the divisor is 0\n- The original calculation logic is preserved\n\n```js\nexport function divide(a, b) {\n  if (b === 0) {\n    throw new RangeError(\'Cannot divide by zero\')\n  }\n  return a / b\n}\n```',
+    ts: Date.now() - 180_000
   },
   { kind: 'file-changes', files: [
     { path: 'src/calculator.js', action: 'modify' as const },
@@ -668,8 +672,8 @@ export default function App() {
         setChatItems((prev) => {
           const next = [...prev]
           if (next.length > 0 && next[next.length - 1].kind === 'assistant') {
-            const last = next[next.length - 1] as { kind: 'assistant'; text: string; reasoning?: string }
-            next[next.length - 1] = { kind: 'assistant', text: last.text, reasoning: (last.reasoning ?? '') + delta }
+            const last = next[next.length - 1] as { kind: 'assistant'; text: string; reasoning?: string; ts?: number }
+            next[next.length - 1] = { kind: 'assistant', text: last.text, reasoning: (last.reasoning ?? '') + delta, ts: last.ts }
           } else {
             next.push({ kind: 'assistant', text: '', reasoning: delta })
           }
@@ -696,7 +700,7 @@ export default function App() {
         setChatItems((prev) => {
           const next = [...prev]
           if (next.length > 0 && next[next.length - 1].kind === 'assistant') {
-            const last = next[next.length - 1] as { kind: 'assistant'; text: string; reasoning?: string }
+            const last = next[next.length - 1] as { kind: 'assistant'; text: string; reasoning?: string; ts?: number }
             const newText = last.text + chunk
             const fullMatch =
               newText.match(/function:suggest_followups\s*(\{[\s\S]*?\})/i) ||
@@ -710,7 +714,8 @@ export default function App() {
             next[next.length - 1] = {
               kind: 'assistant',
               text: newText,
-              reasoning: last.reasoning
+              reasoning: last.reasoning,
+              ts: last.ts
             }
           } else {
             next.push({
@@ -749,7 +754,9 @@ export default function App() {
           toolName: event.toolName ?? 'tool',
           status: 'running',
           agentType: event.agentType,
-          todos: event.toolName === 'write_todos' && Array.isArray(event.todos) ? event.todos : undefined
+          todos: event.toolName === 'write_todos' && Array.isArray(event.todos) ? event.todos : undefined,
+          toolInput: event.toolInput,
+          blockedPaths: event.blockedPaths
         }
         if (event.toolName === 'write_todos' && Array.isArray(event.todos)) {
           setActiveTodos(event.todos)
@@ -787,6 +794,19 @@ export default function App() {
 
       if (event.type === 'finish') {
         setActiveTodos([])
+        // #21 訊息 footer 完成時間戳：stamp the assistant message that just finished.
+        const completedAt = Date.now()
+        setChatItems((prev) => {
+          const next = [...prev]
+          for (let i = next.length - 1; i >= 0; i--) {
+            const item = next[i]
+            if (item.kind === 'assistant') {
+              next[i] = { ...item, ts: completedAt }
+              break
+            }
+          }
+          return next
+        })
         // Insert file changes summary if files were modified
         const fileChanges = accumulatedFileChangesRef.current
         if (fileChanges.length > 0) {
@@ -1095,7 +1115,7 @@ export default function App() {
       accumulatedFileChangesRef.current = []
       setFollowups([])
       autoScrollRef.current = true
-      setChatItems((prev) => [...prev, { kind: 'user', text }, { kind: 'assistant', text: '' }])
+      setChatItems((prev) => [...prev, { kind: 'user', text, ts: Date.now() }, { kind: 'assistant', text: '' }])
       setRunning(true)
       setNotice(null)
       setHistoryTask(null)
@@ -1647,7 +1667,16 @@ export default function App() {
         resumeErrorMessage?: string
       }
       setHistoryTask({ id: task.id, prompt: task.prompt })
-      setChatItems((view.ok ? view.transcript ?? [] : []) as ChatItem[])
+      // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
+      const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
+      const items = transcript.map((m) => {
+        const ts = m.updatedAt ?? m.createdAt
+        if (ts && (m.kind === 'user' || m.kind === 'assistant')) {
+          return { ...m, ts }
+        }
+        return m
+      }) as ChatItem[]
+      setChatItems(items)
       setViewTask(task.id)
       if (view.ok && view.canResume && view.status !== 'running') {
         setResumeInfo({
@@ -2073,6 +2102,7 @@ export default function App() {
                           <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
                             <UserBubble
                               text={item.text}
+                              ts={item.ts}
                               onCopy={() => void navigator.clipboard?.writeText(item.text)}
                               onRevert={isLastUser && !viewRunning && !historyTask ? () => void requestRevert() : undefined}
                             />
@@ -2086,6 +2116,7 @@ export default function App() {
                             <AssistantBubble
                               text={item.text}
                               reasoning={item.reasoning}
+                              ts={item.ts}
                               streaming={isStreaming}
                               onCopy={() => void navigator.clipboard?.writeText(item.text)}
                             />

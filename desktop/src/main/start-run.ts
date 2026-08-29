@@ -57,6 +57,10 @@ export interface UiEvent {
   queryInput?: QueryIndexQuery
   queryIndex?: QueryIndexData
   todos?: TodoItem[]
+  /** #12 工具具名卡片：lightweight tool-call parameters (paths/pattern/url/command…), content-heavy fields stripped. */
+  toolInput?: Record<string, unknown>
+  /** #12 read_files 中被 isSensitiveFile 擋住的路徑（UI 畫刪除線 + blocked 徽章）。 */
+  blockedPaths?: string[]
   raw?: unknown
   /* auto_retry events */
   attempt?: number
@@ -223,6 +227,116 @@ function normalizeQueryIndexInput(input: unknown): QueryIndexQuery | undefined {
   return query
 }
 
+/**
+ * #12 工具具名卡片：pull the lightweight, display-relevant parameters out of a
+ * tool-call input for the renderer. Content-heavy fields (file contents, diff
+ * bodies, full question payloads…) are deliberately NOT forwarded — the
+ * renderer only needs the title-line facts.
+ */
+function normalizeToolInput(toolName: string, input: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(input)) return undefined
+  const out: Record<string, unknown> = {}
+  switch (toolName) {
+    case 'read_files':
+      if (Array.isArray(input.paths)) out.paths = input.paths.filter((p): p is string => typeof p === 'string')
+      break
+    case 'read_subtree':
+      if (Array.isArray(input.paths)) out.paths = input.paths.filter((p): p is string => typeof p === 'string')
+      if (typeof input.maxTokens === 'number') out.maxTokens = input.maxTokens
+      break
+    case 'list_directory':
+      if (typeof input.path === 'string') out.path = input.path
+      break
+    case 'glob':
+      if (typeof input.pattern === 'string') out.pattern = input.pattern
+      if (typeof input.cwd === 'string') out.cwd = input.cwd
+      break
+    case 'find_files':
+      if (typeof input.prompt === 'string') out.prompt = input.prompt
+      break
+    case 'code_search':
+      if (typeof input.pattern === 'string') out.pattern = input.pattern
+      if (typeof input.flags === 'string') out.flags = input.flags
+      if (typeof input.cwd === 'string') out.cwd = input.cwd
+      if (typeof input.maxResults === 'number') out.maxResults = input.maxResults
+      break
+    case 'web_search':
+      if (typeof input.query === 'string') out.query = input.query
+      if (typeof input.depth === 'string') out.depth = input.depth
+      break
+    case 'read_url':
+      if (typeof input.url === 'string') out.url = input.url
+      break
+    case 'read_docs':
+      if (typeof input.libraryTitle === 'string') out.libraryTitle = input.libraryTitle
+      if (typeof input.topic === 'string') out.topic = input.topic
+      break
+    case 'run_terminal_command':
+      if (typeof input.command === 'string') out.command = input.command
+      if (typeof input.process_type === 'string') out.processType = input.process_type
+      if (typeof input.cwd === 'string') out.cwd = input.cwd
+      break
+    case 'write_file':
+    case 'propose_write_file':
+      if (typeof input.path === 'string') out.path = input.path
+      break
+    case 'str_replace':
+    case 'propose_str_replace':
+      if (typeof input.path === 'string') out.path = input.path
+      if (Array.isArray(input.replacements)) out.replacements = input.replacements.length
+      break
+    case 'apply_patch': {
+      const op = isRecord(input.operation) ? input.operation : undefined
+      if (op && typeof op.path === 'string') out.path = op.path
+      if (op && typeof op.type === 'string') out.operation = op.type
+      break
+    }
+    case 'edit_transaction': {
+      if (Array.isArray(input.edits)) {
+        out.editPaths = input.edits
+          .filter((e): e is Record<string, unknown> => isRecord(e) && typeof e.path === 'string')
+          .map((e) => String(e.path))
+      }
+      break
+    }
+    case 'think_deeply':
+      if (typeof input.thought === 'string') out.thought = input.thought
+      break
+    case 'update_subgoal':
+      if (typeof input.id === 'string') out.id = input.id
+      break
+    case 'skill':
+      if (typeof input.name === 'string') out.name = input.name
+      break
+    case 'gravity_index':
+      if (typeof input.action === 'string') out.action = input.action
+      if (typeof input.query === 'string') out.query = input.query
+      if (typeof input.slug === 'string') out.slug = input.slug
+      break
+    case 'ask_user':
+      if (Array.isArray(input.questions)) out.questions = input.questions.length
+      break
+    case 'spawn_agents':
+      if (Array.isArray(input.agents)) {
+        out.agentTypes = input.agents
+          .filter((a): a is Record<string, unknown> => isRecord(a) && typeof a.agent_type === 'string')
+          .map((a) => String(a.agent_type))
+      }
+      break
+    default:
+      return undefined
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** #12 read_files 中被敏感檔過濾擋住的路徑（與 fileFilter 同一套 isSensitiveFile 規則）。 */
+function extractBlockedPaths(toolName: string, input: unknown): string[] | undefined {
+  if (toolName !== 'read_files') return undefined
+  if (!isRecord(input) || !Array.isArray(input.paths)) return undefined
+  const blocked = input.paths.filter((p): p is string => typeof p === 'string' && isSensitiveFile(p))
+  return blocked.length > 0 ? blocked : undefined
+}
+
 function normalizeQueryIndexResult(value: unknown): QueryIndexResult | null {
   if (!isRecord(value) || typeof value.path !== 'string') return null
   const result: QueryIndexResult = { path: value.path }
@@ -360,6 +474,11 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
         }
       }
       if (base.toolName === 'query_index') base.queryInput = normalizeQueryIndexInput(e.input)
+      // #12 工具具名卡片：forward lightweight tool params + sensitive-file blocks.
+      const toolInput = normalizeToolInput(base.toolName, e.input)
+      if (toolInput) base.toolInput = toolInput
+      const blockedPaths = extractBlockedPaths(base.toolName, e.input)
+      if (blockedPaths) base.blockedPaths = blockedPaths
       // Track files this run modifies so the UI can offer "revert changes up to this point".
       const mutated = extractMutationFiles(base.toolName, e.input)
       if (mutated.length > 0) base.files = mutated

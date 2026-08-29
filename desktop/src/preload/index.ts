@@ -34,6 +34,10 @@ export interface UiEvent {
   queryInput?: QueryIndexQuery
   queryIndex?: QueryIndexData
   todos?: TodoItem[]
+  /** #12 工具具名卡片：lightweight tool-call parameters (paths/pattern/url/command…). */
+  toolInput?: Record<string, unknown>
+  /** #12 read_files 中被 isSensitiveFile 擋住的路徑（UI 畫刪除線 + blocked 徽章）。 */
+  blockedPaths?: string[]
   raw?: unknown
   /* auto_retry events */
   attempt?: number

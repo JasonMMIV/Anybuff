@@ -31,6 +31,10 @@ export interface StoreEvent {
   files?: string[]
   changedFiles?: FileChange[]
   todos?: { task: string; completed: boolean }[]
+  /** #12 工具具名卡片：lightweight tool-call parameters. */
+  toolInput?: Record<string, unknown>
+  /** #12 read_files 中被敏感檔過濾擋住的路徑。 */
+  blockedPaths?: string[]
 }
 
 export interface SessionEntry {
@@ -100,7 +104,7 @@ function lastIsAssistant(entry: SessionEntry): boolean {
 }
 
 function pushSystem(entry: SessionEntry, text: string): void {
-  entry.transcript.push({ kind: 'system', text })
+  entry.transcript.push({ kind: 'system', text, createdAt: Date.now() })
 }
 
 /**
@@ -119,7 +123,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
         const last = entry.transcript[entry.transcript.length - 1]
         last.text = (last.text ?? '') + chunk
       } else {
-        entry.transcript.push({ kind: 'assistant', text: chunk })
+        entry.transcript.push({ kind: 'assistant', text: chunk, createdAt: Date.now() })
       }
       persistSoon(entry)
       return
@@ -132,7 +136,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
         const last = entry.transcript[entry.transcript.length - 1]
         last.reasoning = (last.reasoning ?? '') + delta
       } else {
-        entry.transcript.push({ kind: 'assistant', text: '', reasoning: delta })
+        entry.transcript.push({ kind: 'assistant', text: '', reasoning: delta, createdAt: Date.now() })
       }
       persistSoon(entry)
       return
@@ -147,9 +151,11 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
         toolName: ev.toolName ?? 'tool',
         status: 'running',
         agentType: ev.agentType,
-        todos: ev.toolName === 'write_todos' && Array.isArray(ev.todos) ? ev.todos : undefined
+        todos: ev.toolName === 'write_todos' && Array.isArray(ev.todos) ? ev.todos : undefined,
+        toolInput: ev.toolInput,
+        blockedPaths: ev.blockedPaths
       }
-      entry.transcript.push({ kind: 'tool', tool })
+      entry.transcript.push({ kind: 'tool', tool, createdAt: Date.now() })
       accumOf(taskId).runningToolIndex = entry.transcript.length - 1
       persistSoon(entry)
       return
@@ -162,6 +168,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
       const item = idx >= 0 ? entry.transcript[idx] : undefined
       if (item && item.kind === 'tool' && item.tool) {
         item.tool = { ...item.tool, status: 'done', detail: ev.message ?? ev.status ?? item.tool.status }
+        item.updatedAt = Date.now()
       }
       persistSoon(entry)
       return
@@ -170,7 +177,8 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
       const agentType = ev.agentType ?? 'subagent'
       entry.transcript.push({
         kind: 'tool',
-        tool: { toolName: `agent:${agentType}`, status: 'running', agentType, agentName: ev.agentName, detail: ev.message }
+        tool: { toolName: `agent:${agentType}`, status: 'running', agentType, agentName: ev.agentName, detail: ev.message },
+        createdAt: Date.now()
       })
       persistSoon(entry)
       return
@@ -196,6 +204,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
         const item = entry.transcript[i]
         if (item.kind === 'tool' && item.tool && item.tool.agentType === agentType && item.tool.status === 'running') {
           item.tool = { ...item.tool, status: 'done', detail: ev.message || item.tool.detail || 'Completed' }
+          item.updatedAt = Date.now()
           break
         }
       }
@@ -209,10 +218,19 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
         action === 'mechanical_trim'
           ? 'Older tool outputs were trimmed to fit the context window.'
           : 'Earlier messages were summarized to fit the context window.'
-      entry.transcript.push({ kind: 'compaction', text: note })
+      entry.transcript.push({ kind: 'compaction', text: note, createdAt: Date.now() })
       return
     }
     case 'finish': {
+      // #21 完成時間戳：stamp the assistant message that just completed.
+      const completedAt = Date.now()
+      for (let i = entry.transcript.length - 1; i >= 0; i--) {
+        const last = entry.transcript[i]
+        if (last.kind === 'assistant') {
+          last.updatedAt = completedAt
+          break
+        }
+      }
       // Append the per-turn file-changes summary (mirrors the renderer).
       const acc = accumOf(taskId)
       const changedFiles = acc.changedFiles
@@ -226,7 +244,7 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
             deduped.set(fc.path, fc)
           }
         }
-        entry.transcript.push({ kind: 'file-changes', files: Array.from(deduped.values()) })
+        entry.transcript.push({ kind: 'file-changes', files: Array.from(deduped.values()), createdAt: completedAt })
       }
       acc.changedFiles = []
       persistNow(entry)
@@ -246,8 +264,8 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
 export function beginUserTurn(taskId: string, displayText: string): void {
   const entry = sessions.get(taskId)
   if (!entry) return
-  entry.transcript.push({ kind: 'user', text: displayText })
-  entry.transcript.push({ kind: 'assistant', text: '' })
+  entry.transcript.push({ kind: 'user', text: displayText, createdAt: Date.now() })
+  entry.transcript.push({ kind: 'assistant', text: '', createdAt: Date.now() })
   persistNow(entry)
 }
 
@@ -255,7 +273,7 @@ export function beginUserTurn(taskId: string, displayText: string): void {
 export function beginResumeTurn(taskId: string): void {
   const entry = sessions.get(taskId)
   if (!entry) return
-  entry.transcript.push({ kind: 'assistant', text: '' })
+  entry.transcript.push({ kind: 'assistant', text: '', createdAt: Date.now() })
   persistNow(entry)
 }
 
