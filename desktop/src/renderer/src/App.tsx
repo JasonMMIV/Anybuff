@@ -947,7 +947,7 @@ export default function App() {
 
   // Compose final prompt: resolve @ files, /skills, and attachments
   const buildFinalPrompt = useCallback(
-    async (raw: string): Promise<string> => {
+    async (raw: string, extraAttachments?: Attachment[]): Promise<string> => {
       const lines: string[] = []
       let text = raw
 
@@ -973,7 +973,7 @@ export default function App() {
           if (cwd && fileCandidates.includes(rel)) mentionPaths.add(rel)
         }
       }
-      const allAttachments = [...attachments]
+      const allAttachments = [...(extraAttachments ?? attachments)]
       for (const rel of mentionPaths) {
         if (!allAttachments.some((a) => a.path === rel)) {
           allAttachments.push({ path: rel, name: basenameOf(rel), isDir: false, isRelative: true })
@@ -1014,11 +1014,13 @@ export default function App() {
 
   const queueEdit = useCallback(
     async (id: string, text: string) => {
-      // Re-bake attachments for the edited text so the stored prompt stays valid.
-      const finalPrompt = await buildFinalPrompt(text)
+      // Re-bake using the attachments snapshot captured at enqueue time — the
+      // global strip is cleared after send, so the queue owns its own copy.
+      const msg = queuedMessages.find((m) => m.id === id)
+      const finalPrompt = await buildFinalPrompt(text, msg?.attachments)
       setQueuedMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text, finalPrompt } : m)))
     },
-    [buildFinalPrompt]
+    [buildFinalPrompt, queuedMessages]
   )
 
   const queueDelete = useCallback((id: string) => {
@@ -1104,14 +1106,23 @@ export default function App() {
           {
             id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
             text,
-            finalPrompt
+            finalPrompt,
+            // Snapshot so an inline edit re-bakes with the same files.
+            attachments
           }
         ])
         setPrompt('')
+        // The attachment strip belongs to the turn it was attached in — the
+        // queued message already baked its contents into finalPrompt above.
+        setAttachments([])
         return
       }
 
       setPrompt('')
+      // Attachments are per-turn: they are baked into finalPrompt above, so once
+      // this message is submitted the strip clears instead of persisting into
+      // the next turn (or next task).
+      setAttachments([])
       changedFilesRef.current = []
       accumulatedFileChangesRef.current = []
       setFollowups([])
@@ -1190,7 +1201,7 @@ export default function App() {
       setApprovalRequest(null)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask, interviewArmed])
+  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -1649,6 +1660,10 @@ export default function App() {
   const onOpenTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord) => {
       await onOpenProject(project.path)
+      // Same-project task switches skip onOpenProject's early return, so clear
+      // the per-turn attachment strip here too — attachments never follow the
+      // user across conversations.
+      setAttachments([])
       if (IS_PREVIEW) {
         setViewTask(task.id)
         setChatItems((task.messages ?? []) as ChatItem[])

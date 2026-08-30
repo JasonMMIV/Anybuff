@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpIcon, BoltIcon, ChevronDownIcon, XIcon } from './Icons'
+import type { Attachment } from './Composer'
 
 /**
  * Execution-time message queue (#2).
@@ -15,6 +16,9 @@ export interface QueuedMessage {
   text: string
   /** Fully expanded prompt (@file contents etc.) captured at enqueue time. */
   finalPrompt: string
+  /** Snapshot of the attachments this message was queued with — kept so an
+   * inline edit re-bakes them without re-attaching. */
+  attachments?: Attachment[]
 }
 
 interface MessageQueuePanelProps {
