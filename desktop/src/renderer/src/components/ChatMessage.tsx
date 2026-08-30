@@ -11,8 +11,8 @@ import {
   FolderIcon,
   GaugeIcon,
   LayersIcon,
-  LightbulbIcon,
   ListIcon,
+  SparkIcon,
   PanelLeftIcon,
   PaperclipIcon,
   RobotIcon,
@@ -78,7 +78,7 @@ function toolIcon(name: string): React.ReactNode {
     case 'gravity_index':
       return <GaugeIcon size={16} />
     case 'think_deeply':
-      return <LightbulbIcon size={16} />
+      return <SparkIcon size={16} />
     case 'update_subgoal':
       return <CheckCircleIcon size={16} />
     case 'skill':
@@ -540,7 +540,7 @@ export function ThoughtBlock({
         className="thought-head"
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="thought-icon"><LightbulbIcon size={14} /></span>
+        <span className="thought-icon"><SparkIcon size={14} /></span>
         <span className="thought-label">{streaming ? 'Thinking…' : 'Thinking'}</span>
       </div>
       {open && (
@@ -601,6 +601,9 @@ export function AssistantBubble({
   const combinedReasoning = [reasoning?.trim(), extracted.reasoning?.trim()].filter(Boolean).join('\n\n')
   const mainText = extracted.text
   const isReasoningOnly = streaming && !mainText.trim() && Boolean(combinedReasoning || extracted.isThinking)
+  // #24 純思考訊息（只有 thinking 卡、無文字氣泡）＝與工具卡同類的過程回饋：
+  // 縮緊行距與工具卡一致（chat-scroll gap 6px + 卡片自身邊距），不加　margin-bottom。
+  const thoughtOnly = !mainText.trim() && Boolean(combinedReasoning)
 
   if (!mainText.trim() && !combinedReasoning && streaming) {
     return (
@@ -615,7 +618,7 @@ export function AssistantBubble({
   }
 
   return (
-    <div className="msg-row assistant">
+    <div className={`msg-row assistant${thoughtOnly ? ' thought-only' : ''}`}>
       <div className="msg-stack assistant">
         {combinedReasoning && (
           <ThoughtBlock

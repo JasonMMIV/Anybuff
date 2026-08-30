@@ -1969,10 +1969,24 @@ textarea {
 
 /* ─── Thought block (reasoning / <think>) ──────────────── */
 .thought-block {
+  /* 思考＋正文的訊息：6px 是 thinking 卡與下方文字氣泡之間的呼吸空間
+     （msg-stack 為無 gap 的 flex column，完全仰賴此 margin）。 */
   margin-bottom: 6px;
   background: transparent;
   border: none;
   max-width: 100%;
+}
+
+/* 純思考訊息（只有 thinking 卡、無文字氣泡）：與工具卡同類的過程回饋，
+   行距與工具卡一致（tool-card 上下 margin 1px ＋ chat-scroll gap 6px ＝ 8px）。
+   此 override 選擇器權重較高，只影響 thought-only，思考＋正文維持 6px。 */
+.msg-row.thought-only {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+.msg-row.thought-only .thought-block {
+  margin-bottom: 0;
 }
 
 .thought-block.thinking {
@@ -2140,7 +2154,8 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 1px 7px;
-  font-family: var(--font-mono);
+  /* 與對話訊息（.markdown）一致使用 UI 字體：中文路徑／檔名不再以等寬字體顯示 */
+  font-family: var(--font-ui);
   font-size: 11px;
   color: var(--text-1);
   white-space: nowrap;
@@ -2427,7 +2442,8 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  /* 與對話訊息（.markdown）一致使用 UI 字體 */
+  font-family: var(--font-ui);
   font-size: 12px;
 }
 

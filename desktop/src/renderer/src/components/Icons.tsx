@@ -122,8 +122,9 @@ export function ArrowUpIcon({ size = 16, className }: IconProps) {
 export function SparkIcon(props: IconProps) {
   const b = base(props)
   return (
-    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1" />
+    <svg {...b} fill="currentColor">
+      {/* 實心四角星 ✦：四條凹弧構成的 sparkle 實心形狀（與 SparklesIcon 主體同形，無伴星） */}
+      <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
     </svg>
   )
 }
