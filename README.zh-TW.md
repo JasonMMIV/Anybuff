@@ -17,33 +17,28 @@ Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無�
         Your providers: OpenAI-compatible / Anthropic-compatible
 ```
 
-## 狀態
+## 截圖
 
-**v0.1.0-beta.1** — 首個公開 beta（未簽章 NSIS 安裝包；SmartScreen 會攔截
-「不明發行者」，屬預期行為）。`bun run dev` 可從原始碼啟動完整桌面應用。
+![Anybuff 歡迎畫面](docs/screenshots/welcome.jpg)
 
-## ⚠️ 安全提醒（beta）
-
-敏感檔案過濾功能**尚未實作**（beta 後第一批優先項目）。在它完成之前：
-
-- Agent 可以讀取你開啟的專案資料夾內的**任何檔案**——包括 `.env`、
-  `*.pem`、`*.key`、`id_rsa`、`kubeconfig` 等機密。
-- Agent 讀到的內容會送往你設定的 LLM provider API——也就是說，
-  **內容會離開你的電腦**。
-- DPAPI 加密只保護你存在 Anybuff 設定內的 provider 金鑰，
-  **不及於專案內的檔案**。
-
-**請勿將 Anybuff 指向含有未加密憑證的專案。**請把機密搬出專案、
-使用 secrets manager，或等敏感檔案過濾完成。
+歡迎畫面：選擇專案資料夾，連接任何 OpenAI 相容或 Anthropic 相容的
+provider，即可開始對話。
 
 ## 快速開始
 
 1. 從[最新 release](https://github.com/JasonMMIV/Anybuff/releases/latest)
-   下載 **`AnyBuff-Setup-<version>.exe`** 並執行。安裝包未簽章，SmartScreen
-   會顯示「不明發行者」——點選*更多資訊 → 仍要執行*。
+   下載 **`AnyBuff-Setup-<version>.exe`**（目前 **v0.1.0-beta.3**）並執行。
+   安裝包未簽章，SmartScreen 會顯示「不明發行者」——點選
+   *更多資訊 → 仍要執行*。（歡迎畫面如上圖。）
 2. 選擇專案資料夾（可試 `desktop/demo-project`），打開設定，
    新增 provider（填 baseURL + API key——金鑰經 Electron safeStorage 以
    DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話。
+
+## 安全
+
+存在 Anybuff 設定內的 provider 金鑰靜態以 DPAPI 加密。這**不及於**
+專案內的檔案——請勿在開啟的專案中存放未加密的憑證
+（`.env`、`*.pem`、`*.key`、`id_rsa`、`kubeconfig` 等）。
 
 ## 倉儲結構
 

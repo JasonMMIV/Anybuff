@@ -22,37 +22,30 @@ and pay your providers directly.
         Your providers: OpenAI-compatible / Anthropic-compatible
 ```
 
-## Status
+## Screenshot
 
-**v0.1.0-beta.1** — first public beta (unsigned NSIS installer; SmartScreen will
-show "Unknown publisher", which is expected). `bun run dev` launches the full
-desktop app from source.
+![Anybuff welcome screen](docs/screenshots/welcome.jpg)
 
-## ⚠️ Security notice (beta)
-
-The sensitive-file filter is **not yet implemented** (first post-beta item).
-Until it ships:
-
-- The agent can read **any file inside the project folder you open** —
-  including secrets like `.env`, `*.pem`, `*.key`, `id_rsa`, `kubeconfig`.
-- Anything the agent reads is sent to your configured LLM provider's API —
-  in other words, **it leaves your machine**.
-- DPAPI encryption only protects the provider keys you store in Anybuff's
-  settings. It does **not** protect files inside your projects.
-
-**Do not point Anybuff at a project containing unencrypted credentials.**
-Move secrets out of the project, use a secrets manager, or wait for the
-sensitive-file filter.
+The welcome screen: pick a project folder, connect any OpenAI-compatible or
+Anthropic-compatible provider, and start chatting.
 
 ## Quick start
 
-1. Download **`AnyBuff-Setup-<version>.exe`** from the
+1. Download **`AnyBuff-Setup-<version>.exe`** (currently **v0.1.0-beta.3**)
+   from the
    [latest release](https://github.com/JasonMMIV/Anybuff/releases/latest) and
    run it. The installer is unsigned, so SmartScreen shows "Unknown publisher"
-   — click *More info → Run anyway*.
+   — click *More info → Run anyway*. (See the welcome screen above.)
 2. Pick a project folder (try `desktop/demo-project`), open Settings,
    add a provider (baseURL + API key — keys are DPAPI-encrypted via Electron
    safeStorage), fetch models, select one, and start chatting.
+
+## Security
+
+The provider keys stored in Anybuff's settings are DPAPI-encrypted at rest.
+This does **not** extend to files inside your projects — keep unencrypted
+credentials (`.env`, `*.pem`, `*.key`, `id_rsa`, `kubeconfig`, …) out of any
+project you open.
 
 ## Repository layout
 
