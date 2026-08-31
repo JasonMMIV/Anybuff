@@ -2468,6 +2468,39 @@ textarea {
   margin: 8px max(24px, calc((100% - 760px) / 2)) 16px;
 }
 
+/* Drag & drop attachment overlay — covers the whole composer area while the
+   user drags files over it (depth-tracked so it survives nested dragenter/
+   dragleave between the overlay and its children). */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--bg-1));
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  pointer-events: auto;
+  backdrop-filter: blur(2px);
+  animation: drop-overlay-in 0.12s ease-out;
+}
+
+@keyframes drop-overlay-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* ─── Message queue panel (#2 執行中訊息佇列) ─────────── */
 .queue-panel {
   border: 1px solid rgba(122, 155, 240, 0.25);

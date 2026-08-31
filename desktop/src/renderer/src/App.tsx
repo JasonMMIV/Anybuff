@@ -1476,13 +1476,21 @@ export default function App() {
     }
   }, [])
 
-  // Attachments
-  const onAttachFiles = useCallback(async () => {
+  // Attachments (dialog picker + drag & drop both land here as absolute paths)
+  const onAttachFilesPaths = useCallback(async (paths: string[]) => {
     if (IS_PREVIEW) {
-      setAttachments((prev) => [...prev, { path: 'src/calculator.js', name: 'calculator.js', isDir: false, isRelative: true }])
+      // No preload bridge in browser preview — attach by display name only.
+      setAttachments((prev) => {
+        const next = [...prev]
+        for (const p of paths) {
+          if (!next.some((x) => x.path === p)) {
+            next.push({ path: p, name: basenameOf(p), isDir: false, isRelative: true })
+          }
+        }
+        return next
+      })
       return
     }
-    const paths = (await window.AnyBuff.selectFiles()) as string[]
     const added: Attachment[] = []
     for (const p of paths) {
       const info = (await window.AnyBuff.pathInfo(p)) as { ok: boolean; isDir?: boolean; name?: string }
@@ -1498,6 +1506,15 @@ export default function App() {
       return next
     })
   }, [])
+
+  const onAttachFiles = useCallback(async () => {
+    if (IS_PREVIEW) {
+      setAttachments((prev) => [...prev, { path: 'src/calculator.js', name: 'calculator.js', isDir: false, isRelative: true }])
+      return
+    }
+    const paths = (await window.AnyBuff.selectFiles()) as string[]
+    if (paths.length > 0) await onAttachFilesPaths(paths)
+  }, [onAttachFilesPaths])
 
   const onAttachFilesPath = useCallback((relPath: string) => {
     setAttachments((prev) =>
@@ -2308,6 +2325,7 @@ export default function App() {
                     attachments={attachments}
                     onAttachFiles={() => void onAttachFiles()}
                     onAttachFilesPath={onAttachFilesPath}
+                    onAttachFilesPaths={(paths) => void onAttachFilesPaths(paths)}
                     onRemoveAttachment={onRemoveAttachment}
                     providers={models}
                     activeModel={settings.activeModel}

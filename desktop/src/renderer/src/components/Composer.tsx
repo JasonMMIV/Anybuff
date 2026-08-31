@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpIcon, LightbulbIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpIcon, LightbulbIcon, PaperclipIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
 import CustomSelect from './CustomSelect'
 
 export interface Attachment {
@@ -40,6 +40,8 @@ interface ComposerProps {
   attachments: Attachment[]
   onAttachFiles: () => void
   onAttachFilesPath: (relPath: string) => void
+  /** Attach one or more absolute paths (e.g. files dropped from the OS file explorer). */
+  onAttachFilesPaths: (paths: string[]) => void
   onRemoveAttachment: (path: string) => void
   providers: ProviderOption[]
   activeModel: string
@@ -136,6 +138,8 @@ export default function Composer(props: ComposerProps) {
     disabled,
     attachments,
     onAttachFiles,
+    onAttachFilesPath,
+    onAttachFilesPaths,
     onRemoveAttachment,
     providers,
     activeModel,
@@ -159,6 +163,28 @@ export default function Composer(props: ComposerProps) {
   const menuItemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [mention, setMention] = useState<Mention>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
+  /** True while the user is dragging files over the composer (drop overlay). */
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
+  /** Safety net: dragover fires at least every ~350ms, so a 1s silence means
+   *  the drag left or was cancelled (ESC) even if enter/leave events got
+   *  unbalanced (e.g. the overlay mounting mid-drag). */
+  const dragSilenceTimerRef = useRef<number | null>(null)
+  const clearDragTimer = useCallback(() => {
+    if (dragSilenceTimerRef.current !== null) {
+      window.clearTimeout(dragSilenceTimerRef.current)
+      dragSilenceTimerRef.current = null
+    }
+  }, [])
+  const armDragTimer = useCallback(() => {
+    clearDragTimer()
+    dragSilenceTimerRef.current = window.setTimeout(() => {
+      dragDepthRef.current = 0
+      setDragOver(false)
+    }, 1000)
+  }, [clearDragTimer])
+
+  useEffect(() => () => clearDragTimer(), [clearDragTimer])
 
   // Focus the input when asked (e.g. after Revert restores the message for editing)
   useEffect(() => {
@@ -256,6 +282,74 @@ export default function Composer(props: ComposerProps) {
     replaceToken(`/skill:${(skill as SkillInfo).name} `)
   }
 
+  /** Resolve dropped File objects to absolute paths via the preload bridge
+   *  (Electron ≥32 removed `File.path` from the renderer). */
+  const droppedPaths = useCallback(async (files: FileList | null): Promise<string[]> => {
+    if (!files || files.length === 0) return []
+    const out: string[] = []
+    for (const file of Array.from(files)) {
+      try {
+        // Browser preview mode has no preload bridge — fall back to the file name.
+        const path = window.AnyBuff?.getPathForFile ? window.AnyBuff.getPathForFile(file) : file.name
+        if (path) out.push(path)
+      } catch {
+        // Some dragged items (e.g. text snippets) have no backing file — skip them.
+      }
+    }
+    return out
+  }, [])
+
+  // Drag & drop to attach files. The wrap element tracks a depth counter so
+  // dragleave on a child never dismisses the overlay while a drop is still in
+  // progress; the overlay itself swallows the dragover so the OS doesn't
+  // navigate the window away on drop.
+  const onDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault()
+      if (running) return
+      dragDepthRef.current += 1
+      setDragOver(true)
+      armDragTimer()
+    },
+    [running, armDragTimer]
+  )
+
+  const onDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      // Always accept the dragover so the OS never navigates the window on
+      // drop — even while a run is in flight (where we ignore the files).
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      if (running) return
+      // Fires continuously while hovering — keep the overlay (and its safety
+      // timer) alive for as long as the drag is over the composer.
+      armDragTimer()
+    },
+    [running, armDragTimer]
+  )
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer?.types.includes('Files')) return
+    e.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragOver(false)
+  }, [])
+
+  const onDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault()
+      dragDepthRef.current = 0
+      clearDragTimer()
+      setDragOver(false)
+      if (running) return
+      const paths = await droppedPaths(e.dataTransfer.files)
+      if (paths.length > 0) onAttachFilesPaths(paths)
+    },
+    [running, droppedPaths, onAttachFilesPaths, clearDragTimer]
+  )
+
   const modelLabel = useMemo(() => {
     const [pid, ...rest] = activeModel.split('/')
     const provider = providers.find((p) => p.id === pid)
@@ -263,7 +357,19 @@ export default function Composer(props: ComposerProps) {
   }, [activeModel, providers])
 
   return (
-    <div className="composer-wrap">
+    <div
+      className="composer-wrap"
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragOver && !running && (
+        <div className="drop-overlay" onDragEnter={(e) => e.preventDefault()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()}>
+          <PaperclipIcon size={22} />
+          <span>Drop files to attach</span>
+        </div>
+      )}
       {interviewArmed && (
         <div className="interview-chip">
           <SparklesIcon size={12} />

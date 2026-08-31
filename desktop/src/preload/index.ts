@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webFrame } from 'electron'
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type { QueryIndexData, QueryIndexQuery } from '../shared/codebase-index'
 import type { UpdateUiEvent } from '../main/updater'
@@ -82,6 +82,8 @@ const api = {
   },
   selectFolder: () => ipcRenderer.invoke('AnyBuff:selectFolder'),
   selectFiles: () => ipcRenderer.invoke('AnyBuff:selectFiles'),
+  /** Resolve the on-disk path of a dropped File object (Electron ≥32 removed File.path). */
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
   listSkills: (cwd: string) => ipcRenderer.invoke('AnyBuff:listSkills', cwd),
   listLocalAgents: (cwd: string) => ipcRenderer.invoke('AnyBuff:listLocalAgents', cwd),
