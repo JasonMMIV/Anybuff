@@ -2201,7 +2201,7 @@ export default function App() {
                       }
                       return (
                         <div key={i} className="msg-row system" ref={(el) => { msgRefs.current[i] = el }}>
-                          <span className="system-bubble">⚠ {itemText}</span>
+                          <span className="system-bubble"><span className="system-warn">⚠</span> {itemText}</span>
                         </div>
                       )
                     })}
@@ -2260,7 +2260,7 @@ export default function App() {
                   )}
 
                   {approvalRequest && (
-                    <div className="resume-banner" style={{ border: '1px solid var(--border-warn, #f59e0b)' }}>
+                    <div className="resume-banner">
                       <span className="resume-icon" style={{ color: '#f59e0b' }}>🛡</span>
                       <span className="resume-text">
                         <strong>Action requires approval:</strong> {approvalRequest.message}

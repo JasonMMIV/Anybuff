@@ -50,7 +50,7 @@ export default function AskUserBanner({
   }
 
   return (
-    <div className="resume-banner" style={{ border: '1px solid var(--accent)', flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+    <div className="resume-banner" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <span className="resume-text">
           <strong>The agent has questions</strong>

@@ -1915,26 +1915,32 @@ textarea {
 }
 
 /* system message */
+/* system message — plain text, left-aligned, no box (only the ⚠ icon is red) */
 .msg-row.system {
-  justify-content: center;
-  padding-top: 8px;
-  padding-bottom: 8px;
+  justify-content: flex-start;
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
 .system-bubble {
-  background: var(--red-soft);
-  border: 1px solid rgba(239, 106, 106, 0.35);
-  color: var(--red);
-  border-radius: var(--radius);
-  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-0);
+  padding: 0;
   font-size: 13px;
-  max-width: 80%;
+  max-width: 100%;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.system-bubble .system-warn {
+  color: var(--red);
+  font-weight: 600;
 }
 
 /* context-compaction notice: informational, not an error */
 .compaction-note {
-  background: var(--bg-1);
-  border-color: var(--border);
   color: var(--text-1);
 }
 
@@ -1946,15 +1952,17 @@ textarea {
   border-width: 1.5px;
 }
 
-/* Auto-retry status strip: transient failure recovery countdown */
+/* Auto-retry status strip: transient failure recovery countdown.
+   Neutral background/border (matches the resume banner); only the spinner
+   keeps the amber accent. */
 .retry-strip {
   display: flex;
   align-items: center;
   gap: 9px;
   margin: 0 max(24px, calc((100% - 760px) / 2)) 10px;
   padding: 8px 13px;
-  background: color-mix(in srgb, #f59e0b 8%, var(--bg-1));
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 
@@ -1963,7 +1971,7 @@ textarea {
   height: 11px;
   min-width: 11px;
   border-width: 2px;
-  border-color: rgba(245, 158, 11, 0.25);
+  border-color: color-mix(in srgb, #f59e0b 25%, transparent);
   border-top-color: #f59e0b;
 }
 
@@ -5825,14 +5833,16 @@ select option {
 }
 
 /* Interrupted-run resume banner */
+/* Interrupted-run resume banner — neutral background/border (all reasons),
+   icons keep their semantic accent (amber for failures, blue otherwise). */
 .resume-banner {
   display: flex;
   align-items: center;
   gap: 9px;
   margin: 0 max(24px, calc((100% - 760px) / 2)) 10px;
   padding: 9px 13px;
-  background: var(--accent-soft);
-  border: 1px solid rgba(122, 155, 240, 0.25);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 
@@ -5841,8 +5851,8 @@ select option {
 .resume-banner.reason-network,
 .resume-banner.reason-timeout,
 .resume-banner.reason-error {
-  background: color-mix(in srgb, #f59e0b 8%, var(--bg-1));
-  border-color: rgba(245, 158, 11, 0.4);
+  background: var(--bg-1);
+  border-color: var(--border);
 }
 
 .resume-banner.reason-rate-limit .resume-icon,
