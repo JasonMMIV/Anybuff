@@ -447,6 +447,7 @@ export default function Composer(props: ComposerProps) {
             disabled={running}
             size="small"
             placement="top"
+            className="model-select"
             placeholder={providers.length === 0 ? 'No provider configured' : 'Select model'}
             options={providers.flatMap((p) =>
               p.models.map((m) => ({
@@ -454,7 +455,7 @@ export default function Composer(props: ComposerProps) {
                 label: `${p.label} / ${m}`
               }))
             )}
-            title="Model"
+            title={providers.length === 0 ? 'No provider configured' : `Model: ${modelLabel}`}
           />
 
           <CustomSelect

@@ -2737,7 +2737,9 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  min-width: 0;
+  /* Never wrap to a second row — the selects shrink & ellipsize instead. */
+  flex-wrap: nowrap;
 }
 
 .toolbar-btn {
@@ -3043,6 +3045,27 @@ select option {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  /* Cost / token stats never shrink — the left selects absorb tightness. */
+  flex-shrink: 0;
+}
+
+/* Toolbar selects: keep the row at exactly one line at any width. When there's
+   room the model select shows its full label; when the row gets tight it
+   shrinks (ellipsizing, down to icon-only under extreme narrowness) instead of
+   wrapping. Full Access / Reasoning shrink less so they stay readable. The
+   model dropdown always shows full labels even when its trigger is collapsed. */
+.toolbar-left .custom-select-container {
+  min-width: 0;
+  flex-shrink: 0.3;
+}
+
+.toolbar-left .model-select {
+  flex-shrink: 1;
+}
+
+.toolbar-left .model-select .custom-select-dropdown {
+  min-width: 280px;
+  max-width: calc(100vw - 24px);
 }
 
 .cost-badge {
