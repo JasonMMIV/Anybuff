@@ -2734,19 +2734,32 @@ textarea {
   flex-shrink: 0;
 }
 
-.send-btn.stop-btn {
-  background: var(--red-soft);
-  border-color: rgba(239, 106, 106, 0.4);
-  color: var(--red);
+/* Solid red stop button: no border ring, white square icon (theme-reactive
+   red). The extra `.btn` in the selector keeps this at higher specificity
+   than the generic `.btn.danger` (defined later in this file, in the diff
+   section) so it can never be overridden back to the old translucent style. */
+.btn.send-btn.stop-btn {
+  background: var(--red);
+  border: none;
+  color: #fff;
 }
 
-.send-btn.stop-btn:hover:not(:disabled) {
-  background: rgba(239, 106, 106, 0.22);
-  border-color: var(--red);
-  color: var(--red);
+/* Dark mode's --red is a pale salmon — deepen it so the white square pops. */
+:root[data-theme='dark'] .btn.send-btn.stop-btn {
+  background: color-mix(in srgb, var(--red) 80%, #000);
 }
 
-.send-btn.stop-btn.stopping {
+.btn.send-btn.stop-btn:hover:not(:disabled) {
+  background: var(--red);
+  filter: brightness(0.88);
+}
+
+.btn.send-btn.stop-btn:active:not(:disabled) {
+  background: var(--red);
+  filter: brightness(0.76);
+}
+
+.btn.send-btn.stop-btn.stopping {
   opacity: 0.6;
   cursor: wait;
   animation: pulse-stop 1.5s infinite;

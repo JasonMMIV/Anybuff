@@ -516,7 +516,7 @@ export default function Composer(props: ComposerProps) {
               <PlusIcon size={14} />
             </button>
             <button className={`btn danger send-btn stop-btn ${stopping ? 'stopping' : ''}`} onClick={onStop} disabled={stopping} title={stopping ? "Stopping..." : "Stop"}>
-              <StopIcon size={14} />
+              <StopIcon size={18} />
             </button>
           </>
         ) : (
