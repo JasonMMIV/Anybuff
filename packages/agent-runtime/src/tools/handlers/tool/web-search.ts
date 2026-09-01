@@ -1,8 +1,8 @@
 import { jsonToolResult } from '@codebuff/common/util/messages'
 
+import { executeWebSearch } from './web-search-providers'
 import {
   WEBSEARCH_TIMEOUT_MS,
-  executeWebSearch,
   extractLinks,
   fetchPublicWebUrl,
   readResponseTextWithLimit,
@@ -15,6 +15,7 @@ import type {
   CodebuffToolCall,
   CodebuffToolOutput,
 } from '@codebuff/common/tools/list'
+import type { WebSearchOptions } from '@codebuff/common/types/contracts/agent-runtime'
 import type { Logger } from '@codebuff/common/types/contracts/logger'
 
 const MAX_FETCH_LENGTH = 150_000
@@ -24,6 +25,8 @@ export const handleWebSearch = (async (params: {
   toolCall: CodebuffToolCall<'web_search'>
   logger: Logger
   signal: AbortSignal
+  /** Host-injected web search provider config (AnyBuff BYOK seam). */
+  webSearch?: WebSearchOptions
 
   agentStepId: string
   clientSessionId: string
@@ -39,6 +42,7 @@ export const handleWebSearch = (async (params: {
     previousToolCallFinished,
     toolCall,
     signal,
+    webSearch,
 
     agentStepId,
     clientSessionId,
@@ -157,11 +161,14 @@ export const handleWebSearch = (async (params: {
   }
 
   try {
-    const searchResult = await executeWebSearch(
-      query,
-      depth ?? 'standard',
-      AbortSignal.any([signal, AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS)]),
-    )
+    // executeWebSearch gives every provider attempt its own fresh timeout
+    // budget, so only the user's abort signal is passed here — an outer
+    // timeout would cap the whole fallback chain and starve the fallbacks.
+    const searchResult = await executeWebSearch(query, depth ?? 'standard', signal, {
+      provider: webSearch?.provider,
+      tinyfishApiKey: webSearch?.tinyfishApiKey,
+      firecrawlApiKey: webSearch?.firecrawlApiKey,
+    })
 
     if ('error' in searchResult) {
       logger.warn(
@@ -191,6 +198,18 @@ export const handleWebSearch = (async (params: {
       }
     }
 
+    if (searchResult.notice) {
+      logger.warn(
+        { ...logContext, notice: searchResult.notice },
+        'Web search provider fallback',
+      )
+    }
+    const formatted = searchResult.results
+      .map(
+        (item, index) =>
+          `${index + 1}. ${item.title || item.url}\n${item.description}\nSource: ${item.url}`,
+      )
+      .join('\n\n')
     logger.info(
       {
         ...logContext,
@@ -201,12 +220,9 @@ export const handleWebSearch = (async (params: {
     )
     return {
       output: jsonToolResult({
-        result: searchResult.results
-          .map(
-            (item, index) =>
-              `${index + 1}. ${item.title || item.url}\n${item.description}\nSource: ${item.url}`,
-          )
-          .join('\n\n'),
+        result: searchResult.notice
+          ? `${searchResult.notice}\n\n${formatted}`
+          : formatted,
         links: searchResult.results
           .filter((item) => item.url)
           .map((item) => ({ href: item.url, text: item.title || item.url })),

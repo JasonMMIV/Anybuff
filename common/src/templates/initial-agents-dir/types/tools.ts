@@ -407,7 +407,7 @@ export interface ThinkDeeplyParams {
 }
 
 /**
- * Search the web for current information using Serper API.
+ * Search the web for current information.
  */
 export interface WebSearchParams {
   /** The search query to find relevant web content */

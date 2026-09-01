@@ -66,6 +66,9 @@ import type {
   AgentUsageData,
   ContextCompactionData,
 } from '@codebuff/common/types/contracts/llm'
+import type {
+  WebSearchOptions,
+} from '@codebuff/common/types/contracts/agent-runtime'
 import type { TraceWriter } from '@codebuff/common/types/contracts/trace'
 import type { CodebuffFileSystem } from '@codebuff/common/types/filesystem'
 import type {
@@ -174,6 +177,10 @@ export type CodebuffClientOptions = {
 
   /** Optional filter to classify files before reading (runs before gitignore check) */
   fileFilter?: FileFilter
+
+  /** Web search provider config for the web_search tool. Keys ride this
+   *  run-options channel (ADR-12) and never enter process.env. */
+  webSearch?: WebSearchOptions
 
   overrideTools?: OverrideToolHandlers
   customToolDefinitions?: CustomToolDefinition[]
@@ -416,6 +423,7 @@ async function runOnce({
   handleStreamChunk,
 
   fileFilter,
+  webSearch,
   overrideTools,
   customToolDefinitions,
 
@@ -627,6 +635,7 @@ async function runOnce({
     logger,
     traceWriter,
     apiKey,
+    webSearch,
     handleStepsLogChunk: () => {
       // Does nothing for now
     },

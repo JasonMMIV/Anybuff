@@ -4385,6 +4385,70 @@ select option {
   color: var(--accent);
 }
 
+/* ─── Web Search provider selector (Settings → Web Search) ─── */
+.websearch-provider-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.websearch-provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px var(--shadow-sm);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  user-select: none;
+}
+
+.websearch-provider-card:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--shadow-sm);
+}
+
+.websearch-provider-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 4px 16px var(--shadow-sm);
+}
+
+.websearch-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.websearch-provider-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-0);
+}
+
+.websearch-provider-desc {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-1);
+}
+
+.websearch-provider-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 /* Detail View (Layer 2 & 3) */
 .provider-detail-view {
   display: flex;

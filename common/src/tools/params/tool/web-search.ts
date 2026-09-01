@@ -53,7 +53,7 @@ const description = `
 Purpose: Search the web for current, up-to-date information, or read the full content of a specific web page by URL. Supports multi-step navigation: fetch a page, inspect the extracted links, then fetch the next relevant URL.
 
 Two modes:
-- **Search mode** (provide \`query\`): Searches the web using DuckDuckGo and returns a list of results with titles, URLs, and descriptions.
+- **Search mode** (provide \`query\`): Searches the web and returns a list of results with titles, URLs, and descriptions.
 - **Fetch mode** (provide \`url\`): Fetches the full text content of the given URL directly. Returns the page text plus a \`links\` array of \`{href, text}\` pairs found on the page so you can navigate further. GitHub repo URLs (github.com/{owner}/{repo}) are automatically resolved to the raw README for clean content.
 
 Navigation pattern: call with \`url\`, read the result, pick a link from \`links\`, call again with that URL.

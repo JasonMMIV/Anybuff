@@ -1,7 +1,7 @@
 import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } from '@codebuff/sdk'
 import type { BrowserWindow } from 'electron'
 import { isSensitiveFile } from './file-filter'
-import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides } from './settings'
+import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from './settings'
 import { bundledAgents } from './agents/bundled-agents'
 import { loadProjectLocalAgents, type LocalAgentsResult } from './agents/local-agents'
 import {
@@ -835,6 +835,9 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // ADR-12: decrypted provider keys travel through the SDK injection
         // channel, not process.env.
         apiKeyOverrides: getProviderApiKeyOverrides(),
+        // Web search provider config (provider + optional search API keys).
+        // Keys travel via this run-options channel (ADR-12), never process.env.
+        webSearch: getWebSearchConfig(),
         // Upstream emits full RunState snapshots every ~5s while in flight;
         // #1 資安級防護：敏感檔（.env、SSH 金鑰、kubeconfig、憑證…）一律
         // 擋在 agent 可讀範圍外，避免金鑰內容隨 LLM context 離開本機。

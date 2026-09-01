@@ -19,10 +19,13 @@ import {
   removeProject,
   searchHistory,
   touchProject,
+  saveSearchApiKey,
+  setWebSearchProvider,
   type ProviderConfig,
   type ReasoningEffort,
   type ApprovalMode,
-  type AgentRoute
+  type AgentRoute,
+  type WebSearchProviderId
 } from './settings'
 import {
   getOrCreateSession,
@@ -359,6 +362,12 @@ function registerIpc(): void {
     apiKeys?: Record<string, string> // providerId -> key (empty = unchanged; empty string + deleteKey = delete)
     deleteKeys?: string[]
     agentRouting?: Record<string, AgentRoute>
+    /** Active web search provider (Web Search settings tab). */
+    webSearchProvider?: WebSearchProviderId
+    /** Search-provider API keys (tinyfish / firecrawl) → DPAPI storage. */
+    searchApiKeys?: Partial<Record<WebSearchProviderId, string>>
+    /** Search-provider keys to delete. */
+    deleteSearchKeys?: WebSearchProviderId[]
   }) => {
     updateProviders(payload.providers, payload.activeModel, payload.reasoningEffort, payload.approvalMode)
     if (payload.apiKeys) {
@@ -370,6 +379,17 @@ function registerIpc(): void {
       saveProviderApiKey(id, '')
     }
     if (payload.agentRouting) updateAgentRouting(payload.agentRouting)
+    if (payload.webSearchProvider) setWebSearchProvider(payload.webSearchProvider)
+    if (payload.searchApiKeys) {
+      for (const [provider, key] of Object.entries(payload.searchApiKeys)) {
+        if (key && (provider === 'tinyfish' || provider === 'firecrawl')) {
+          saveSearchApiKey(provider, key.trim())
+        }
+      }
+    }
+    for (const provider of payload.deleteSearchKeys ?? []) {
+      if (provider === 'tinyfish' || provider === 'firecrawl') saveSearchApiKey(provider, '')
+    }
     return { ok: true, settings: getAppSettings() }
   })
 

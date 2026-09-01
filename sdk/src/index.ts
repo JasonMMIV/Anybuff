@@ -31,6 +31,10 @@ export type {
   ClientToolName,
   CodebuffToolOutput,
 } from '@codebuff/common/tools/list'
+export type {
+  WebSearchOptions,
+  WebSearchProviderId,
+} from '@codebuff/common/types/contracts/agent-runtime'
 export * from './client'
 export * from './custom-tool'
 export * from './native/ripgrep'

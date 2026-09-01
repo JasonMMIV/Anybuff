@@ -24,7 +24,17 @@ import {
 import CustomSelect from './CustomSelect'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'about'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'about'
+
+type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
+
+interface WebSearchProviderMeta {
+  id: WebSearchProviderId
+  label: string
+  description: string
+  requiresKey: boolean
+  keyHint: string
+}
 
 export interface LocalAgentItem {
   id: string
@@ -258,6 +268,11 @@ export default function SettingsModal({
   const [deletingAgent, setDeletingAgent] = useState<{ id: string; displayName: string; filePath: string } | null>(null)
   const [deletingInProgress, setDeletingInProgress] = useState(false)
   const [agentActionNotice, setAgentActionNotice] = useState<string | null>(null)
+  // Web Search settings tab
+  const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProviderId>('duckduckgo')
+  const [webSearchHasKey, setWebSearchHasKey] = useState<Record<string, boolean>>({})
+  const [searchApiKeys, setSearchApiKeys] = useState<Record<string, string>>({})
+  const [deleteSearchKeys, setDeleteSearchKeys] = useState<WebSearchProviderId[]>([])
   const [error, setError] = useState<string | null>(null)
   const [fetchingId, setFetchingId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -325,6 +340,7 @@ export default function SettingsModal({
         { id: 'doc-writer', displayName: 'Doc Writer', spawnerPrompt: 'Writes documentation', scope: 'project', filePath: 'C:/project/.agents/doc-writer.ts' },
         { id: 'qa-agent', displayName: 'QA Agent', spawnerPrompt: 'Runs acceptance checks', scope: 'home', filePath: '~/.agents/qa-agent.ts' }
       ])
+      setWebSearchProvider('duckduckgo')
       setIsLoaded(true)
       return
     }
@@ -337,6 +353,8 @@ export default function SettingsModal({
           approvalMode?: 'balanced' | 'strict' | 'allow-all'
           providerHasKey?: Record<string, boolean>
           agentRouting?: Record<string, { model: string; reasoningEffort?: string }>
+          webSearchProvider?: WebSearchProviderId
+          webSearchHasKey?: Record<string, boolean>
         }
         agentIds?: string[]
       }
@@ -354,6 +372,8 @@ export default function SettingsModal({
           Object.entries(s?.agentRouting ?? {}).map(([id, r]) => [id, { model: r.model, reasoningEffort: r.reasoningEffort ?? 'default' }])
         )
       )
+      setWebSearchProvider(s?.webSearchProvider ?? 'duckduckgo')
+      setWebSearchHasKey(s?.webSearchHasKey ?? {})
       setAllAgentIds(state.agentIds ?? [])
       setCwd((state as { cwd?: string }).cwd ?? '')
       if ((state as { cwd?: string }).cwd) {
@@ -419,7 +439,12 @@ export default function SettingsModal({
         approvalMode,
         apiKeys: Object.fromEntries(Object.entries(apiKeys).filter(([, v]) => v.trim())),
         deleteKeys,
-        agentRouting: Object.fromEntries(Object.entries(agentRouting).filter(([, r]) => r.model.trim()))
+        agentRouting: Object.fromEntries(Object.entries(agentRouting).filter(([, r]) => r.model.trim())),
+        webSearchProvider,
+        searchApiKeys: Object.fromEntries(
+          Object.entries(searchApiKeys).filter(([provider, v]) => v.trim() && (provider === 'tinyfish' || provider === 'firecrawl'))
+        ),
+        deleteSearchKeys
       })) as { ok?: boolean; settings?: { hasProvider?: boolean }; error?: string }
 
       if (result.ok) {
@@ -430,7 +455,7 @@ export default function SettingsModal({
       console.error('Settings auto-save failed:', err)
       setError(`Save failed: ${message}`)
     }
-  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, onSaved])
+  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, webSearchProvider, searchApiKeys, deleteSearchKeys, onSaved])
 
   const isInitialMount = useRef(true)
   useEffect(() => {
@@ -781,14 +806,19 @@ export default function SettingsModal({
       icon: <SettingsIcon size={16} />
     },
     {
+      id: 'theme',
+      label: 'Theme',
+      icon: <PaletteIcon size={16} />
+    },
+    {
       id: 'providers',
       label: 'Providers & Models',
       icon: <SparklesIcon size={16} />
     },
     {
-      id: 'theme',
-      label: 'Theme',
-      icon: <PaletteIcon size={16} />
+      id: 'search',
+      label: 'Web Search',
+      icon: <SearchIcon size={16} />
     },
     {
       id: 'routing',
@@ -855,6 +885,7 @@ export default function SettingsModal({
               {activeTab === 'theme' && 'Theme & Appearance'}
               {activeTab === 'routing' && 'Agent Routing'}
               {activeTab === 'agents' && 'Custom Agents'}
+              {activeTab === 'search' && 'Web Search'}
               {activeTab === 'about' && 'About'}
             </h2>
             <p className="hint">
@@ -870,6 +901,8 @@ export default function SettingsModal({
                 'Route specific agent roles to different models and customize reasoning effort per agent.'}
               {activeTab === 'agents' &&
                 'Manage local agents loaded from .agents/ directories in your project or home.'}
+              {activeTab === 'search' &&
+                'Choose which provider the web_search tool uses. DuckDuckGo needs no key; Firecrawl works keyless; Tinyfish requires an API key.'}
             </p>
           </div>
         </header>
@@ -1593,7 +1626,146 @@ export default function SettingsModal({
             </div>
           )}
 
-          {/* 6. About Tab */}
+          {/* 6. Web Search Tab */}
+          {activeTab === 'search' && (
+            <div className="settings-tab-content">
+              <div className="settings-section-card">
+                <div className="settings-section-head">
+                  <span>Search Provider</span>
+                </div>
+                <p className="hint">
+                  Pick which backend the <code>web_search</code> tool uses for the agent. Deep research
+                  workloads can trip DuckDuckGo rate limits — Firecrawl and Tinyfish are alternatives.
+                </p>
+
+                <div className="websearch-provider-list">
+                  {[
+                    {
+                      id: 'duckduckgo' as WebSearchProviderId,
+                      label: 'DuckDuckGo',
+                      description: 'No API key needed. Free but rate-limited under heavy usage.',
+                      requiresKey: false
+                    },
+                    {
+                      id: 'firecrawl' as WebSearchProviderId,
+                      label: 'Firecrawl (Keyless)',
+                      description: 'Free per-IP daily credits with no key. Add a key for higher limits.',
+                      requiresKey: false
+                    },
+                    {
+                      id: 'tinyfish' as WebSearchProviderId,
+                      label: 'Tinyfish',
+                      description: 'Free tier: 30 req/min, 500 req/hour. Requires an API key.',
+                      requiresKey: true
+                    }
+                  ].map((p) => {
+                    const isActive = webSearchProvider === p.id
+                    const hasKey = Boolean(webSearchHasKey[p.id] || searchApiKeys[p.id])
+                    return (
+                      <div
+                        key={p.id}
+                        className={`websearch-provider-card ${isActive ? 'active' : ''}`}
+                        onClick={() => setWebSearchProvider(p.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setWebSearchProvider(p.id)
+                          }
+                        }}
+                      >
+                        <div className="websearch-provider-head">
+                          <span className="websearch-provider-name">{p.label}</span>
+                          {p.requiresKey ? (
+                            <span className={`provider-list-key-tag ${hasKey ? 'saved' : 'missing'}`}>
+                              {hasKey ? 'Key Set' : 'Key Required'}
+                            </span>
+                          ) : (
+                            <span className="provider-list-key-tag local">No Key Needed</span>
+                          )}
+                        </div>
+                        <div className="websearch-provider-desc">{p.description}</div>
+                        {isActive && (
+                          <div className="websearch-provider-active">
+                            <CheckCircleIcon size={12} /> Active provider
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {(webSearchProvider === 'tinyfish' || webSearchProvider === 'firecrawl') && (
+                <div className="settings-section-card" style={{ marginTop: '14px' }}>
+                  <div className="settings-section-head">
+                    <span>
+                      {webSearchProvider === 'tinyfish' ? 'Tinyfish API Key' : 'Firecrawl API Key (Optional)'}
+                    </span>
+                  </div>
+                  {webSearchProvider === 'tinyfish' ? (
+                    <p className="hint">
+                      Get a free key at{' '}
+                      <a
+                        href="https://agent.tinyfish.ai/api-keys"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="about-link"
+                      >
+                        agent.tinyfish.ai/api-keys
+                      </a>
+                      . Stored encrypted in your OS keychain (DPAPI).
+                    </p>
+                  ) : (
+                    <p className="hint">
+                      Optional. Keyless mode works but shares Firecrawl's free per-IP daily credits. Add a key
+                      for higher rate limits. Stored encrypted in your OS keychain (DPAPI).
+                    </p>
+                  )}
+                  <div className="settings-field-group">
+                    <div className="url-row">
+                      <input
+                        type="password"
+                        value={searchApiKeys[webSearchProvider] ?? ''}
+                        onChange={(e) =>
+                          setSearchApiKeys((prev) => ({ ...prev, [webSearchProvider]: e.target.value }))
+                        }
+                        placeholder={
+                          webSearchHasKey[webSearchProvider]
+                            ? '•••••••••••••••• (leave empty to keep)'
+                            : webSearchProvider === 'tinyfish'
+                              ? 'Enter Tinyfish API key…'
+                              : 'Optional Firecrawl API key…'
+                        }
+                        spellCheck={false}
+                      />
+                      {webSearchHasKey[webSearchProvider] && (
+                        <button
+                          type="button"
+                          className="btn ghost danger-hover small"
+                          onClick={() => {
+                            setDeleteSearchKeys((prev) =>
+                              prev.includes(webSearchProvider)
+                                ? prev
+                                : [...prev, webSearchProvider]
+                            )
+                            setSearchApiKeys((prev) => ({ ...prev, [webSearchProvider]: '' }))
+                          }}
+                          title="Remove the stored key"
+                        >
+                          <TrashIcon size={12} />
+                          <span>Remove</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 7. About Tab */}
           {activeTab === 'about' && (
             <div className="settings-tab-content">
               <div className="settings-section-card about-card">

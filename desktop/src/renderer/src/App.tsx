@@ -313,7 +313,7 @@ export default function App() {
   const [rightTab, setRightTab] = useState<RightTab>('activity')
 
   const [showSettings, setShowSettings] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<'general' | 'providers' | 'theme' | 'routing' | 'agents'>('general')
+  const [settingsTab, setSettingsTab] = useState<'general' | 'providers' | 'theme' | 'routing' | 'agents' | 'search'>('general')
   const [showAgentWizard, setShowAgentWizard] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 

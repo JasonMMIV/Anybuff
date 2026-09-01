@@ -107,18 +107,30 @@ export async function fetchPublicWebUrl(params: {
   signal: AbortSignal
   headers?: Record<string, string>
   maxRedirects?: number
+  /** HTTP method; defaults to GET. POST requests never follow redirects. */
+  method?: 'GET' | 'POST'
+  /** Optional request body (used with method POST). */
+  body?: string
 }): Promise<{ response: Response; finalUrl: URL }> {
   const maxRedirects = params.maxRedirects ?? MAX_WEB_FETCH_REDIRECTS
   let current = await assertSafePublicWebUrl(params.url)
 
   for (let redirectCount = 0; ; redirectCount++) {
     const response = await fetch(current, {
+      method: params.method ?? 'GET',
+      ...(params.body !== undefined ? { body: params.body } : {}),
       headers: params.headers,
       redirect: 'manual',
       signal: params.signal,
     })
     if (response.status < 300 || response.status >= 400) {
       return { response, finalUrl: current }
+    }
+    if (params.method === 'POST') {
+      await response.body?.cancel()
+      throw new Error(
+        `Refusing to follow redirect for POST request to ${current.href}`,
+      )
     }
     if (redirectCount >= maxRedirects) {
       await response.body?.cancel()
@@ -180,41 +192,6 @@ export type WebSearchResult = {
   title: string
   url: string
   description: string
-}
-
-/** Execute a bounded, abortable DuckDuckGo HTML search without a subprocess. */
-export const executeWebSearch = async (
-  query: string,
-  depth: 'standard' | 'deep' = 'standard',
-  signal: AbortSignal = AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS),
-): Promise<{ results: WebSearchResult[] } | { error: string }> => {
-  const limit = depth === 'deep' ? 10 : 5
-
-  try {
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    const { response } = await fetchPublicWebUrl({
-      url: searchUrl,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (compatible; AnyBuff/1.0; +https://github.com/anybuff)',
-      },
-      signal,
-    })
-    if (!response.ok) {
-      return {
-        error: `DuckDuckGo search failed: HTTP ${response.status} ${response.statusText}`,
-      }
-    }
-    const { text } = await readResponseTextWithLimit({ response })
-    return { results: parseDuckDuckGoHtml(text).slice(0, limit) }
-  } catch (error) {
-    return {
-      error:
-        error instanceof Error
-          ? error.message
-          : `Unknown web search error: ${String(error)}`,
-    }
-  }
 }
 
 export function parseDuckDuckGoHtml(html: string): WebSearchResult[] {

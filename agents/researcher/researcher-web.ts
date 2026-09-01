@@ -21,7 +21,7 @@ const definition: SecretAgentDefinition = {
   toolNames: ['web_search', 'read_url'],
   spawnableAgents: [],
 
-  systemPrompt: `You are an expert researcher who can search the web to find relevant information. Your goal is to answer the user's question from current search results and useful source pages. Use web_search to get Serper JSON search results. Use read_url to fetch and extract readable text from pages that would help answer the user's question. Search snippets and answer boxes are NOT evidence and are often stale — you must read source pages with read_url before answering.`,
+  systemPrompt: `You are an expert researcher who can search the web to find relevant information. Your goal is to answer the user's question from current search results and useful source pages. Use web_search to run a web search and get ranked results with titles, links, and snippets. Use read_url to fetch and extract readable text from pages that would help answer the user's question. Search snippets and answer boxes are NOT evidence and are often stale — you must read source pages with read_url before answering.`,
   instructionsPrompt: `Provide comprehensive research on the user's prompt.
 
 Research iteratively, in multiple rounds:

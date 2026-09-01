@@ -19,6 +19,7 @@ import { resolveModelContextWindow } from './model-provider'
 import type {
   AgentRuntimeDeps,
   AgentRuntimeScopedDeps,
+  WebSearchOptions,
 } from '@codebuff/common/types/contracts/agent-runtime'
 import type { AgentTemplate } from '@codebuff/common/types/agent-template'
 import type { DatabaseAgentCache } from '@codebuff/common/types/contracts/database'
@@ -57,6 +58,8 @@ export function getAgentRuntimeImpl(
     traceWriter?: TraceWriter
     apiKey: string
     clientEnv?: ClientEnv
+    /** Web search provider config (AnyBuff BYOK seam). */
+    webSearch?: WebSearchOptions
   } & Pick<
     AgentRuntimeScopedDeps,
     | 'handleStepsLogChunk'
@@ -73,6 +76,7 @@ export function getAgentRuntimeImpl(
     traceWriter,
     apiKey,
     clientEnv: clientEnvInput,
+    webSearch,
     handleStepsLogChunk,
     requestToolCall,
     requestMcpToolData,
@@ -120,6 +124,7 @@ export function getAgentRuntimeImpl(
     logger: logger ?? noopLogger,
     traceWriter,
     fetch: globalThis.fetch,
+    ...(webSearch !== undefined ? { webSearch } : {}),
 
     // Context window: provider-config aware (falls back to hardcoded budget)
     resolveContextWindow: (agentId, model) => resolveModelContextWindow({ agentId, model }),

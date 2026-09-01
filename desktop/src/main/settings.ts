@@ -68,6 +68,9 @@ export interface AgentRoute {
   reasoningEffort?: ReasoningEffort
 }
 
+/** Selectable web search providers (mirrors the SDK's WebSearchProviderId). */
+export type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
+
 export interface AppSettings {
   providers: ProviderConfig[]
   activeModel: string // `${providerId}/${model}`
@@ -79,6 +82,10 @@ export interface AppSettings {
   projects: ProjectRecord[]
   /** Per-agent model routing overrides, keyed by agent ID. Empty = use the global default model. */
   agentRouting: Record<string, AgentRoute>
+  /** Active web search provider for the web_search tool. */
+  webSearchProvider: WebSearchProviderId
+  /** Whether a Tinyfish/Firecrawl search key is stored (DPAPI). */
+  webSearchHasKey: Record<WebSearchProviderId, boolean>
 }
 
 const SETTINGS_FILE = 'AnyBuff-app-settings.json'
@@ -92,6 +99,8 @@ interface PersistedSettings {
   encryptedKeys?: Record<string, string> // providerId -> base64 encrypted key
   projects?: ProjectRecord[]
   agentRouting?: Record<string, AgentRoute>
+  /** Active web search provider (default duckduckgo). */
+  webSearchProvider?: WebSearchProviderId
 }
 
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -196,7 +205,8 @@ function defaultSettings(): PersistedSettings {
     activeModel: 'openai/gpt-5.5',
     reasoningEffort: 'default',
     approvalMode: 'balanced',
-    projects: []
+    projects: [],
+    webSearchProvider: 'duckduckgo'
   }
 }
 
@@ -242,6 +252,10 @@ export function loadSettings(): PersistedSettings {
       base.agentRouting = Object.fromEntries(
         Object.entries(parsed.agentRouting).filter(([, v]) => v && typeof v.model === 'string' && v.model.trim())
       )
+    }
+    // Web search provider (default duckduckgo; validate against the known set)
+    if (parsed.webSearchProvider === 'firecrawl' || parsed.webSearchProvider === 'tinyfish' || parsed.webSearchProvider === 'duckduckgo') {
+      base.webSearchProvider = parsed.webSearchProvider
     }
     // Legacy single-key migration
     if (!base.encryptedKeys && typeof legacy.encryptedApiKey === 'string') {
@@ -312,8 +326,88 @@ export function getAppSettings(): AppSettings {
     hasProvider: Boolean(activeProvider) && (hasKey || isLocal),
     providerHasKey,
     projects: s.projects ?? [],
-    agentRouting: s.agentRouting ?? {}
+    agentRouting: s.agentRouting ?? {},
+    webSearchProvider: s.webSearchProvider ?? 'duckduckgo',
+    webSearchHasKey: {
+      duckduckgo: false,
+      firecrawl: getSearchApiKey('firecrawl') !== undefined,
+      tinyfish: getSearchApiKey('tinyfish') !== undefined
+    }
   }
+}
+
+/** Search-provider key storage id (DPAPI, ADR-11). Distinct from model keys. */
+function searchKeyId(provider: WebSearchProviderId): string | null {
+  if (provider === 'firecrawl') return 'search-firecrawl'
+  if (provider === 'tinyfish') return 'search-tinyfish'
+  return null
+}
+
+/**
+ * Save a web search provider's API key (Tinyfish / Firecrawl). Empty string
+ * deletes it. DPAPI is mandatory (ADR-11) — identical policy to model keys.
+ */
+export function saveSearchApiKey(provider: WebSearchProviderId, apiKey: string): void {
+  const id = searchKeyId(provider)
+  if (!id) return
+  const s = loadSettings()
+  s.encryptedKeys = s.encryptedKeys ?? {}
+  if (!apiKey) {
+    delete s.encryptedKeys[id]
+  } else if (safeStorage.isEncryptionAvailable()) {
+    s.encryptedKeys[id] = safeStorage.encryptString(apiKey).toString('base64')
+  } else {
+    throw new Error(
+      'OS credential encryption (DPAPI) is unavailable, so the search API key cannot be stored safely. Set the key as an environment variable instead.'
+    )
+  }
+  saveSettings(s)
+}
+
+/** Decrypt a stored web search provider API key (undefined when absent). */
+export function getSearchApiKey(provider: WebSearchProviderId): string | undefined {
+  const id = searchKeyId(provider)
+  if (!id) return undefined
+  const s = loadSettings()
+  const enc = s.encryptedKeys?.[id]
+  if (!enc) return undefined
+  if (enc.startsWith('plain:')) {
+    console.warn(`[anybuff] stored search key for '${provider}' is legacy plaintext; re-entry required`)
+    return undefined
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Build the per-run webSearch option for the SDK. Keys travel via the
+ * run-options channel (ADR-12) and never enter process.env.
+ */
+export function getWebSearchConfig(): {
+  provider: WebSearchProviderId
+  tinyfishApiKey?: string
+  firecrawlApiKey?: string
+} {
+  const s = loadSettings()
+  const provider = s.webSearchProvider ?? 'duckduckgo'
+  // Always forward both stored keys, not just the active provider's: the
+  // DuckDuckGo 403/429 auto-fallback runs through Firecrawl, so a saved
+  // Firecrawl key must be available even when the primary provider is DDG.
+  return {
+    provider,
+    tinyfishApiKey: getSearchApiKey('tinyfish'),
+    firecrawlApiKey: getSearchApiKey('firecrawl')
+  }
+}
+
+/** Set the active web search provider. */
+export function setWebSearchProvider(provider: WebSearchProviderId): void {
+  const s = loadSettings()
+  s.webSearchProvider = provider
+  saveSettings(s)
 }
 
 export function saveCwd(cwd: string): void {

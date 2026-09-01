@@ -26,6 +26,21 @@ import type {
 import type { Logger } from './logger'
 import type { TraceWriter } from './trace'
 
+/** Selectable web search providers for the web_search tool (AnyBuff BYOK seam). */
+export type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
+
+/**
+ * Host-injected web search configuration. Keys travel via the run-options
+ * channel (ADR-12) — they must never be written to process.env.
+ */
+export type WebSearchOptions = {
+  provider: WebSearchProviderId
+  /** Tinyfish X-API-Key (required when provider is 'tinyfish'). */
+  tinyfishApiKey?: string
+  /** Firecrawl Bearer key; keyless works with lower per-IP limits. */
+  firecrawlApiKey?: string
+}
+
 /** Shared dependencies */
 export type AgentRuntimeDeps = {
   // Environment
@@ -58,6 +73,9 @@ export type AgentRuntimeDeps = {
   /** Optional debug trace of agent message histories (see TraceWriter) */
   traceWriter?: TraceWriter
   fetch: typeof globalThis.fetch
+  /** Web search provider config for the web_search tool. Optional —
+   *  absent means DuckDuckGo defaults (upstream-compatible). */
+  webSearch?: WebSearchOptions
 
   /**
    * Resolve the actual context window for a given agent/model from the
