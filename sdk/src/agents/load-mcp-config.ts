@@ -92,11 +92,23 @@ const MCP_CONFIG_FILE_NAME = 'mcp.json'
  * Get default directories to search for mcp.json.
  * Matches the agent loading directories for consistency.
  */
-const getDefaultMcpConfigDirs = (): string[] => {
-  const cwdAgents = path.join(process.cwd(), '.agents')
-  const parentAgents = path.join(process.cwd(), '..', '.agents')
+const getDefaultMcpConfigDirs = (cwd?: string): string[] => {
+  const base = cwd ?? process.cwd()
+  const cwdAgents = path.join(base, '.agents')
+  const parentAgents = path.join(base, '..', '.agents')
   const homeAgents = path.join(os.homedir(), '.agents')
   return [cwdAgents, parentAgents, homeAgents]
+}
+
+/**
+ * Options for loading MCP configuration from mcp.json files.
+ */
+export type LoadMCPConfigOptions = {
+  verbose?: boolean
+  /** Directory to search for `.agents/mcp.json` (defaults to process.cwd()). */
+  cwd?: string
+  /** Keep `$VAR` references unresolved (raw config for display / forwarding). */
+  skipEnvResolution?: boolean
 }
 
 /**
@@ -124,17 +136,17 @@ const getDefaultMcpConfigDirs = (): string[] => {
  * }
  * ```
  */
-export async function loadMCPConfig(options: {
-  verbose?: boolean
-}): Promise<LoadedMCPConfig> {
-  const { verbose = false } = options
+export async function loadMCPConfig(
+  options: LoadMCPConfigOptions = {},
+): Promise<LoadedMCPConfig> {
+  const { verbose = false, cwd, skipEnvResolution = false } = options
 
   const mergedConfig: LoadedMCPConfig = {
     mcpServers: {},
     _sourceFilePath: '',
   }
 
-  const mcpConfigDirs = getDefaultMcpConfigDirs()
+  const mcpConfigDirs = getDefaultMcpConfigDirs(cwd)
 
   for (const dir of mcpConfigDirs) {
     const configPath = path.join(dir, MCP_CONFIG_FILE_NAME)
@@ -162,14 +174,18 @@ export async function loadMCPConfig(options: {
 
       const parsedConfig = parseResult.data
 
-      // Resolve environment variable references
-      try {
-        resolveMcpConfigEnv(parsedConfig)
-      } catch (error) {
-        if (verbose) {
-          console.error(error instanceof Error ? error.message : String(error))
+      // Resolve environment variable references (skipped when the caller wants
+      // the raw config — the desktop settings view shows $VAR refs, and the
+      // runtime MCP client substitutes them leniently instead of throwing)
+      if (!skipEnvResolution) {
+        try {
+          resolveMcpConfigEnv(parsedConfig)
+        } catch (error) {
+          if (verbose) {
+            console.error(error instanceof Error ? error.message : String(error))
+          }
+          continue
         }
-        continue
       }
 
       // Merge MCP servers (later directories override earlier ones)
@@ -203,17 +219,17 @@ export async function loadMCPConfig(options: {
  * @param options.verbose - Whether to log errors during loading
  * @returns Record of MCP server configurations keyed by server name
  */
-export function loadMCPConfigSync(options: {
-  verbose?: boolean
-}): LoadedMCPConfig {
-  const { verbose = false } = options
+export function loadMCPConfigSync(
+  options: LoadMCPConfigOptions = {},
+): LoadedMCPConfig {
+  const { verbose = false, cwd, skipEnvResolution = false } = options
 
   const mergedConfig: LoadedMCPConfig = {
     mcpServers: {},
     _sourceFilePath: '',
   }
 
-  const mcpConfigDirs = getDefaultMcpConfigDirs()
+  const mcpConfigDirs = getDefaultMcpConfigDirs(cwd)
 
   for (const dir of mcpConfigDirs) {
     const configPath = path.join(dir, MCP_CONFIG_FILE_NAME)
@@ -238,14 +254,18 @@ export function loadMCPConfigSync(options: {
 
       const parsedConfig = parseResult.data
 
-      // Resolve environment variable references
-      try {
-        resolveMcpConfigEnv(parsedConfig)
-      } catch (error) {
-        if (verbose) {
-          console.error(error instanceof Error ? error.message : String(error))
+      // Resolve environment variable references (skipped when the caller wants
+      // the raw config — the desktop settings view shows $VAR refs, and the
+      // runtime MCP client substitutes them leniently instead of throwing)
+      if (!skipEnvResolution) {
+        try {
+          resolveMcpConfigEnv(parsedConfig)
+        } catch (error) {
+          if (verbose) {
+            console.error(error instanceof Error ? error.message : String(error))
+          }
+          continue
         }
-        continue
       }
 
       // Merge MCP servers (later directories override earlier ones)

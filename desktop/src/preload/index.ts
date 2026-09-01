@@ -85,6 +85,13 @@ const api = {
   /** Resolve the on-disk path of a dropped File object (Electron ≥32 removed File.path). */
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
+  /* MCP servers (Settings → MCP Tools) */
+  listMcpServers: (cwd: string | null) => ipcRenderer.invoke('AnyBuff:listMcpServers', cwd),
+  saveMcpServer: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveMcpServer', payload),
+  deleteMcpServer: (payload: { id: string }) => ipcRenderer.invoke('AnyBuff:deleteMcpServer', payload),
+  updateMcpServerSettings: (payload: { cwd: string | null; id: string; enabled?: boolean; targetAgents?: string[] }) =>
+    ipcRenderer.invoke('AnyBuff:updateMcpServerSettings', payload),
+  testMcpServer: (payload: { record: unknown }) => ipcRenderer.invoke('AnyBuff:testMcpServer', payload),
   listSkills: (cwd: string) => ipcRenderer.invoke('AnyBuff:listSkills', cwd),
   listLocalAgents: (cwd: string) => ipcRenderer.invoke('AnyBuff:listLocalAgents', cwd),
   createLocalAgent: (payload: unknown) => ipcRenderer.invoke('AnyBuff:createLocalAgent', payload),

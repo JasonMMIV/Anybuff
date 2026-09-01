@@ -47,6 +47,7 @@ export * from './credentials'
 export * from './provider-config'
 export { loadLocalAgents } from './agents/load-agents'
 export { loadMCPConfig, loadMCPConfigSync } from './agents/load-mcp-config'
+export { listMcpToolsForConfig } from './agents/mcp-connect'
 export { loadSkills, loadSkillsSync, parseSkillFileContent } from './skills/load-skills'
 export { formatAvailableSkillsXml } from '@codebuff/common/util/skills'
 export type { LoadSkillsOptions } from './skills/load-skills'
@@ -60,7 +61,10 @@ export type {
 export type {
   MCPFileConfig,
   LoadedMCPConfig,
+  LoadMCPConfigOptions,
 } from './agents/load-mcp-config'
+export type { MCPConfig } from '@codebuff/common/types/mcp'
+export type { McpToolInfo } from './agents/mcp-connect'
 
 export { validateAgents } from './validate-agents'
 export type { ValidationResult, ValidateAgentsOptions } from './validate-agents'

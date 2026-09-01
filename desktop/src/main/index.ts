@@ -28,6 +28,14 @@ import {
   type WebSearchProviderId
 } from './settings'
 import {
+  getMcpServersView,
+  saveMcpServer,
+  deleteMcpServer,
+  updateMcpServerSettings,
+  testMcpServer
+} from './mcp-settings'
+import type { McpServerDraft } from './mcp-settings'
+import {
   getOrCreateSession,
   getRunningTaskId,
   getSessionSnapshot,
@@ -391,6 +399,48 @@ function registerIpc(): void {
       if (provider === 'tinyfish' || provider === 'firecrawl') saveSearchApiKey(provider, '')
     }
     return { ok: true, settings: getAppSettings() }
+  })
+
+  ipcMain.handle('AnyBuff:listMcpServers', (_e, cwd: string | null) => {
+    return getMcpServersView(cwd)
+  })
+
+  ipcMain.handle('AnyBuff:saveMcpServer', (_e, payload: McpServerDraft) => {
+    try {
+      const server = saveMcpServer(payload)
+      return { ok: true, server }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('AnyBuff:deleteMcpServer', (_e, payload: { id: string }) => {
+    try {
+      deleteMcpServer(payload.id)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(
+    'AnyBuff:updateMcpServerSettings',
+    (_e, payload: { cwd: string | null; id: string; enabled?: boolean; targetAgents?: string[] }) => {
+      try {
+        const server = updateMcpServerSettings(payload.cwd, {
+          id: payload.id,
+          enabled: payload.enabled,
+          targetAgents: payload.targetAgents
+        })
+        return { ok: true, server }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  ipcMain.handle('AnyBuff:testMcpServer', async (_e, payload: { record: McpServerDraft }) => {
+    return await testMcpServer(payload.record)
   })
 
   ipcMain.handle('AnyBuff:listSkills', (_e, cwd: string) => {

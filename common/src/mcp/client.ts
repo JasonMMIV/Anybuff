@@ -173,6 +173,24 @@ export function listMCPTools(
   return listToolsCache[clientId]
 }
 
+/**
+ * Disconnect a client and drop it from the running set. Used by one-shot
+ * probes (Settings → MCP Tools "Test") so a spawned stdio server process is
+ * reaped instead of lingering in the connection cache. Safe to call when the
+ * client is already gone.
+ */
+export async function disconnectMCPClient(clientId: string): Promise<void> {
+  const client = runningClients[clientId]
+  delete runningClients[clientId]
+  delete listToolsCache[clientId]
+  if (!client) return
+  try {
+    await client.close()
+  } catch {
+    // best-effort: the process may already be gone
+  }
+}
+
 function getResourceData(
   resource: TextResourceContents | BlobResourceContents,
 ): string {

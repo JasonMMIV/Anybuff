@@ -15,6 +15,7 @@ import {
   SparkIcon,
   PanelLeftIcon,
   PaperclipIcon,
+  PlugIcon,
   RobotIcon,
   SearchIcon,
   SparklesIcon,
@@ -90,6 +91,8 @@ function toolIcon(name: string): React.ReactNode {
     case 'render_ui':
       return <PanelLeftIcon size={16} />
     default:
+      // MCP tools are exposed as `<server>__<tool>` — give them a distinct plug glyph.
+      if (name.includes('__')) return <PlugIcon size={16} />
       return <BoltIcon size={16} />
   }
 }
@@ -122,7 +125,15 @@ function toolLabel(name: string): string {
     case 'ask_user': return 'Ask user'
     case 'spawn_agents': return 'Spawn agents'
     case 'render_ui': return 'Render UI'
-    default: return name.replace(/_/g, ' ')
+    default:
+      // MCP tools: `context7__fetch_docs` → `context7 · fetch docs`
+      const sep = name.indexOf('__')
+      if (sep > 0) {
+        const server = name.slice(0, sep)
+        const tool = name.slice(sep + 2).replace(/_/g, ' ')
+        return `${server} · ${tool}`
+      }
+      return name.replace(/_/g, ' ')
   }
 }
 

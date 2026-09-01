@@ -2,6 +2,7 @@ import { app, safeStorage } from 'electron'
 import { writeFileAtomic } from './atomic-write'
 import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
+import type { McpServerRecord, McpServerOverride } from './mcp-settings'
 
 /**
  * Provider settings management (multi-provider).
@@ -101,6 +102,10 @@ interface PersistedSettings {
   agentRouting?: Record<string, AgentRoute>
   /** Active web search provider (default duckduckgo). */
   webSearchProvider?: WebSearchProviderId
+  /** App-managed MCP servers (Settings → MCP Tools). */
+  mcpServers?: McpServerRecord[]
+  /** App-level overrides for mcp.json-discovered servers, keyed by opaque file id. */
+  mcpOverrides?: Record<string, McpServerOverride>
 }
 
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -257,6 +262,8 @@ export function loadSettings(): PersistedSettings {
     if (parsed.webSearchProvider === 'firecrawl' || parsed.webSearchProvider === 'tinyfish' || parsed.webSearchProvider === 'duckduckgo') {
       base.webSearchProvider = parsed.webSearchProvider
     }
+    if (Array.isArray(parsed.mcpServers)) base.mcpServers = parsed.mcpServers
+    if (parsed.mcpOverrides && typeof parsed.mcpOverrides === 'object') base.mcpOverrides = parsed.mcpOverrides
     // Legacy single-key migration
     if (!base.encryptedKeys && typeof legacy.encryptedApiKey === 'string') {
       const first = base.providers[0]
@@ -268,7 +275,7 @@ export function loadSettings(): PersistedSettings {
   }
 }
 
-function saveSettings(settings: PersistedSettings): void {
+export function saveSettings(settings: PersistedSettings): void {
   writeFileAtomic(settingsPath(), JSON.stringify(settings, null, 2))
 }
 
@@ -375,6 +382,34 @@ export function getSearchApiKey(provider: WebSearchProviderId): string | undefin
     console.warn(`[anybuff] stored search key for '${provider}' is legacy plaintext; re-entry required`)
     return undefined
   }
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return undefined
+  }
+}
+
+/** Generic DPAPI vault helper (ADR-11) — used by MCP server inline secrets. Empty value deletes. */
+export function saveSecret(key: string, value: string): void {
+  const s = loadSettings()
+  s.encryptedKeys = s.encryptedKeys ?? {}
+  if (!value) {
+    delete s.encryptedKeys[key]
+  } else if (safeStorage.isEncryptionAvailable()) {
+    s.encryptedKeys[key] = safeStorage.encryptString(value).toString('base64')
+  } else {
+    throw new Error(
+      'OS credential encryption (DPAPI) is unavailable, so the secret cannot be stored safely. Use a $ENV_VAR reference instead.'
+    )
+  }
+  saveSettings(s)
+}
+
+/** Decrypt a stored vault entry (undefined when absent or legacy plaintext). */
+export function getSecret(key: string): string | undefined {
+  const s = loadSettings()
+  const enc = s.encryptedKeys?.[key]
+  if (!enc || enc.startsWith('plain:')) return undefined
   try {
     return safeStorage.decryptString(Buffer.from(enc, 'base64'))
   } catch {

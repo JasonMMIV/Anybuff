@@ -2,6 +2,7 @@ import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } f
 import type { BrowserWindow } from 'electron'
 import { isSensitiveFile } from './file-filter'
 import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from './settings'
+import { applyMcpServersToAgents, getEnabledMcpServers } from './mcp-settings'
 import { bundledAgents } from './agents/bundled-agents'
 import { loadProjectLocalAgents, type LocalAgentsResult } from './agents/local-agents'
 import {
@@ -658,6 +659,13 @@ async function buildAgentDefinitions(cwd: string): Promise<{ definitions: Record
     if (added.length > 0) {
       merged[rootId] = { ...baseDef, spawnableAgents: [...(baseDef.spawnableAgents ?? []), ...added] }
     }
+  }
+  // Enabled MCP servers (app-managed + .agents/mcp.json) are mounted onto
+  // their target agents. A broken MCP entry must never block the run.
+  try {
+    applyMcpServersToAgents(merged, getEnabledMcpServers(cwd))
+  } catch (err) {
+    console.warn('[anybuff] Failed to merge MCP servers into agents:', err)
   }
   return { definitions: merged, local }
 }

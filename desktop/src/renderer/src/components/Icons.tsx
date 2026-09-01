@@ -528,6 +528,31 @@ export function ShieldAlertIcon(props: IconProps) {
   )
 }
 
+/** Electric plug (MCP Tools settings tab) */
+export function PlugIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22v-5" />
+      <path d="M9 8V2" />
+      <path d="M15 8V2" />
+      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+    </svg>
+  )
+}
+
+/** Database cylinder (MCP server card) */
+export function ServerIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  )
+}
+
 /* ─── Window Controls ──────────────────────────────── */
 
 export function WindowMinimizeIcon(props: IconProps) {

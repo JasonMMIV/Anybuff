@@ -3,6 +3,7 @@ import type { ColorTheme } from '../App'
 import {
   ActivityIcon,
   AppIcon,
+  BoltIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
   EditIcon,
@@ -11,9 +12,11 @@ import {
   LayersIcon,
   MoonIcon,
   PaletteIcon,
+  PlugIcon,
   PlusIcon,
   RefreshIcon,
   SearchIcon,
+  ServerIcon,
   SettingsIcon,
   SparklesIcon,
   SpecialistIcon,
@@ -24,7 +27,7 @@ import {
 import CustomSelect from './CustomSelect'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'about'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'about'
 
 type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
 
@@ -36,13 +39,176 @@ interface WebSearchProviderMeta {
   keyHint: string
 }
 
+/* ─── MCP Tools tab types ──────────────────────────────── */
+
+/** Sentinel the main process stores for a DPAPI-encrypted value (see mcp-settings.ts). */
+const MCP_SECRET_PLACEHOLDER = '__ANYBUFF_KEEP_SECRET__'
+
+type McpServerType = 'stdio' | 'http' | 'sse'
+
+export interface McpServerView {
+  id: string
+  name: string
+  type: McpServerType
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+  params?: Record<string, string>
+  enabled: boolean
+  targetAgents: string[]
+  source: 'app' | 'file'
+  filePath?: string
+  hasSecrets: boolean
+}
+
+interface McpServerDraft {
+  id?: string
+  name: string
+  type: McpServerType
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+  params?: Record<string, string>
+  enabled: boolean
+  targetAgents: string[]
+}
+
+interface McpPreset {
+  label: string
+  description: string
+  type: McpServerType
+  command?: string
+  args?: string[]
+  url?: string
+  envHint?: { key: string; varName: string; hint: string }[]
+  headerHint?: { key: string; varName: string; hint: string }[]
+}
+
+/** Quick-fill templates for the Add-MCP form. */
+const MCP_PRESETS: McpPreset[] = [
+  {
+    label: 'Context7 (Docs)',
+    description: 'Up-to-date documentation for 4M+ libraries, injected as context.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@upstash/context7-mcp']
+  },
+  {
+    label: 'Playwright',
+    description: 'Browser automation and end-to-end testing via Playwright.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@playwright/mcp@latest']
+  },
+  {
+    label: 'Chrome DevTools',
+    description: 'Drive a real Chrome instance (same MCP used by the browser-use agent).',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', 'chrome-devtools-mcp@latest']
+  },
+  {
+    label: 'Filesystem',
+    description: 'Read/write files outside the project (use with care).',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '~/']
+  },
+  {
+    label: 'Fetch',
+    description: 'Fetch and convert URLs to markdown for research.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-fetch']
+  },
+  {
+    label: 'Sequential Thinking',
+    description: 'Structured multi-step problem solving.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-sequential-thinking']
+  },
+  {
+    label: 'GitHub (official)',
+    description: 'Issue/PR/repo operations with a personal access token.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', 'github-mcp-server'],
+    envHint: [{ key: 'GITHUB_PERSONAL_ACCESS_TOKEN', varName: '$GITHUB_PERSONAL_ACCESS_TOKEN', hint: 'GitHub PAT (repo + read:org scopes)' }]
+  },
+  {
+    label: 'Exa Search',
+    description: 'Web search API for AI agents.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', 'exa-mcp-server'],
+    envHint: [{ key: 'EXA_API_KEY', varName: '$EXA_API_KEY', hint: 'Exa API key' }]
+  },
+  {
+    label: 'Supabase',
+    description: 'Query and manage Supabase projects.',
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', 'mcp-server-supabase'],
+    envHint: [{ key: 'SUPABASE_ACCESS_TOKEN', varName: '$SUPABASE_ACCESS_TOKEN', hint: 'Supabase access token' }]
+  },
+  {
+    label: 'Custom HTTP (http://)',
+    description: 'Remote MCP server over HTTP with optional headers.',
+    type: 'http',
+    url: 'https://mcp.example.com/mcp'
+  }
+]
+
+/** Agents offered in the target-agents picker (bundled + local). */
+const DEFAULT_AGENT_IDS = ['base2', 'base2-plan', 'editor', 'researcher-web', 'code-reviewer', 'thinker', 'browser-use', 'file-picker', 'librarian', 'basher']
+
+/** Default agents a new server is exposed to (main conversation agents). */
+const DEFAULT_TARGET_AGENTS = ['base2', 'base2-plan']
+
+/** Drop empty-key / empty-value rows before sending a draft over IPC. */
+function cleanKv(obj: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!obj) return out
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.trim() && v !== '') out[k.trim()] = v
+  }
+  return out
+}
+
+/**
+ * Serialize a draft to the mcp.json-style server object (name is the key).
+ * Used to prefill the raw-JSON editor in the add/edit modal.
+ */
+function draftToMcpJson(draft: McpServerDraft): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  if (draft.type === 'stdio') {
+    payload.command = draft.command ?? ''
+    if (draft.args && draft.args.length > 0) payload.args = draft.args
+  } else {
+    payload.type = draft.type
+    payload.url = draft.url ?? ''
+  }
+  const env = cleanKv(draft.env)
+  if (Object.keys(env).length > 0) payload.env = env
+  const headers = cleanKv(draft.headers)
+  if (Object.keys(headers).length > 0) payload.headers = headers
+  const params = cleanKv(draft.params)
+  if (Object.keys(params).length > 0) payload.params = params
+  return { [draft.name || 'mcp-server']: payload }
+}
+
 export interface LocalAgentItem {
   id: string
   displayName: string
   spawnerPrompt: string
   source?: string
   filePath?: string
-  scope?: 'project' | 'home'
+  scope?: 'project' | 'parent' | 'home'
 }
 
 interface ProviderDraft {
@@ -273,6 +439,28 @@ export default function SettingsModal({
   const [webSearchHasKey, setWebSearchHasKey] = useState<Record<string, boolean>>({})
   const [searchApiKeys, setSearchApiKeys] = useState<Record<string, string>>({})
   const [deleteSearchKeys, setDeleteSearchKeys] = useState<WebSearchProviderId[]>([])
+  // MCP Tools settings tab
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([])
+  const [loadingMcp, setLoadingMcp] = useState(false)
+  const [mcpNotice, setMcpNotice] = useState<{ id: string; text: string; ok: boolean } | null>(null)
+  const [editingMcp, setEditingMcp] = useState<McpServerView | null>(null)
+  const [showMcpForm, setShowMcpForm] = useState(false)
+  const [showMcpPresetPicker, setShowMcpPresetPicker] = useState(false)
+  // Paste/edit raw JSON (mcp.json format) to add a server
+  const [showMcpJsonModal, setShowMcpJsonModal] = useState(false)
+  const [mcpJsonText, setMcpJsonText] = useState('')
+  // Edit mode for the add/edit modal: 'form' (fields) or 'json' (raw textarea)
+  const [mcpEditMode, setMcpEditMode] = useState<'form' | 'json'>('form')
+  const [mcpJsonDraftText, setMcpJsonDraftText] = useState('')
+  const [mcpDraft, setMcpDraft] = useState<McpServerDraft | null>(null)
+  const [mcpFormError, setMcpFormError] = useState<string | null>(null)
+  const [mcpSaving, setMcpSaving] = useState(false)
+  const [mcpTesting, setMcpTesting] = useState(false)
+  const [mcpTestResult, setMcpTestResult] = useState<{ ok: boolean; text: string } | null>(null)
+  const [deleteMcpConfirm, setDeleteMcpConfirm] = useState<McpServerView | null>(null)
+  const [mcpDeleteInProgress, setMcpDeleteInProgress] = useState(false)
+  // Agent options for the target-agents picker (bundled + custom)
+  const [mcpAgentOptions, setMcpAgentOptions] = useState<string[]>(DEFAULT_AGENT_IDS)
   const [error, setError] = useState<string | null>(null)
   const [fetchingId, setFetchingId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -341,6 +529,33 @@ export default function SettingsModal({
         { id: 'qa-agent', displayName: 'QA Agent', spawnerPrompt: 'Runs acceptance checks', scope: 'home', filePath: '~/.agents/qa-agent.ts' }
       ])
       setWebSearchProvider('duckduckgo')
+      setMcpServers([
+        {
+          id: 'mcp-demo-context7',
+          name: 'context7',
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@upstash/context7-mcp'],
+          enabled: true,
+          targetAgents: ['base2', 'base2-plan'],
+          source: 'app',
+          hasSecrets: false
+        },
+        {
+          id: 'file:demo',
+          name: 'github',
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', 'github-mcp-server'],
+          env: { GITHUB_PERSONAL_ACCESS_TOKEN: '$GITHUB_PERSONAL_ACCESS_TOKEN' },
+          enabled: true,
+          targetAgents: ['base2'],
+          source: 'file',
+          filePath: 'C:/project/.agents/mcp.json',
+          hasSecrets: false
+        }
+      ])
+      setMcpAgentOptions((prev) => [...new Set([...prev, ...['base2', 'code-reviewer', 'editor', 'file-picker', 'planner', 'researcher-web', 'thinker']])])
       setIsLoaded(true)
       return
     }
@@ -377,13 +592,16 @@ export default function SettingsModal({
       setAllAgentIds(state.agentIds ?? [])
       setCwd((state as { cwd?: string }).cwd ?? '')
       if ((state as { cwd?: string }).cwd) {
+        void refreshMcpServers((state as { cwd?: string }).cwd ?? null)
         const res = (await window.AnyBuff.listLocalAgents((state as { cwd?: string }).cwd as string)) as {
           agents: LocalAgentItem[]
           validationErrors: { agentId: string; message: string }[]
         }
         setLocalAgents(res.agents ?? [])
         setLocalAgentErrors((res.validationErrors ?? []).map((e) => ({ agentId: e.agentId, message: e.message })))
-        setAllAgentIds((prev) => [...new Set([...prev, ...(res.agents ?? []).map((a) => a.id)])])
+        const localIds = (res.agents ?? []).map((a) => a.id)
+        setAllAgentIds((prev) => [...new Set([...prev, ...localIds])])
+        setMcpAgentOptions((prev) => [...new Set([...prev, ...localIds])])
       }
       setIsLoaded(true)
     })()
@@ -490,6 +708,361 @@ export default function SettingsModal({
       setLocalAgentErrors((res.validationErrors ?? []).map((e) => ({ agentId: e.agentId, message: e.message })))
     } finally {
       setLoadingAgents(false)
+    }
+  }
+
+  const refreshMcpServers = async (dir: string | null = cwd) => {
+    if (typeof window.AnyBuff === 'undefined') return
+    setLoadingMcp(true)
+    try {
+      const res = (await window.AnyBuff.listMcpServers(dir)) as McpServerView[]
+      setMcpServers(res ?? [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingMcp(false)
+    }
+  }
+
+  const openMcpForm = (existing: McpServerView | null = null, preset?: McpPreset) => {
+    setMcpFormError(null)
+    setMcpTestResult(null)
+    setMcpNotice(null)
+    setMcpEditMode('form')
+    if (existing) {
+      setEditingMcp(existing)
+      const draft: McpServerDraft = {
+        id: existing.id,
+        name: existing.name,
+        type: existing.type,
+        command: existing.command,
+        args: existing.args ? [...existing.args] : [],
+        url: existing.url,
+        env: existing.env ? { ...existing.env } : {},
+        headers: existing.headers ? { ...existing.headers } : {},
+        params: existing.params ? { ...existing.params } : {},
+        enabled: existing.enabled,
+        targetAgents: [...existing.targetAgents]
+      }
+      setMcpDraft(draft)
+      setMcpJsonDraftText(JSON.stringify(draftToMcpJson(draft), null, 2))
+    } else {
+      setEditingMcp(null)
+      const draft: McpServerDraft = {
+        name: preset?.label ?? '',
+        type: preset?.type ?? 'stdio',
+        command: preset?.command ?? 'npx',
+        args: preset?.args ? [...preset.args] : [],
+        url: preset?.url ?? '',
+        env: preset?.envHint ? Object.fromEntries(preset.envHint.map((e) => [e.key, e.varName])) : {},
+        headers: preset?.headerHint ? Object.fromEntries(preset.headerHint.map((e) => [e.key, e.varName])) : {},
+        params: {},
+        enabled: true,
+        targetAgents: [...DEFAULT_TARGET_AGENTS]
+      }
+      setMcpDraft(draft)
+      setMcpJsonDraftText(JSON.stringify(draftToMcpJson(draft), null, 2))
+    }
+    setShowMcpForm(true)
+    setShowMcpPresetPicker(false)
+  }
+
+  /**
+   * Parse raw mcp.json-style JSON pasted by the user and open the edit form
+   * prefilled. Accepts:
+   *  1. A single server object:       { "command": "npx", "args": [...] }
+   *  2. A named server object:        { "context7": { "command": ... } }
+   *  3. A full mcp.json:              { "mcpServers": { "context7": {...} } }
+   * Throws a descriptive Error on invalid JSON / schema.
+   */
+  const parseMcpJsonToDraft = (raw: string, serverName: string): McpServerDraft => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch (err) {
+      throw new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    let servers: Record<string, unknown>
+    // Format 3: full mcp.json with a mcpServers map
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>
+      if (rec.mcpServers && typeof rec.mcpServers === 'object' && !Array.isArray(rec.mcpServers)) {
+        servers = rec.mcpServers as Record<string, unknown>
+        // Format 2: a map of name → server object
+      } else if (Object.keys(rec).some((k) => rec[k] && typeof rec[k] === 'object' && !Array.isArray(rec[k]))) {
+        servers = rec
+      } else {
+        servers = { [serverName || 'mcp-server']: rec }
+      }
+    } else {
+      throw new Error('Expected a JSON object describing an MCP server or a mcpServers map.')
+    }
+
+    const names = Object.keys(servers).filter((k) => k && k !== 'mcpServers')
+    if (names.length === 0) {
+      throw new Error('No MCP servers found in the JSON. Expected entries under "mcpServers".')
+    }
+    const name = names[0]
+    const cfg = (servers[name] ?? {}) as Record<string, unknown>
+    const type = (cfg.type as McpServerType) ?? (cfg.command ? 'stdio' : (cfg.url ? 'http' : undefined))
+    if (type !== 'stdio' && type !== 'http' && type !== 'sse') {
+      throw new Error('Server config must include "command" (stdio) or "url" + "type" (http/sse).')
+    }
+    return {
+      name,
+      type,
+      command: cfg.command as string | undefined,
+      args: Array.isArray(cfg.args) ? (cfg.args as string[]) : [],
+      url: cfg.url as string | undefined,
+      env: (cfg.env as Record<string, string> | undefined) ?? {},
+      headers: (cfg.headers as Record<string, string> | undefined) ?? {},
+      params: (cfg.params as Record<string, string> | undefined) ?? {},
+      enabled: true,
+      targetAgents: [...DEFAULT_TARGET_AGENTS]
+    }
+  }
+
+  /** Open the JSON import modal (or prefill from an existing server's config). */
+  const openMcpJsonModal = (existing: McpServerView | null = null) => {
+    setMcpFormError(null)
+    setMcpTestResult(null)
+    setMcpNotice(null)
+    if (existing) {
+      const payload: Record<string, unknown> = {}
+      if (existing.type === 'stdio') {
+        payload.command = existing.command
+        if (existing.args?.length) payload.args = existing.args
+      } else {
+        payload.type = existing.type
+        payload.url = existing.url
+      }
+      if (existing.env && Object.keys(existing.env).length) payload.env = existing.env
+      if (existing.headers && Object.keys(existing.headers).length) payload.headers = existing.headers
+      if (existing.params && Object.keys(existing.params).length) payload.params = existing.params
+      setMcpJsonText(JSON.stringify({ [existing.name]: payload }, null, 2))
+    } else {
+      setMcpJsonText('')
+    }
+    setShowMcpJsonModal(true)
+  }
+
+  const handleImportMcpJson = () => {
+    try {
+      const draft = parseMcpJsonToDraft(mcpJsonText, '')
+      setMcpDraft(draft)
+      setEditingMcp(null)
+      setShowMcpJsonModal(false)
+      setMcpJsonText('')
+      setShowMcpForm(true)
+    } catch (err) {
+      setMcpFormError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const updateMcpDraft = (patch: Partial<McpServerDraft>) => {
+    setMcpDraft((prev) => (prev ? { ...prev, ...patch } : prev))
+  }
+
+  const addMcpEnvRow = () => {
+    updateMcpDraft({ env: { ...(mcpDraft?.env ?? {}), '': '' } })
+  }
+  const addMcpHeaderRow = () => {
+    updateMcpDraft({ headers: { ...(mcpDraft?.headers ?? {}), '': '' } })
+  }
+  const addMcpParamRow = () => {
+    updateMcpDraft({ params: { ...(mcpDraft?.params ?? {}), '': '' } })
+  }
+  const removeMcpRow = (kind: 'env' | 'headers' | 'params', key: string) => {
+    const obj = mcpDraft?.[kind]
+    if (!obj) return
+    const next: Record<string, string> = {}
+    for (const [k, v] of Object.entries(obj)) {
+      if (k !== key) next[k] = v
+    }
+    updateMcpDraft({ [kind]: next } as Partial<McpServerDraft>)
+  }
+  const renameMcpRow = (kind: 'env' | 'headers' | 'params', oldKey: string, newKey: string) => {
+    const obj = mcpDraft?.[kind]
+    if (!obj) return
+    const next: Record<string, string> = {}
+    for (const [k, v] of Object.entries(obj)) {
+      next[k === oldKey ? newKey : k] = v
+    }
+    updateMcpDraft({ [kind]: next } as Partial<McpServerDraft>)
+  }
+
+  /** Shared validation + persist for a draft (used by form and JSON modes). */
+  const persistMcpDraft = async (draft: McpServerDraft): Promise<void> => {
+    const name = draft.name.trim()
+    if (!name) {
+      setMcpFormError('Server name is required.')
+      return
+    }
+    if (draft.type === 'stdio' && !draft.command?.trim()) {
+      setMcpFormError('Command is required for stdio servers.')
+      return
+    }
+    if (draft.type !== 'stdio') {
+      const url = draft.url?.trim() ?? ''
+      if (!url) {
+        setMcpFormError('URL is required for remote servers.')
+        return
+      }
+      try {
+        const u = new URL(url)
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          setMcpFormError('URL must start with http:// or https://')
+          return
+        }
+      } catch {
+        setMcpFormError('Invalid URL — expected e.g. https://mcp.example.com/mcp')
+        return
+      }
+    }
+    // Empty env/header keys would save as a `'' → value` entry; drop them.
+    const cleanedDraft: McpServerDraft = {
+      ...draft,
+      name,
+      env: cleanKv(draft.env),
+      headers: cleanKv(draft.headers),
+      params: cleanKv(draft.params)
+    }
+    if (cleanedDraft.targetAgents.length === 0) {
+      setMcpFormError('Pick at least one agent to expose this server to.')
+      return
+    }
+    if (typeof window.AnyBuff === 'undefined') {
+      setMcpNotice({ id: 'save', text: `Saved ${name} (preview mode)`, ok: true })
+      setShowMcpForm(false)
+      return
+    }
+    setMcpSaving(true)
+    try {
+      const res = (await window.AnyBuff.saveMcpServer(cleanedDraft)) as { ok: boolean; server?: McpServerView; error?: string }
+      if (!res.ok || !res.server) {
+        setMcpFormError(res.error ?? 'Failed to save MCP server.')
+        return
+      }
+      setMcpNotice({ id: res.server.id, text: `Saved ${res.server.name}`, ok: true })
+      setShowMcpForm(false)
+      await refreshMcpServers()
+    } catch (err) {
+      setMcpFormError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMcpSaving(false)
+    }
+  }
+
+  const handleSaveMcp = async () => {
+    if (!mcpDraft) return
+    setMcpFormError(null)
+    // In JSON mode the user edited raw mcp.json syntax — parse it back into
+    // the draft (preserving id/enabled/targetAgents from the current draft)
+    // before validating, then persist.
+    if (mcpEditMode === 'json') {
+      try {
+        const parsed = parseMcpJsonToDraft(mcpJsonDraftText, mcpDraft.name)
+        setMcpDraft({
+          ...parsed,
+          id: mcpDraft.id,
+          enabled: mcpDraft.enabled,
+          targetAgents: mcpDraft.targetAgents
+        })
+        await persistMcpDraft({
+          ...parsed,
+          id: mcpDraft.id,
+          enabled: mcpDraft.enabled,
+          targetAgents: mcpDraft.targetAgents
+        })
+      } catch (err) {
+        setMcpFormError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
+    await persistMcpDraft(mcpDraft)
+  }
+
+  const handleToggleMcpEnabled = async (server: McpServerView, enabled: boolean) => {
+    setMcpServers((prev) => prev.map((s) => (s.id === server.id ? { ...s, enabled } : s)))
+    if (typeof window.AnyBuff === 'undefined') return
+    try {
+      await window.AnyBuff.updateMcpServerSettings({ cwd, id: server.id, enabled })
+      setMcpNotice({ id: server.id, text: `${server.name} ${enabled ? 'enabled' : 'disabled'}`, ok: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setMcpServers((prev) => prev.map((s) => (s.id === server.id ? { ...s, enabled: !enabled } : s)))
+    }
+  }
+
+  const handleToggleMcpAgent = async (server: McpServerView, agentId: string) => {
+    const next = server.targetAgents.includes(agentId)
+      ? server.targetAgents.filter((a) => a !== agentId)
+      : [...server.targetAgents, agentId]
+    setMcpServers((prev) => prev.map((s) => (s.id === server.id ? { ...s, targetAgents: next } : s)))
+    if (typeof window.AnyBuff === 'undefined') return
+    try {
+      await window.AnyBuff.updateMcpServerSettings({ cwd, id: server.id, targetAgents: next })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleTestMcp = async () => {
+    if (!mcpDraft) return
+    setMcpTestResult(null)
+    if (typeof window.AnyBuff === 'undefined') {
+      setMcpTestResult({ ok: true, text: 'Connection OK (preview mode)' })
+      return
+    }
+    setMcpTesting(true)
+    try {
+      const res = (await window.AnyBuff.testMcpServer({ record: mcpDraft })) as {
+        ok: boolean
+        tools?: { name: string }[]
+        error?: string
+      }
+      if (!res.ok) {
+        setMcpTestResult({ ok: false, text: res.error ?? 'Connection failed.' })
+        return
+      }
+      const tools = res.tools ?? []
+      setMcpTestResult({
+        ok: true,
+        text:
+          tools.length > 0
+            ? `Connected — ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.map((t) => t.name).slice(0, 8).join(', ')}${tools.length > 8 ? '…' : ''}`
+            : 'Connected — server exposes no tools'
+      })
+    } catch (err) {
+      setMcpTestResult({ ok: false, text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setMcpTesting(false)
+    }
+  }
+
+  const handleDeleteMcp = async () => {
+    if (!deleteMcpConfirm) return
+    setMcpDeleteInProgress(true)
+    try {
+      if (typeof window.AnyBuff === 'undefined') {
+        setMcpServers((prev) => prev.filter((s) => s.id !== deleteMcpConfirm.id))
+        setMcpNotice({ id: deleteMcpConfirm.id, text: `Deleted ${deleteMcpConfirm.name}`, ok: true })
+        setDeleteMcpConfirm(null)
+        return
+      }
+      const res = (await window.AnyBuff.deleteMcpServer({ id: deleteMcpConfirm.id })) as { ok: boolean; error?: string }
+      if (!res.ok) {
+        setError(res.error ?? 'Failed to delete MCP server.')
+        return
+      }
+      setMcpNotice({ id: deleteMcpConfirm.id, text: `Deleted ${deleteMcpConfirm.name}`, ok: true })
+      setDeleteMcpConfirm(null)
+      await refreshMcpServers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMcpDeleteInProgress(false)
     }
   }
 
@@ -821,6 +1394,11 @@ export default function SettingsModal({
       icon: <SearchIcon size={16} />
     },
     {
+      id: 'mcp',
+      label: 'MCP Tools',
+      icon: <PlugIcon size={16} />
+    },
+    {
       id: 'routing',
       label: 'Agent Routing',
       icon: <ActivityIcon size={16} />
@@ -861,6 +1439,7 @@ export default function SettingsModal({
               onClick={() => {
                 setError(null)
                 setActiveTab(item.id)
+                if (item.id === 'mcp') setMcpNotice(null)
                 if (item.id !== 'providers') {
                   setEditingProviderId(null)
                 }
@@ -886,6 +1465,7 @@ export default function SettingsModal({
               {activeTab === 'routing' && 'Agent Routing'}
               {activeTab === 'agents' && 'Custom Agents'}
               {activeTab === 'search' && 'Web Search'}
+              {activeTab === 'mcp' && 'MCP Tools'}
               {activeTab === 'about' && 'About'}
             </h2>
             <p className="hint">
@@ -903,6 +1483,8 @@ export default function SettingsModal({
                 'Manage local agents loaded from .agents/ directories in your project or home.'}
               {activeTab === 'search' &&
                 'Choose which provider the web_search tool uses. DuckDuckGo needs no key; Firecrawl works keyless; Tinyfish requires an API key.'}
+              {activeTab === 'mcp' &&
+                'Connect Model Context Protocol servers and choose which agents can use their tools. Inline secrets are stored encrypted (DPAPI); $VAR references resolve at runtime.'}
             </p>
           </div>
         </header>
@@ -1575,8 +2157,8 @@ export default function SettingsModal({
                             <div className="local-agent-name-row">
                               <strong className="local-agent-name">{a.displayName}</strong>
                               <span className="route-agent">{a.id}</span>
-                              <span className={`local-agent-scope-badge ${a.scope === 'home' ? 'global' : 'project'}`}>
-                                {a.scope === 'home' ? 'Global' : 'Project'}
+                              <span className={`local-agent-scope-badge ${a.scope === 'home' ? 'global' : a.scope === 'parent' ? 'parent' : 'project'}`}>
+                                {a.scope === 'home' ? 'Global' : a.scope === 'parent' ? 'Parent' : 'Project'}
                               </span>
                             </div>
                             {a.spawnerPrompt && <p className="local-agent-desc">{a.spawnerPrompt}</p>}
@@ -1765,7 +2347,160 @@ export default function SettingsModal({
             </div>
           )}
 
-          {/* 7. About Tab */}
+          {/* 7. MCP Tools Tab */}
+          {activeTab === 'mcp' && (
+            <div className="settings-tab-content">
+              <div className="settings-section-head">
+                <span>Installed MCP Servers</span>
+                <div className="settings-section-actions">
+                  <button
+                    className="btn ghost small"
+                    onClick={() => void refreshMcpServers()}
+                    disabled={loadingMcp}
+                    title="Reload servers from app settings and .agents/mcp.json"
+                  >
+                    <RefreshIcon size={12} className={loadingMcp ? 'spin-icon' : ''} />
+                    {loadingMcp ? 'Loading…' : 'Reload'}
+                  </button>
+                  <button
+                    className="btn ghost small"
+                    onClick={() => setShowMcpPresetPicker(true)}
+                    title="Add a server from a template"
+                  >
+                    <LayersIcon size={12} /> Add from Preset
+                  </button>
+                  <button
+                    className="btn ghost small"
+                    onClick={() => openMcpJsonModal()}
+                    title="Paste or edit raw mcp.json JSON"
+                  >
+                    <BoltIcon size={12} /> Import JSON
+                  </button>
+                  <button
+                    className="btn accent small"
+                    onClick={() => openMcpForm()}
+                    title="Add a custom MCP server"
+                  >
+                    <PlusIcon size={12} /> Add Server
+                  </button>
+                </div>
+              </div>
+              <p className="hint">
+                Servers here are connected automatically when a run starts. Servers discovered in{' '}
+                <code>.agents/mcp.json</code> (project or home) appear read-only — toggle their enabled
+                state and target agents from here.
+              </p>
+
+              {mcpNotice && (
+                <div className={`test-msg ${mcpNotice.ok ? 'success' : 'fail'}`} style={{ marginBottom: '8px' }}>
+                  {mcpNotice.text}
+                </div>
+              )}
+
+              {loadingMcp && mcpServers.length === 0 ? (
+                <div className="settings-empty-card">
+                  <p>Loading MCP servers…</p>
+                </div>
+              ) : mcpServers.length === 0 ? (
+                <div className="settings-empty-card">
+                  <p>No MCP servers installed yet.</p>
+                  <div className="settings-empty-actions">
+                    <button type="button" className="btn ghost small" onClick={() => setShowMcpPresetPicker(true)}>
+                      <LayersIcon size={12} /> Add from Preset
+                    </button>
+                    <button type="button" className="btn ghost small" onClick={() => openMcpJsonModal()}>
+                      <BoltIcon size={12} /> Import JSON
+                    </button>
+                    <button type="button" className="btn accent small" onClick={() => openMcpForm()}>
+                      <PlusIcon size={12} /> Add Server
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mcp-server-list">
+                  {mcpServers.map((server) => {
+                    const isApp = server.source === 'app'
+                    const typeLabel = server.type.toUpperCase()
+                    return (
+                      <div key={server.id} className={`mcp-server-card ${server.enabled ? '' : 'disabled'}`}>
+                        <div className="mcp-server-card-main">
+                          <label className="mcp-server-toggle">
+                            <input
+                              type="checkbox"
+                              checked={server.enabled}
+                              onChange={(e) => void handleToggleMcpEnabled(server, e.target.checked)}
+                              title={server.enabled ? 'Disable this server' : 'Enable this server'}
+                            />
+                            <span className="mcp-toggle-track" />
+                          </label>
+                          <div className="mcp-server-icon">
+                            <ServerIcon size={17} />
+                          </div>
+                          <div className="mcp-server-info">
+                            <div className="mcp-server-name-row">
+                              <strong className="mcp-server-name">{server.name}</strong>
+                              <span className={`mcp-type-badge ${server.type}`}>{typeLabel}</span>
+                              {!isApp && <span className="mcp-source-badge">mcp.json</span>}
+                              {server.hasSecrets && <span className="mcp-secrets-badge">🔒 keys stored</span>}
+                            </div>
+                            <div className="mcp-server-detail" title={server.type === 'stdio' ? server.command : server.url}>
+                              {server.type === 'stdio'
+                                ? `${server.command}${server.args && server.args.length > 0 ? ' ' + server.args.join(' ') : ''}`
+                                : server.url}
+                            </div>
+                            {!isApp && server.filePath && (
+                              <div className="mcp-server-filepath">
+                                <code>{server.filePath}</code>
+                              </div>
+                            )}
+                            <div className="mcp-agent-row">
+                              <span className="mcp-agent-label">Agents:</span>
+                              {mcpAgentOptions
+                                .filter((id) => server.targetAgents.includes(id))
+                                .map((id) => (
+                                  <span key={id} className="mcp-agent-chip">{id}</span>
+                                ))}
+                              {server.targetAgents.filter((a) => !mcpAgentOptions.includes(a)).map((id) => (
+                                <span key={id} className="mcp-agent-chip custom">{id}</span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="mcp-server-card-actions">
+                            {isApp ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn ghost small"
+                                  onClick={() => openMcpForm(server)}
+                                  title="Edit this server"
+                                >
+                                  <EditIcon size={12} /> Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn ghost danger-hover small"
+                                  onClick={() => setDeleteMcpConfirm(server)}
+                                  title="Delete this server"
+                                >
+                                  <TrashIcon size={12} /> Delete
+                                </button>
+                              </>
+                            ) : (
+                              <span className="mcp-readonly-note" title="Defined in .agents/mcp.json — edit the file to change it">
+                                Read-only
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 8. About Tab */}
           {activeTab === 'about' && (
             <div className="settings-tab-content">
               <div className="settings-section-card about-card">
@@ -2001,6 +2736,391 @@ export default function SettingsModal({
         </div>
       )}
 
+      {/* MCP Server Add/Edit Modal */}
+      {showMcpForm && mcpDraft && (
+        <div className="modal-backdrop mcp-modal-backdrop" onClick={() => !mcpSaving && setShowMcpForm(false)}>
+          <div className="modal mcp-form-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mcp-form-header">
+              <div className="mcp-form-title">
+                <PlugIcon size={17} />
+                <span>{editingMcp ? 'Edit MCP Server' : 'Add MCP Server'}</span>
+                {editingMcp && <span className="route-agent">{editingMcp.name}</span>}
+              </div>
+              <div className="mcp-form-mode-toggle">
+                <button
+                  type="button"
+                  className={`mcp-mode-btn ${mcpEditMode === 'form' ? 'active' : ''}`}
+                  onClick={() => {
+                    setMcpFormError(null)
+                    // If the user edited JSON, re-parse it back into the form fields
+                    if (mcpEditMode === 'json') {
+                      try {
+                        const parsed = parseMcpJsonToDraft(mcpJsonDraftText, mcpDraft.name)
+                        setMcpDraft({
+                          ...parsed,
+                          id: mcpDraft.id,
+                          enabled: mcpDraft.enabled,
+                          targetAgents: mcpDraft.targetAgents
+                        })
+                      } catch (err) {
+                        setMcpFormError(err instanceof Error ? err.message : String(err))
+                        return // stay in JSON mode so the user can fix it
+                      }
+                    }
+                    setMcpEditMode('form')
+                  }}
+                  title="Edit with fields"
+                >
+                  Form
+                </button>
+                <button
+                  type="button"
+                  className={`mcp-mode-btn ${mcpEditMode === 'json' ? 'active' : ''}`}
+                  onClick={() => {
+                    setMcpFormError(null)
+                    // Keep the raw JSON editor in sync with the form fields
+                    setMcpJsonDraftText(JSON.stringify(draftToMcpJson(mcpDraft), null, 2))
+                    setMcpEditMode('json')
+                  }}
+                  title="Edit as raw mcp.json JSON"
+                >
+                  JSON
+                </button>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setShowMcpForm(false)}
+                title="Close"
+              >
+                <XIcon size={15} />
+              </button>
+            </div>
+
+            <div className="mcp-form-body">
+              {mcpFormError && <div className="test-msg fail">{mcpFormError}</div>}
+
+              {mcpEditMode === 'json' ? (
+                <div className="settings-field-group">
+                  <label className="settings-field-label">Raw mcp.json (JSON)</label>
+                  <p className="hint">
+                    Paste or edit the server definition in mcp.json syntax — the same format Claude
+                    Code / Cursor use. The first server in the object is used.
+                  </p>
+                  <textarea
+                    className="mcp-json-textarea"
+                    value={mcpJsonDraftText}
+                    onChange={(e) => setMcpJsonDraftText(e.target.value)}
+                    spellCheck={false}
+                    placeholder={'{\n  "my-server": {\n    "command": "npx",\n    "args": ["-y", "@upstash/context7-mcp"]\n  }\n}'}
+                  />
+                </div>
+              ) : (
+                <>
+
+              <div className="settings-field-group">
+                <label className="settings-field-label">Server Name</label>
+                <input
+                  value={mcpDraft.name}
+                  onChange={(e) => updateMcpDraft({ name: e.target.value })}
+                  placeholder="e.g. context7, github"
+                  spellCheck={false}
+                />
+              </div>
+
+              <div className="settings-field-group">
+                <label className="settings-field-label">Transport</label>
+                <CustomSelect
+                  value={mcpDraft.type}
+                  onChange={(val) => updateMcpDraft({ type: val as McpServerType })}
+                  fullWidth
+                  options={[
+                    { value: 'stdio', label: 'stdio — local command (npx / uvx / node)' },
+                    { value: 'http', label: 'HTTP — remote URL' },
+                    { value: 'sse', label: 'SSE — remote URL' }
+                  ]}
+                />
+              </div>
+
+              {mcpDraft.type === 'stdio' ? (
+                <>
+                  <div className="settings-field-group">
+                    <label className="settings-field-label">Command</label>
+                    <input
+                      value={mcpDraft.command ?? ''}
+                      onChange={(e) => updateMcpDraft({ command: e.target.value })}
+                      placeholder="npx / uvx / node"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="settings-field-group">
+                    <label className="settings-field-label">Arguments</label>
+                    <input
+                      value={(mcpDraft.args ?? []).join(' ')}
+                      onChange={(e) =>
+                        updateMcpDraft({
+                          args: e.target.value.split(/\s+/).filter(Boolean)
+                        })
+                      }
+                      placeholder="-y @upstash/context7-mcp"
+                      spellCheck={false}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="settings-field-group">
+                  <label className="settings-field-label">URL</label>
+                  <input
+                    value={mcpDraft.url ?? ''}
+                    onChange={(e) => updateMcpDraft({ url: e.target.value })}
+                    placeholder="https://mcp.example.com/mcp"
+                    spellCheck={false}
+                  />
+                </div>
+              )}
+
+              {/* env / headers / params rows */}
+              {mcpDraft.type === 'stdio' && (
+                <McpKvEditor
+                  label="Environment Variables"
+                  hint="Use $VAR_NAME to reference an environment variable; any other value is stored encrypted (DPAPI)."
+                  values={mcpDraft.env ?? {}}
+                  onAdd={addMcpEnvRow}
+                  onRename={(oldK, newK) => renameMcpRow('env', oldK, newK)}
+                  onValue={(k, v) => updateMcpDraft({ env: { ...(mcpDraft.env ?? {}), [k]: v } })}
+                  onRemove={(k) => removeMcpRow('env', k)}
+                />
+              )}
+              {mcpDraft.type !== 'stdio' && (
+                <McpKvEditor
+                  label="Headers"
+                  hint="HTTP headers, e.g. Authorization. Use $VAR_NAME for env refs; other values are stored encrypted."
+                  values={mcpDraft.headers ?? {}}
+                  onAdd={addMcpHeaderRow}
+                  onRename={(oldK, newK) => renameMcpRow('headers', oldK, newK)}
+                  onValue={(k, v) => updateMcpDraft({ headers: { ...(mcpDraft.headers ?? {}), [k]: v } })}
+                  onRemove={(k) => removeMcpRow('headers', k)}
+                />
+              )}
+              {mcpDraft.type !== 'stdio' && (
+                <McpKvEditor
+                  label="Query Params"
+                  hint="Optional URL query parameters."
+                  values={mcpDraft.params ?? {}}
+                  onAdd={addMcpParamRow}
+                  onRename={(oldK, newK) => renameMcpRow('params', oldK, newK)}
+                  onValue={(k, v) => updateMcpDraft({ params: { ...(mcpDraft.params ?? {}), [k]: v } })}
+                  onRemove={(k) => removeMcpRow('params', k)}
+                />
+              )}
+                </>
+              )}
+
+              <div className="settings-field-group">
+                <label className="settings-field-label">Expose to Agents</label>
+                <p className="hint">
+                  The server's tools become available to the selected agents (as{' '}
+                  <code>{'<server>__<tool>'}</code>).
+                </p>
+                <div className="mcp-agent-picker">
+                  {mcpAgentOptions.map((id) => (
+                    <label
+                      key={id}
+                      className={`mcp-agent-option ${mcpDraft.targetAgents.includes(id) ? 'selected' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={mcpDraft.targetAgents.includes(id)}
+                        onChange={() =>
+                          updateMcpDraft({
+                            targetAgents: mcpDraft.targetAgents.includes(id)
+                              ? mcpDraft.targetAgents.filter((a) => a !== id)
+                              : [...mcpDraft.targetAgents, id]
+                          })
+                        }
+                      />
+                      <span>{id}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="mcp-form-footer">
+              {mcpTestResult && (
+                <span className={`mcp-test-result ${mcpTestResult.ok ? 'ok' : 'fail'}`}>
+                  {mcpTestResult.text}
+                </span>
+              )}
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => void handleTestMcp()}
+                disabled={mcpTesting}
+                title="Try connecting to this server and list its tools"
+              >
+                <BoltIcon size={13} />
+                {mcpTesting ? 'Testing…' : 'Test'}
+              </button>
+              <button type="button" className="btn ghost" onClick={() => setShowMcpForm(false)} disabled={mcpSaving}>
+                Cancel
+              </button>
+              <button type="button" className="btn primary" onClick={() => void handleSaveMcp()} disabled={mcpSaving}>
+                {mcpSaving ? 'Saving…' : editingMcp ? 'Save Changes' : 'Add Server'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MCP Preset Picker Modal */}
+      {showMcpPresetPicker && (
+        <div className="modal-backdrop preset-modal-backdrop" onClick={() => setShowMcpPresetPicker(false)}>
+          <div className="preset-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="preset-modal-header">
+              <div className="preset-modal-title">
+                <LayersIcon size={16} />
+                <span>Add MCP Server from Template</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setShowMcpPresetPicker(false)}
+                title="Close"
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+            <p className="preset-modal-hint">
+              Pick a template to prefill the server config, then adjust before saving.
+            </p>
+            <div className="preset-grid">
+              {MCP_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  className="preset-card"
+                  onClick={() => openMcpForm(null, preset)}
+                >
+                  <div className="preset-card-head">
+                    <span className="preset-card-label">{preset.label}</span>
+                    <span className="preset-card-type">{preset.type.toUpperCase()}</span>
+                  </div>
+                  {preset.type === 'stdio' ? (
+                    <div className="preset-card-url" title={`${preset.command} ${(preset.args ?? []).join(' ')}`}>
+                      {preset.command} {(preset.args ?? []).join(' ')}
+                    </div>
+                  ) : (
+                    <div className="preset-card-url" title={preset.url}>
+                      {preset.url}
+                    </div>
+                  )}
+                  {preset.description && <div className="preset-card-desc">{preset.description}</div>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MCP JSON Import Modal */}
+      {showMcpJsonModal && (
+        <div className="modal-backdrop mcp-modal-backdrop" onClick={() => setShowMcpJsonModal(false)}>
+          <div className="modal mcp-json-import-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mcp-form-header">
+              <div className="mcp-form-title">
+                <BoltIcon size={17} />
+                <span>Import MCP Server from JSON</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setShowMcpJsonModal(false)}
+                title="Close"
+              >
+                <XIcon size={15} />
+              </button>
+            </div>
+            <div className="mcp-form-body">
+              {mcpFormError && <div className="test-msg fail">{mcpFormError}</div>}
+              <p className="hint">
+                Paste mcp.json syntax — a single server, a named server object, or a full{' '}
+                <code>mcpServers</code> map. The first server found opens the edit form.
+              </p>
+              <textarea
+                className="mcp-json-textarea"
+                value={mcpJsonText}
+                onChange={(e) => setMcpJsonText(e.target.value)}
+                spellCheck={false}
+                placeholder={'{\n  "context7": {\n    "command": "npx",\n    "args": ["-y", "@upstash/context7-mcp"]\n  }\n}'}
+                autoFocus
+              />
+            </div>
+            <div className="mcp-form-footer">
+              <button type="button" className="btn ghost" onClick={() => setShowMcpJsonModal(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => void handleImportMcpJson()}
+                disabled={!mcpJsonText.trim()}
+              >
+                <BoltIcon size={13} /> Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete MCP Server Confirmation Modal */}
+      {deleteMcpConfirm && (
+        <div className="modal-backdrop" onClick={() => !mcpDeleteInProgress && setDeleteMcpConfirm(null)}>
+          <div className="modal agent-delete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="agent-delete-header">
+              <div className="agent-delete-title">
+                <TrashIcon size={18} />
+                <span>Delete MCP Server</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => !mcpDeleteInProgress && setDeleteMcpConfirm(null)}
+                title="Cancel"
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="agent-delete-body">
+              <p>
+                Are you sure you want to remove <strong>{deleteMcpConfirm.name}</strong>?
+              </p>
+              {deleteMcpConfirm.hasSecrets && (
+                <p className="hint">Stored API keys for this server will also be deleted.</p>
+              )}
+            </div>
+            <div className="agent-delete-footer">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setDeleteMcpConfirm(null)}
+                disabled={mcpDeleteInProgress}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={() => void handleDeleteMcp()}
+                disabled={mcpDeleteInProgress}
+              >
+                {mcpDeleteInProgress ? 'Deleting…' : 'Delete Server'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Update Available Modal */}
       {pendingUpdate && (
         <div className="modal-backdrop" onClick={() => setPendingUpdate(null)}>
@@ -2041,6 +3161,65 @@ export default function SettingsModal({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Key/value row editor for MCP env/headers/params (add, rename, remove). */
+function McpKvEditor({
+  label,
+  hint,
+  values,
+  onAdd,
+  onRename,
+  onValue,
+  onRemove
+}: {
+  label: string
+  hint: string
+  values: Record<string, string>
+  onAdd: () => void
+  onRename: (oldKey: string, newKey: string) => void
+  onValue: (key: string, value: string) => void
+  onRemove: (key: string) => void
+}) {
+  const entries = Object.entries(values)
+  return (
+    <div className="settings-field-group mcp-kv-editor">
+      <div className="mcp-kv-head">
+        <label className="settings-field-label">{label}</label>
+        <button type="button" className="mini-btn" onClick={onAdd} title={`Add ${label.toLowerCase()} row`}>
+          <PlusIcon size={11} />
+        </button>
+      </div>
+      <p className="hint">{hint}</p>
+      {entries.length === 0 && <p className="hint">No entries.</p>}
+      {entries.map(([k, v]) => (
+        <div key={k} className="mcp-kv-row">
+          <input
+            className="mcp-kv-key"
+            value={k}
+            onChange={(e) => onRename(k, e.target.value)}
+            placeholder="Key"
+            spellCheck={false}
+          />
+          <input
+            className="mcp-kv-value"
+            type={v === MCP_SECRET_PLACEHOLDER ? 'password' : 'text'}
+            // The stored secret never reaches the renderer: the sentinel value
+            // stays in the draft (so save keeps it) while the field shows an
+            // empty password input with an explanatory placeholder. Typing a
+            // replacement value swaps in the new plaintext to be re-encrypted.
+            value={v === MCP_SECRET_PLACEHOLDER ? '' : v}
+            onChange={(e) => onValue(k, e.target.value)}
+            placeholder={v === MCP_SECRET_PLACEHOLDER ? '•••••••• (stored — type to replace)' : 'value or $ENV_VAR'}
+            spellCheck={false}
+          />
+          <button type="button" className="mini-btn danger" onClick={() => onRemove(k)} title="Remove row">
+            <XIcon size={11} />
+          </button>
+        </div>
+      ))}
     </div>
   )
 }

@@ -25,6 +25,8 @@ import { extname, join, relative, resolve, sep } from 'path'
 // transpilation of user .ts agent files (typechecking still uses `tsc` v7).
 import ts from 'typescript5'
 
+export type LocalAgentScope = 'project' | 'parent' | 'home'
+
 export interface LocalAgentInfo {
   id: string
   displayName: string
@@ -32,7 +34,7 @@ export interface LocalAgentInfo {
   /** Absolute path of the agent file (may point into the temp mirror for .ts sources). */
   source: string
   filePath: string
-  scope: 'project' | 'home'
+  scope: LocalAgentScope
 }
 
 export interface LocalAgentsResult {
@@ -106,30 +108,38 @@ function transpileToMjs(file: string, outDir: string, rel: string): void {
 }
 
 /**
- * Discover agent files in `~/.agents` and `<project>/.agents` (project wins on duplicate ids),
- * mirroring everything into a temp dir with .ts sources transpiled, then delegate to the SDK
- * loader which handles dynamic imports + validation.
+ * Discover agent files in `~/.agents`, `<cwd>/../.agents` (parent) and
+ * `<cwd>/.agents` (project), mirroring the SDK's three-level scan so a
+ * monorepo root can define agents once and share them with subprojects.
+ * Precedence on duplicate ids: project > parent > home.
  */
 export async function loadProjectLocalAgents(cwd: string): Promise<LocalAgentsResult> {
   const homeAgentsDir = join(homedir(), '.agents')
+  const parentAgentsDir = cwd ? join(cwd, '..', '.agents') : ''
   const projectAgentsDir = cwd ? join(cwd, '.agents') : ''
-  const roots = [homeAgentsDir, projectAgentsDir].filter(Boolean)
+  // Order matters: later roots win on duplicate base names (the SDK loader
+  // mirrors everything into one temp dir, so the last file copied wins).
+  const roots = [homeAgentsDir, parentAgentsDir, projectAgentsDir].filter(Boolean)
   const uniqueRoots = roots.filter((r, i) => roots.indexOf(r) === i && existsSync(r))
 
   const files: string[] = []
   for (const root of uniqueRoots) scanAgentFiles(root, files)
   if (files.length === 0) return { agents: [], validationErrors: [] }
 
-  const originalFileMap = new Map<string, { filePath: string; scope: 'project' | 'home' }>()
+  const originalFileMap = new Map<string, { filePath: string; scope: LocalAgentScope }>()
   const tempDir = mkdtempSync(join(tmpdir(), 'AnyBuff-agents-'))
   const fileErrors: { agentId: string; filePath: string; message: string }[] = []
   try {
     for (const file of files) {
       const root = uniqueRoots.find((r) => file.startsWith(r + sep)) ?? uniqueRoots[0]
       const rel = relative(root, file)
-      const isHome = file.startsWith(homeAgentsDir + sep)
+      const scope: LocalAgentScope = file.startsWith(homeAgentsDir + sep)
+        ? 'home'
+        : parentAgentsDir && file.startsWith(parentAgentsDir + sep)
+          ? 'parent'
+          : 'project'
       const baseNameWithoutExt = rel.replace(/\.[^.]+$/, '').replace(/\\/g, '/')
-      originalFileMap.set(baseNameWithoutExt, { filePath: file, scope: isHome ? 'home' : 'project' })
+      originalFileMap.set(baseNameWithoutExt, { filePath: file, scope })
       const ext = extname(file).toLowerCase()
       try {
         if (ext === '.ts' || ext === '.tsx') {
@@ -246,16 +256,21 @@ export function createLocalAgent(input: CreateLocalAgentInput): CreateLocalAgent
 export function deleteLocalAgent(input: { cwd: string; filePath?: string; id?: string }): { ok: boolean; error?: string } {
   let targetPath = input.filePath
   if (!targetPath && input.id) {
-    const projectPath = input.cwd ? join(input.cwd, '.agents', `${input.id}.ts`) : ''
-    const homePath = join(homedir(), '.agents', `${input.id}.ts`)
-    if (projectPath && existsSync(projectPath)) targetPath = projectPath
-    else if (existsSync(homePath)) targetPath = homePath
-    else {
-      for (const ext of ['.tsx', '.js', '.mjs', '.cjs']) {
-        const pPath = input.cwd ? join(input.cwd, '.agents', `${input.id}${ext}`) : ''
-        const hPath = join(homedir(), '.agents', `${input.id}${ext}`)
-        if (pPath && existsSync(pPath)) { targetPath = pPath; break }
-        if (existsSync(hPath)) { targetPath = hPath; break }
+    // Search order matches the loader precedence: project > parent > home.
+    const candidateDirs = input.cwd
+      ? [join(input.cwd, '.agents'), join(input.cwd, '..', '.agents'), join(homedir(), '.agents')]
+      : [join(homedir(), '.agents')]
+    for (const dir of candidateDirs) {
+      const tsPath = join(dir, `${input.id}.ts`)
+      if (existsSync(tsPath)) { targetPath = tsPath; break }
+    }
+    if (!targetPath) {
+      for (const dir of candidateDirs) {
+        for (const ext of ['.tsx', '.js', '.mjs', '.cjs']) {
+          const p = join(dir, `${input.id}${ext}`)
+          if (existsSync(p)) { targetPath = p; break }
+        }
+        if (targetPath) break
       }
     }
   }
