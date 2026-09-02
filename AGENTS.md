@@ -56,8 +56,11 @@ module body; an in-bundle shim cannot satisfy common/env validation).
   bakes tool-surface patches (run_terminal_command/web_search/code_search/
   update_subgoal/think_deeply on base family), prompt discipline, and the
   AnyBuff prompt scrub (gravity_index copy + Codebuff/Freebuff meta removed,
-  ADR-19) + base-chat bundle exclusion. Re-run it after every upstream
-  agents/ sync.
+  ADR-19). base-chat is re-bundled as the AnyBuff Chat root — UI mode
+  'chat' → AGENT_ID_FOR_MODE['chat'] = 'base-chat' (see start-run.ts) — with
+  a lightweight no-filesystem tool surface (web_search/read_url/render_ui/
+  spawn_agents) and rewritten Buffy prompts (patch #7). Re-run it after every
+  upstream agents/ sync.
 
 ## Known debts (do not silently re-add)
 

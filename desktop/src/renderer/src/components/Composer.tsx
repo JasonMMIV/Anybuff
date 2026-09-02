@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpIcon, LightbulbIcon, PaperclipIcon, PlusIcon, ShieldAlertIcon, ShieldCheckIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
+import { ArrowUpIcon, ChatIcon, HammerIcon, LightbulbIcon, ListIcon, PaperclipIcon, PlusIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
 import CustomSelect from './CustomSelect'
 
 export interface Attachment {
@@ -17,8 +17,11 @@ export interface SkillInfo {
   source: 'project' | 'home'
 }
 
-/** Root agent mode shown in the composer toggle ('plan' runs the read-only base2-plan agent). */
-export type AgentMode = 'default' | 'plan'
+/** Root agent mode shown in the composer toggle. 'default' runs the
+ *  full-access base2 root (Build); 'plan' runs the read-only base2-plan
+ *  agent (Plan); 'chat' runs the lightweight no-filesystem Buffy Chat
+ *  (base-chat) root. */
+export type AgentMode = 'default' | 'plan' | 'chat'
 
 interface ProviderOption {
   id: string
@@ -540,10 +543,11 @@ export default function Composer(props: ComposerProps) {
             size="small"
             placement="top"
             options={[
-              { value: 'default', label: 'Full Access', icon: <ShieldAlertIcon size={13} /> },
-              { value: 'plan', label: 'Read Only', icon: <ShieldCheckIcon size={13} /> }
+              { value: 'chat', label: 'Chat', icon: <ChatIcon size={13} /> },
+              { value: 'default', label: 'Build', icon: <HammerIcon size={13} /> },
+              { value: 'plan', label: 'Plan', icon: <ListIcon size={13} /> }
             ]}
-            title="Agent mode"
+            title="Agent mode — Chat answers questions without touching your files"
           />
 
           <CustomSelect

@@ -119,7 +119,7 @@ const api = {
     displayText?: string
     taskId?: string
     resume?: boolean
-    mode?: 'default' | 'plan'
+    mode?: 'default' | 'plan' | 'chat'
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),
   abort: () => ipcRenderer.invoke('AnyBuff:abort'),
   respondAskUser: (payload: unknown) => ipcRenderer.invoke('AnyBuff:respondAskUser', payload),

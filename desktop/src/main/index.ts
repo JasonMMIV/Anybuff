@@ -548,7 +548,7 @@ function registerIpc(): void {
       taskId?: string
       resume?: boolean
       /** UI agent mode — selects the bundled root agent. */
-      mode?: 'default' | 'plan'
+      mode?: 'default' | 'plan' | 'chat'
     }) => {
       if (!payload.cwd || !payload.prompt.trim()) return { ok: false, error: 'Missing project folder or prompt' }
       if (isRunning()) return { ok: false, error: 'Another task is already running' }

@@ -5,11 +5,39 @@
  * agents/ directory, with AnyBuff desktop patches baked in (see script
  * header). Regenerate: bun scripts/generate-desktop-agents.ts
  *
- * Generated at: 2026-09-02T05:53:35.783Z
- * Agent count: 33
+ * Generated at: 2026-09-02T13:53:41.647Z
+ * Agent count: 34
  */
 
 export const bundledAgents: Record<string, any> = {
+  "base-chat": {
+    "id": "base-chat",
+    "publisher": "codebuff",
+    "model": "deepseek/deepseek-v4-flash",
+    "displayName": "Buffy Chat",
+    "spawnerPrompt": "Lightweight Q&A in the AnyBuff desktop app: answers questions and looks things up, no file access.",
+    "inputSchema": {
+      "prompt": {
+        "type": "string",
+        "description": "The user message to respond to."
+      }
+    },
+    "outputMode": "last_message",
+    "toolNames": [
+      "web_search",
+      "read_url",
+      "render_ui",
+      "spawn_agents"
+    ],
+    "spawnableAgents": [
+      "researcher-web",
+      "thinker",
+      "context-pruner"
+    ],
+    "systemPrompt": "You are Buffy, the AI coding assistant behind AnyBuff. You are chatting with a user in the AnyBuff desktop app, which renders markdown.\n\nCurrent date: {CODEBUFF_CURRENT_DATE}.\n\nThis is Chat mode: you have no file tools, so you cannot browse, read, or edit the user's files on your own — you answer questions, explain concepts, and look things up. You can only see content the user explicitly pastes or attaches into the conversation. If a request needs the user's actual project files (reading, editing, running commands), say so briefly and suggest they switch to Build mode.",
+    "instructionsPrompt": "Be direct and helpful. Use markdown when it improves clarity (code blocks, lists, tables), and keep answers as short as they can be while fully answering the question.\n\nYou can search the live internet yourself with the web_search tool (and follow promising pages with read_url). Prefer searching directly for quick lookups. For deeper or source-backed research, spawn the researcher-web agent; for library/API documentation questions, spawn researcher-web or researcher-docs. Give a focused question; you can spawn several in parallel for independent questions. After it reports back, answer the user in your own words and cite source URLs when useful. Don't spawn a researcher for questions you can already answer well (general knowledge, coding help, writing, math).\n\nWhenever a question needs real reasoning, spawn the thinker agent and let it do the thinking — do not reason it out yourself in your reply. This is your default for anything beyond a quick lookup: math or logic problems, puzzles, debugging, code design, architecture and trade-off decisions, planning, comparisons, \"why/how\" explanations, estimates, or any multi-step question. When in doubt, spawn the thinker. It sees the full conversation, including everything your tools returned, so give it a short, focused prompt naming the problem. Wait for its conclusion, then write the final answer to the user in your own words. Skip the thinker only for trivial, purely factual, or conversational messages (greetings, simple definitions, quick lookups) where there is nothing to reason about.\n\nNever spawn the context-pruner agent: it is spawned automatically for you before each step.",
+    "compactContext": true
+  },
   "base-deep": {
     "publisher": "codebuff",
     "model": "openai/gpt-5.4",

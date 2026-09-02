@@ -18,7 +18,17 @@
  *    mode picker) from prompts — none of it exists in AnyBuff, which is BYOK
  *    with model routing from anybuff.json. Keep the "Buffy" persona; drop
  *    every Codebuff/Freebuff platform reference.
- * 6. Drop agents that are pure Freebuff-web product surface (base-chat).
+ * 6. Drop agents that are pure Freebuff-web product surface (base-chat) —
+ *    REVERTED by patch #7 below, which instead re-bundles base-chat as the
+ *    AnyBuff "Chat" mode root with a lightweight AnyBuff tool surface.
+ * 7. AnyBuff Chat root (base-chat): a third UI mode ('chat') runs the upstream
+ *    conversational agent with no filesystem. Re-surface it into the bundle
+ *    with an AnyBuff surface — web_search / read_url / render_ui /
+ *    spawn_agents, spawnable researcher-web / thinker / context-pruner,
+ *    rewritten Buffy prompts, and compactContext (base3-style mechanical
+ *    compaction keyed to the routed model) instead of upstream's handleSteps
+ *    Freebuff context-window table. (suggest_followups is left out: the SDK
+ *    followups policy strips it from every agent unless ANYBUFF_FOLLOWUPS=1.)
  *
  * Only this file's generator output reaches the desktop bundle; upstream
  * agents/ stays untouched (upstream-mergeable, ADR-1/ADR-6).
@@ -56,18 +66,58 @@ const BASE_AGENT_IDS = [
 
 /** Agents whose prompts get the AnyBuff BYOK rewrite (patch #5). Superset of
  *  BASE_AGENT_IDS plus the single-loop variants that also bake in
- *  Codebuff/Freebuff meta copy (base3-lite). */
+ *  Codebuff/Freebuff meta copy (base3-lite) plus the AnyBuff Chat root
+ *  (base-chat, patch #7 — its prompts are additionally wholesale-replaced
+ *  by the Chat-specific constants below). */
 const META_SCRUB_IDS = new Set([
   ...BASE_AGENT_IDS,
   'base3-lite',
+  'base-chat',
 ])
+
+/** The AnyBuff Chat-mode root: the upstream freebuff.com/chat conversational
+ *  agent (base-chat), which runs with no filesystem. */
+const CHAT_ROOT_IDS = new Set(['base-chat'])
+
+/** Lightweight tool surface for the Chat root: conversation + live lookup
+ *  only. No file tools (read_files/str_replace/write_file), no gravity_index
+ *  (hosted ads-mesh, patch #4). web_search/read_url let Chat answer directly
+ *  instead of forcing a researcher spawn on every question. suggest_followups
+ *  is deliberately absent: the SDK followups policy strips it from every agent
+ *  unless ANYBUFF_FOLLOWUPS=1, so Chat keeps no dead-end instruction. */
+const CHAT_TOOLS = [
+  'web_search',
+  'read_url',
+  'render_ui',
+  'spawn_agents',
+]
+
+/** Chat root spawns only the agents it actually needs for Q&A + lookups. */
+const CHAT_SPAWNABLE_AGENTS = ['researcher-web', 'thinker', 'context-pruner']
+
+const ANYBUFF_CHAT_SYSTEM_PROMPT = `You are Buffy, the AI coding assistant behind AnyBuff. You are chatting with a user in the AnyBuff desktop app, which renders markdown.
+
+Current date: {CODEBUFF_CURRENT_DATE}.
+
+This is Chat mode: you have no file tools, so you cannot browse, read, or edit the user's files on your own — you answer questions, explain concepts, and look things up. You can only see content the user explicitly pastes or attaches into the conversation. If a request needs the user's actual project files (reading, editing, running commands), say so briefly and suggest they switch to Build mode.`
+
+const ANYBUFF_CHAT_INSTRUCTIONS = `Be direct and helpful. Use markdown when it improves clarity (code blocks, lists, tables), and keep answers as short as they can be while fully answering the question.
+
+You can search the live internet yourself with the web_search tool (and follow promising pages with read_url). Prefer searching directly for quick lookups. For deeper or source-backed research, spawn the researcher-web agent; for library/API documentation questions, spawn researcher-web or researcher-docs. Give a focused question; you can spawn several in parallel for independent questions. After it reports back, answer the user in your own words and cite source URLs when useful. Don't spawn a researcher for questions you can already answer well (general knowledge, coding help, writing, math).
+
+Whenever a question needs real reasoning, spawn the thinker agent and let it do the thinking — do not reason it out yourself in your reply. This is your default for anything beyond a quick lookup: math or logic problems, puzzles, debugging, code design, architecture and trade-off decisions, planning, comparisons, "why/how" explanations, estimates, or any multi-step question. When in doubt, spawn the thinker. It sees the full conversation, including everything your tools returned, so give it a short, focused prompt naming the problem. Wait for its conclusion, then write the final answer to the user in your own words. Skip the thinker only for trivial, purely factual, or conversational messages (greetings, simple definitions, quick lookups) where there is nothing to reason about.
+
+Never spawn the context-pruner agent: it is spawned automatically for you before each step.`
 
 /** Agents that are pure upstream Freebuff product surface, useless in the
  *  AnyBuff desktop (BYOK; no hosted backend). Excluded from the bundle —
- *  upstream files stay on disk for ADR-1 mergeability. */
-const BUNDLE_EXCLUDED_AGENT_IDS = new Set([
-  'base-chat', // Freebuff web-chat root (freebuff.com/chat).
-])
+ *  upstream files stay on disk for ADR-1 mergeability.
+ *
+ * base-chat was once excluded here; patch #7 re-bundles it as the AnyBuff
+ * "Chat" mode root (UI mode 'chat' → AGENT_ID_FOR_MODE['chat'] = 'base-chat'
+ * in desktop/src/main/start-run.ts), so the set is currently empty by design.
+ */
+const BUNDLE_EXCLUDED_AGENT_IDS = new Set<string>([])
 
 const EXTRA_TOOLS = [
   'run_terminal_command',
@@ -162,6 +212,102 @@ function isBullet(line: string, bulletStart: string): boolean {
 }
 
 /**
+ * Patch #7: rewrite the Chat-mode root (base-chat) for the AnyBuff desktop.
+ * The upstream agent is freebuff.com/chat product surface: Freebuff identity,
+ * gravity_index guidance, no direct web_search. AnyBuff Chat runs on the
+ * user's own model (anybuff.json defaultModel — 'base-chat' is not a provider
+ * mode id, so mode/agent/defaultModel routing lands on defaultModel) and
+ * answers directly with web_search/read_url.
+ */
+function applyChatRootPatch(id: string, def: AgentDefinition): AgentDefinition {
+  let patched: AgentDefinition = { ...def }
+  // handleSteps in upstream base-chat carries a Freebuff-only context-window
+  // table (minimax/stealth/ox-alpha…). AnyBuff chat mirrors the desktop's
+  // base3 roots instead: compactContext:true → mechanical compaction keyed to
+  // the routed model's window. Drop handleSteps so no Freebuff table ships.
+  delete patched.handleSteps
+  patched = {
+    ...patched,
+    // 'base-chat' is not a provider mode id, so BYOK mode/agent/defaultModel
+    // routing lands on the user's defaultModel — the baked model here is never
+    // authoritative (resolveConfiguredAgentModelConfig uses it only as a
+    // last-resort fallback when no defaultModel exists). It must still be a
+    // valid string: the shared DynamicAgentDefinitionSchema requires
+    // model: z.string(), and the desktop validates EVERY bundled agent on
+    // every run — a missing model fails schema validation for all modes.
+    // Upstream ships deepseek-v4-flash here; keep it purely as the
+    // schema/budget heuristic (context-window sizing + cache-control checks),
+    // never as the request model. Do NOT list this id in docs/config examples
+    // as "the Chat model" — Chat runs on whatever defaultModel the user
+    // configures.
+    model: 'deepseek/deepseek-v4-flash',
+    // The upstream spawnerPrompt is Freebuff-web product surface
+    // ("freebuff.com/chat"); replace with the AnyBuff Chat-mode description.
+    spawnerPrompt:
+      'Lightweight Q&A in the AnyBuff desktop app: answers questions and looks things up, no file access.',
+    displayName: 'Buffy Chat',
+    compactContext: true,
+    systemPrompt: ANYBUFF_CHAT_SYSTEM_PROMPT,
+    instructionsPrompt: ANYBUFF_CHAT_INSTRUCTIONS,
+    toolNames: [...CHAT_TOOLS],
+    spawnableAgents: [...CHAT_SPAWNABLE_AGENTS],
+  }
+  return patched
+}
+
+function applyDesktopPatch(id: string, def: AgentDefinition): AgentDefinition {
+  let patched = { ...def }
+
+  // 7. AnyBuff Chat root: wholesale AnyBuff rewrite before the generic scrub
+  //    (which then no-ops on the already-clean Chat copy, but keeps the
+  //    identity/prompt guarantees uniform).
+  if (CHAT_ROOT_IDS.has(id)) {
+    patched = applyChatRootPatch(id, patched)
+  }
+
+  // 4. Hosted ads-mesh tool is dead weight locally: drop from toolNames and
+  //    scrub the prompt copy that tells agents to reach for it.
+  if (Array.isArray(patched.toolNames)) {
+    patched.toolNames = patched.toolNames.filter((t: string) => t !== 'gravity_index')
+  }
+
+  // 5. Scrub Freebuff/Codebuff product meta copy + gravity guidance.
+  if (META_SCRUB_IDS.has(id)) {
+    patched.systemPrompt = scrubPromptCopy(patched.systemPrompt)
+    if (typeof patched.instructionsPrompt === 'string') {
+      patched.instructionsPrompt = scrubPromptCopy(patched.instructionsPrompt)
+    }
+  }
+
+  if (BASE_AGENT_IDS.includes(id)) {
+    const toolNames: string[] = Array.isArray(patched.toolNames)
+      ? [...patched.toolNames]
+      : []
+
+    // 1. Full working surface for the desktop root agent.
+    for (const tool of EXTRA_TOOLS) {
+      if (!toolNames.includes(tool)) toolNames.push(tool)
+    }
+
+    // 2. Native web search on the primary coding agents.
+    if (!toolNames.includes('web_search')) toolNames.push('web_search')
+
+    // 3. Prompt discipline sections.
+    let systemPrompt =
+      typeof patched.systemPrompt === 'string' ? patched.systemPrompt : ''
+    if (systemPrompt && !systemPrompt.includes('not a git repository')) {
+      systemPrompt = `${systemPrompt}\n\n${GIT_DISCIPLINE}`
+    }
+    if (!systemPrompt.includes('absent from the file tree')) {
+      systemPrompt = `${systemPrompt}\n\n${INVISIBLE_FILES_DISCIPLINE}`
+    }
+
+    patched = { ...patched, toolNames, systemPrompt: systemPrompt || undefined }
+  }
+
+  return patched
+}
+/**
  * Patch #5: rewrite a systemPrompt / instructionsPrompt for AnyBuff BYOK.
  *
  * A per-line state machine that handles the real copy variants without
@@ -252,52 +398,6 @@ function scrubPromptCopy(prompt: string | undefined): string | undefined {
   return tidyPrompt(out.join('\n'))
 }
 
-function applyDesktopPatch(id: string, def: AgentDefinition): AgentDefinition {
-  let patched = { ...def }
-
-  // 4. Hosted ads-mesh tool is dead weight locally: drop from toolNames and
-  //    scrub the prompt copy that tells agents to reach for it.
-  if (Array.isArray(patched.toolNames)) {
-    patched.toolNames = patched.toolNames.filter((t: string) => t !== 'gravity_index')
-  }
-
-  // 5. Scrub Freebuff/Codebuff product meta copy + gravity guidance.
-  if (META_SCRUB_IDS.has(id)) {
-    patched.systemPrompt = scrubPromptCopy(patched.systemPrompt)
-    if (typeof patched.instructionsPrompt === 'string') {
-      patched.instructionsPrompt = scrubPromptCopy(patched.instructionsPrompt)
-    }
-  }
-
-  if (BASE_AGENT_IDS.includes(id)) {
-    const toolNames: string[] = Array.isArray(patched.toolNames)
-      ? [...patched.toolNames]
-      : []
-
-    // 1. Full working surface for the desktop root agent.
-    for (const tool of EXTRA_TOOLS) {
-      if (!toolNames.includes(tool)) toolNames.push(tool)
-    }
-
-    // 2. Native web search on the primary coding agents.
-    if (!toolNames.includes('web_search')) toolNames.push('web_search')
-
-    // 3. Prompt discipline sections.
-    let systemPrompt =
-      typeof patched.systemPrompt === 'string' ? patched.systemPrompt : ''
-    if (systemPrompt && !systemPrompt.includes('not a git repository')) {
-      systemPrompt = `${systemPrompt}\n\n${GIT_DISCIPLINE}`
-    }
-    if (!systemPrompt.includes('absent from the file tree')) {
-      systemPrompt = `${systemPrompt}\n\n${INVISIBLE_FILES_DISCIPLINE}`
-    }
-
-    patched = { ...patched, toolNames, systemPrompt: systemPrompt || undefined }
-  }
-
-  return patched
-}
-
 async function main() {
   // Agent modules import @codebuff/common which validates env at import time.
   process.env.NEXT_PUBLIC_CB_ENVIRONMENT ||= 'test'
@@ -323,6 +423,9 @@ async function main() {
     }
     if (bundled[def.id]) continue
     // Patch #6: keep Freebuff-web-only product roots out of the desktop app.
+    // The exclusion set is intentionally EMPTY since patch #7 re-bundles
+    // base-chat as the AnyBuff Chat root — it stays as a guard should another
+    // Freebuff-web-only root appear upstream.
     if (BUNDLE_EXCLUDED_AGENT_IDS.has(def.id)) {
       console.log(`excluded from bundle: ${def.id}`)
       continue
@@ -356,6 +459,9 @@ export const bundledAgents: Record<string, any> = ${body};
   }
   console.log(
     `patched base ids: ${BASE_AGENT_IDS.filter((id) => bundled[id]).join(', ')}`,
+  )
+  console.log(
+    `chat root ids: ${Array.from(CHAT_ROOT_IDS).filter((id) => bundled[id]).join(', ') || 'none'}`,
   )
 }
 

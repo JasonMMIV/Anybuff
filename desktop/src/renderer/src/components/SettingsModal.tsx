@@ -164,8 +164,10 @@ const MCP_PRESETS: McpPreset[] = [
   }
 ]
 
-/** Agents offered in the target-agents picker (bundled + local). */
-const DEFAULT_AGENT_IDS = ['base2', 'base2-plan', 'editor', 'researcher-web', 'code-reviewer', 'thinker', 'browser-use', 'file-picker', 'librarian', 'basher']
+/** Agents offered in the target-agents picker (bundled + local). base-chat is
+ *  the Chat-mode root; it can be routed to a model or given MCP tools if the
+ *  user wants, but is intentionally NOT in DEFAULT_TARGET_AGENTS below. */
+const DEFAULT_AGENT_IDS = ['base2', 'base2-plan', 'base-chat', 'editor', 'researcher-web', 'code-reviewer', 'thinker', 'browser-use', 'file-picker', 'librarian', 'basher']
 
 /** Default agents a new server is exposed to (main conversation agents). */
 const DEFAULT_TARGET_AGENTS = ['base2', 'base2-plan']

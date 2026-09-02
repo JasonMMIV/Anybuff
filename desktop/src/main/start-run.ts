@@ -649,8 +649,11 @@ async function buildAgentDefinitions(cwd: string): Promise<{ definitions: Record
     merged[id] = def
   }
   const customIds = local.agents.map((a) => a.id)
-  // Expose custom agents to every selectable root variant so they remain
-  // spawnable regardless of which UI mode (default/plan) is active.
+  // Expose custom agents to every selectable coding-root variant so they
+  // remain spawnable regardless of which coding UI mode (default/plan) is
+  // active. base-chat (Chat mode) is deliberately EXCLUDED: it is the
+  // lightweight no-filesystem root — injecting full-access project agents
+  // into its spawnable set would let a Chat turn trigger file edits.
   for (const rootId of ['base2', 'base2-plan']) {
     const baseDef = merged[rootId]
     if (!baseDef || customIds.length === 0) continue
@@ -688,14 +691,16 @@ export interface StartRunOptions {
   taskId: string
   /** Resume an interrupted turn (Resume banner) — supports checkpoint recovery. */
   resume?: boolean
-  /** UI agent mode — selects the bundled root agent ('default' → base2, 'plan' → base2-plan). */
-  mode?: 'default' | 'plan'
+  /** UI agent mode — selects the bundled root agent
+   *  ('default' → base2, 'plan' → base2-plan, 'chat' → base-chat). */
+  mode?: 'default' | 'plan' | 'chat'
 }
 
 /** UI agent mode → bundled root agent id (mirrors the upstream CLI's AGENT_MODE_TO_ID table). */
-const AGENT_ID_FOR_MODE: Record<'default' | 'plan', string> = {
+const AGENT_ID_FOR_MODE: Record<'default' | 'plan' | 'chat', string> = {
   default: 'base2',
-  plan: 'base2-plan'
+  plan: 'base2-plan',
+  chat: 'base-chat'
 }
 
 /**
