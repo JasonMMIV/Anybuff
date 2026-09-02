@@ -54,7 +54,10 @@ module body; an in-bundle shim cannot satisfy common/env validation).
   getProviderApiKeyOverrides, self-healing model-id normalization.
 - `scripts/generate-desktop-agents.ts` — regenerates desktop bundled agents;
   bakes tool-surface patches (run_terminal_command/web_search/code_search/
-  update_subgoal/think_deeply on base family) and prompt discipline.
+  update_subgoal/think_deeply on base family), prompt discipline, and the
+  AnyBuff prompt scrub (gravity_index copy + Codebuff/Freebuff meta removed,
+  ADR-19) + base-chat bundle exclusion. Re-run it after every upstream
+  agents/ sync.
 
 ## Known debts (do not silently re-add)
 
