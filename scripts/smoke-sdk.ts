@@ -96,7 +96,7 @@ process.env.ANYBUFF_PROVIDER_CONFIG = configPath
 
 // --- run ------------------------------------------------------------------
 const { CodebuffClient } = await import('../sdk/src/index')
-const { bundledAgents } = await import('../desktop/src/main/agents/bundled-agents')
+const { bundledAgents } = await import('../packages/host-core/src/agents/bundled-agents')
 
 const originalCalc = fs.readFileSync(calcPath, 'utf8')
 

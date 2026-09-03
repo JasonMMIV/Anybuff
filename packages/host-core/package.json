@@ -1,0 +1,39 @@
+{
+  "name": "@codebuff/host-core",
+  "version": "0.1.0",
+  "description": "Headless host business logic shared by the AnyBuff desktop (Electron) shell and the Android (Kotlin + proot Node) shell — run orchestration, session store, settings, MCP and agent management. Extracted from desktop/src/main with no Electron dependency (ADR-21).",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "bun test $(bun run --silent test:files)",
+    "test:files": "find src -name '*.test.ts' ! -name '*.integration.test.ts' 2>/dev/null | sort"
+  },
+  "dependencies": {
+    "@codebuff/common": "*",
+    "@codebuff/sdk": "*",
+    "typescript5": "npm:typescript@^5.9.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.10",
+    "dts-bundle-generator": "^9.5.1"
+  }
+}

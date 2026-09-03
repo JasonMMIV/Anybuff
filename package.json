@@ -10,17 +10,22 @@
     "desktop",
     "packages/agent-runtime",
     "packages/code-map",
+    "packages/host-core",
     "packages/llm-providers",
     "sdk"
   ],
   "scripts": {
     "dev": "bun --cwd desktop dev",
     "build:sdk": "cd sdk && bun run build",
+    "build:host-core": "cd packages/host-core && bun run build",
     "smoke:sdk": "bun sdk/smoke-test-dist.ts",
+    "smoke:host-core": "bun packages/host-core/scripts/smoke-host-core.ts",
     "dev:desktop": "bun --cwd desktop dev",
     "build:desktop": "bun --cwd desktop build",
     "typecheck:desktop": "bun --cwd desktop typecheck",
-    "ci": "bun run build:sdk"
+    "typecheck:host-core": "cd packages/host-core && bun x tsc --noEmit -p .",
+    "test:host-core": "cd packages/host-core && bun test src/__tests__/",
+    "ci": "bun run build:sdk && bun run build:host-core && bun run typecheck:host-core && bun run test:host-core && bun run typecheck:desktop"
   },
   "dependencies": {
     "canvas": "^3.2.0",

@@ -1,10 +1,9 @@
 import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } from '@codebuff/sdk'
-import type { BrowserWindow } from 'electron'
-import { isSensitiveFile } from './file-filter'
-import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from './settings'
-import { applyMcpServersToAgents, getEnabledMcpServers } from './mcp-settings'
-import { bundledAgents } from './agents/bundled-agents'
-import { loadProjectLocalAgents, type LocalAgentsResult } from './agents/local-agents'
+import { isSensitiveFile } from '../files/file-filter'
+import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from '../settings/settings'
+import { applyMcpServersToAgents, getEnabledMcpServers } from '../mcp/mcp-settings'
+import { bundledAgents } from '../agents/bundled-agents'
+import { loadProjectLocalAgents, type LocalAgentsResult } from '../agents/local-agents'
 import {
   applyEvent,
   beginResumeTurn,
@@ -14,8 +13,10 @@ import {
   finishRun,
   getSession,
   markRunning
-} from './session-store'
-import type { QueryIndexData, QueryIndexQuery, QueryIndexResult } from '../shared/codebase-index'
+} from '../sessions/session-store'
+import type { QueryIndexData, QueryIndexQuery, QueryIndexResult } from '../contracts/codebase-index'
+import type { EventSink } from '../events'
+import type { FileChange, TodoItem, UiEvent } from '../contracts/types'
 
 /**
  * Embeds CodebuffClient in the main process.
@@ -25,49 +26,13 @@ import type { QueryIndexData, QueryIndexQuery, QueryIndexResult } from '../share
  *   the taskId, persisted into the session transcript, and pushed to the
  *   renderer.
  * - Stream chunks are forwarded live (assistant message text).
+ *
+ * UiEvent / FileChange / TodoItem are the canonical contract types
+ * (ADR-21 single source of truth — see contracts/types.ts); re-exported here
+ * so old `from 'host-core/run/start-run'` imports keep working.
  */
 
-export interface TodoItem {
-  task: string
-  completed: boolean
-}
-
-export interface FileChange {
-  path: string
-  action: 'create' | 'modify' | 'delete'
-}
-
-export interface UiEvent {
-  type: string
-  /** Task (conversation) this event belongs to — the renderer filters by it. */
-  taskId?: string
-  text?: string
-  action?: string
-  toolName?: string
-  status?: string
-  agentType?: string
-  /** Human-readable agent name from the runtime (falls back to agentType in the UI). */
-  agentName?: string
-  model?: string
-  message?: string
-  files?: string[]
-  changedFiles?: FileChange[]
-  used?: number
-  max?: number
-  totalCost?: number
-  queryInput?: QueryIndexQuery
-  queryIndex?: QueryIndexData
-  todos?: TodoItem[]
-  /** #12 工具具名卡片：lightweight tool-call parameters (paths/pattern/url/command…), content-heavy fields stripped. */
-  toolInput?: Record<string, unknown>
-  /** #12 read_files 中被 isSensitiveFile 擋住的路徑（UI 畫刪除線 + blocked 徽章）。 */
-  blockedPaths?: string[]
-  raw?: unknown
-  /* auto_retry events */
-  attempt?: number
-  maxAttempts?: number
-  nextAt?: number
-}
+export type { FileChange, TodoItem, UiEvent } from '../contracts/types'
 
 /* ─── Auto-retry on transient failures (network / timeout / rate-limit) ─── */
 
@@ -389,7 +354,13 @@ let client: CodebuffClient | null = null
 let currentAbort: AbortController | null = null
 /** Task id of the active run — used to tag every outgoing event. */
 let activeRunTaskId: string | null = null
-let mainWindow: BrowserWindow | null = null
+/**
+ * Event sinks (ADR-21) — every transport that wants run UiEvents attaches a
+ * sink here: the Electron shell's BrowserWindow adapter, plus the EventBus
+ * bridge createHost() installs to feed WS broadcasts (headless/Android). Set
+ * semantics let a desktop window and a headless WS host coexist.
+ */
+const eventSinks = new Set<EventSink>()
 let pendingApprovalResolver: ((approved: boolean) => void) | null = null
 
 let pendingAskUserResolver: ((answers: unknown) => void) | null = null
@@ -413,9 +384,27 @@ export function respondApproval(approved: boolean): void {
 /** Custom agents loaded for the current cwd (used by the Settings status panel). */
 let lastLocalAgents: LocalAgentsResult = { agents: [], validationErrors: [] }
 
+/**
+ * Attach the host's event sink (ADR-21). The desktop shell passes an adapter
+ * over its BrowserWindow; createHost() bridges the in-process EventBus that
+ * feeds WS broadcasts (headless/Android shell). Replaces the old
+ * `attachWindow(win: BrowserWindow)`.
+ */
+export function attachEventSink(sink: EventSink): void {
+  eventSinks.add(sink)
+}
 
-export function attachWindow(win: BrowserWindow): void {
-  mainWindow = win
+/** Detach a previously attached sink (e.g. when the desktop swaps windows). */
+export function detachEventSink(sink: EventSink): void {
+  eventSinks.delete(sink)
+}
+
+/** Whether any attached sink currently exposes an interactive surface. */
+function hasInteractiveSink(): boolean {
+  for (const sink of eventSinks) {
+    if (sink.isAvailable()) return true
+  }
+  return false
 }
 
 function sendEvent(event: UiEvent): void {
@@ -423,8 +412,12 @@ function sendEvent(event: UiEvent): void {
   // Tag every run-derived event with the owning task so the renderer can
   // route it to the right conversation view.
   const tagged = event.taskId ? event : { ...event, taskId: activeRunTaskId ?? undefined }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('AnyBuff:event', tagged)
+  for (const sink of eventSinks) {
+    try {
+      sink.send(tagged)
+    } catch {
+      // a misbehaving transport must never break the run loop
+    }
   }
 }
 
@@ -773,7 +766,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         agentDefinitions: Object.values(definitions),
         approvalMode: currentSettings.approvalMode ?? 'balanced',
         requestApproval: async (request: { command: string; cwd: string; mode: string }) => {
-          if (!mainWindow || mainWindow.isDestroyed()) return false
+          if (!hasInteractiveSink()) return false
 
           // Cancel previous pending approval if any
           if (pendingApprovalResolver) {
@@ -791,7 +784,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         overrideTools: {
           ask_user: async (input: { questions?: unknown }) => {
             const questions = Array.isArray(input?.questions) ? input.questions : []
-            if (!mainWindow || mainWindow.isDestroyed() || questions.length === 0) {
+            if (!hasInteractiveSink() || questions.length === 0) {
               return [{ type: 'json', value: { skipped: true } }]
             }
             if (pendingAskUserResolver) {
@@ -799,11 +792,17 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
               pendingAskUserResolver = null
               prev({ skipped: true })
             }
-            sendEvent({ type: 'ask_user', raw: questions } as never)
+            sendEvent({ type: 'ask_user', raw: questions })
             const answers: unknown = await new Promise((resolve) => {
               pendingAskUserResolver = resolve as (v: unknown) => void
             })
-            return [{ type: 'json', value: answers ?? { skipped: true } }]
+            // The renderer replies with the shape it collected from the user;
+            // `skipped` marks a dismiss. Host-core accepts JSON-able values only.
+            const safe =
+              answers === undefined || answers === null
+                ? { skipped: true }
+                : (answers as { skipped?: boolean } & Record<string, unknown>)
+            return [{ type: 'json', value: safe as never }]
           },
         },
         handleEvent: (event) => {

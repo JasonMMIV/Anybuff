@@ -1,13 +1,15 @@
-import { app, safeStorage } from 'electron'
-import { writeFileAtomic } from './atomic-write'
+import { writeFileAtomic } from '../files/atomic-write'
 import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
-import type { McpServerRecord, McpServerOverride } from './mcp-settings'
+import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
+import { hostPaths, hostSecrets } from '../env'
 
 /**
  * Provider settings management (multi-provider).
  * - Each provider can have multiple models; any number of OpenAI-compatible providers can be added.
- * - API keys are encrypted with Electron safeStorage (DPAPI on Windows) and stored per-provider in userData.
+ * - API keys are encrypted via the host SecretStore seam (Electron safeStorage /
+ *   DPAPI on Windows, ADR-11; in-memory Keystore-backed store on Android) and
+ *   stored per-provider in the host data dir.
  * - Provider settings are written as anybuff.json (SDK provider config format),
  *   referenced via the ANYBUFF_PROVIDER_CONFIG environment variable.
  */
@@ -27,28 +29,13 @@ export interface ProviderConfig {
   customBody?: Record<string, unknown> | string
 }
 
-export interface TaskMessage {
-  kind: string
-  text?: string
-  reasoning?: string
-  files?: FileChange[]
-  tool?: { toolName: string; status: string; agentType?: string; agentName?: string; detail?: string; todos?: unknown[]; toolInput?: Record<string, unknown>; blockedPaths?: string[] }
-  /** Epoch ms when the message was created (assistant: first token / user: send time). */
-  createdAt?: number
-  /** Epoch ms when the message completed (assistant: turn finished). */
-  updatedAt?: number
-}
-
-export interface FileChange {
-  path: string
-  action: 'create' | 'modify' | 'delete'
-}
-
-/** Todo list carried on a write_todos tool card. */
-export interface TodoItem {
-  task: string
-  completed: boolean
-}
+import type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
+/**
+ * Transcript-message / file-change / todo shapes — canonical contract types
+ * (ADR-21 single source of truth, see contracts/types.ts). Re-exported here so
+ * existing `from './settings'` imports across host-core keep typechecking.
+ */
+export type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
 
 export interface TaskRecord {
   id: string
@@ -136,16 +123,16 @@ const DEFAULT_PROVIDERS: ProviderConfig[] = [
 ]
 
 function settingsPath(): string {
-  return join(app.getPath('userData'), SETTINGS_FILE)
+  return join(hostPaths().dataDir, SETTINGS_FILE)
 }
 
 /** Automatically migrate settings, keys, and tasks from legacy 'openbuff-windows' directory if present. */
 function migrateLegacyUserData(): void {
   try {
-    const currentDir = app.getPath('userData')
+    const currentDir = hostPaths().dataDir
     const currentSettings = join(currentDir, SETTINGS_FILE)
 
-    const appData = app.getPath('appData')
+    const appData = hostPaths().appDataDir
     const legacyDir = join(appData, 'openbuff-windows')
     const legacySettings = join(legacyDir, SETTINGS_FILE)
     if (!existsSync(legacySettings)) return
@@ -361,8 +348,8 @@ export function saveSearchApiKey(provider: WebSearchProviderId, apiKey: string):
   s.encryptedKeys = s.encryptedKeys ?? {}
   if (!apiKey) {
     delete s.encryptedKeys[id]
-  } else if (safeStorage.isEncryptionAvailable()) {
-    s.encryptedKeys[id] = safeStorage.encryptString(apiKey).toString('base64')
+  } else if (hostSecrets().isEncryptionAvailable()) {
+    s.encryptedKeys[id] = hostSecrets().encryptString(apiKey).toString('base64')
   } else {
     throw new Error(
       'OS credential encryption (DPAPI) is unavailable, so the search API key cannot be stored safely. Set the key as an environment variable instead.'
@@ -383,7 +370,7 @@ export function getSearchApiKey(provider: WebSearchProviderId): string | undefin
     return undefined
   }
   try {
-    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+    return hostSecrets().decryptString(Buffer.from(enc, 'base64'))
   } catch {
     return undefined
   }
@@ -395,8 +382,8 @@ export function saveSecret(key: string, value: string): void {
   s.encryptedKeys = s.encryptedKeys ?? {}
   if (!value) {
     delete s.encryptedKeys[key]
-  } else if (safeStorage.isEncryptionAvailable()) {
-    s.encryptedKeys[key] = safeStorage.encryptString(value).toString('base64')
+  } else if (hostSecrets().isEncryptionAvailable()) {
+    s.encryptedKeys[key] = hostSecrets().encryptString(value).toString('base64')
   } else {
     throw new Error(
       'OS credential encryption (DPAPI) is unavailable, so the secret cannot be stored safely. Use a $ENV_VAR reference instead.'
@@ -411,7 +398,7 @@ export function getSecret(key: string): string | undefined {
   const enc = s.encryptedKeys?.[key]
   if (!enc || enc.startsWith('plain:')) return undefined
   try {
-    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+    return hostSecrets().decryptString(Buffer.from(enc, 'base64'))
   } catch {
     return undefined
   }
@@ -484,8 +471,8 @@ export function saveProviderApiKey(providerId: string, apiKey: string): void {
   s.encryptedKeys = s.encryptedKeys ?? {}
   if (!apiKey) {
     delete s.encryptedKeys[providerId]
-  } else if (safeStorage.isEncryptionAvailable()) {
-    s.encryptedKeys[providerId] = safeStorage.encryptString(apiKey).toString('base64')
+  } else if (hostSecrets().isEncryptionAvailable()) {
+    s.encryptedKeys[providerId] = hostSecrets().encryptString(apiKey).toString('base64')
   } else {
     throw new Error(
       'OS credential encryption (DPAPI) is unavailable, so the API key cannot be stored safely. Set the key as an environment variable instead.'
@@ -505,7 +492,7 @@ export function getProviderApiKey(providerId: string): string | undefined {
     return undefined
   }
   try {
-    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+    return hostSecrets().decryptString(Buffer.from(enc, 'base64'))
   } catch {
     return undefined
   }
@@ -604,7 +591,7 @@ export function writeProviderConfigFile(): string {
     )
     if (Object.keys(efforts).length > 0) config.agentReasoningEfforts = efforts
   }
-  const file = join(app.getPath('userData'), 'anybuff.json')
+  const file = join(hostPaths().dataDir, 'anybuff.json')
   writeFileAtomic(file, JSON.stringify(config, null, 2))
   return file
 }
@@ -665,17 +652,17 @@ function isValidTaskId(taskId: string): boolean {
 
 function transcriptPath(taskId: string): string | null {
   if (!isValidTaskId(taskId)) return null
-  return join(app.getPath('userData'), 'tasks', `${taskId}.json`)
+  return join(hostPaths().dataDir, 'tasks', `${taskId}.json`)
 }
 
 function runStatePath(taskId: string): string | null {
   if (!isValidTaskId(taskId)) return null
-  return join(app.getPath('userData'), 'tasks', `${taskId}.runstate.json`)
+  return join(hostPaths().dataDir, 'tasks', `${taskId}.runstate.json`)
 }
 
 function checkpointPath(taskId: string): string | null {
   if (!isValidTaskId(taskId)) return null
-  return join(app.getPath('userData'), 'tasks', `${taskId}.checkpoint.json`)
+  return join(hostPaths().dataDir, 'tasks', `${taskId}.checkpoint.json`)
 }
 
 /** Save a task's full conversation transcript to its own file (unbounded). */
@@ -722,7 +709,7 @@ export function saveTaskCheckpoint(taskId: string, agentState: unknown): boolean
   try {
     const file = checkpointPath(taskId)
     if (!file) return false
-    const dir = join(app.getPath('userData'), 'tasks')
+    const dir = join(hostPaths().dataDir, 'tasks')
     mkdirSync(dir, { recursive: true })
     // PLAN 9.5: unique temp + fsync + rename-replace without pre-delete;
     // on unrecoverable lock contention the previous checkpoint survives.

@@ -1,4 +1,4 @@
-import type { FileChange, TaskMessage } from './settings'
+import type { FileChange, TaskMessage } from '../settings/settings'
 import {
   deleteTaskCheckpoint,
   ensureProjectTask,
@@ -8,7 +8,7 @@ import {
   loadTaskTranscript,
   saveTaskRunState,
   saveTaskTranscript
-} from './settings'
+} from '../settings/settings'
 
 /**
  * Main-process session store — the single source of truth for conversations.
@@ -20,21 +20,12 @@ import {
  */
 
 /** Mirrors the renderer's UiEvent shape (structural subset). */
-export interface StoreEvent {
-  type: string
-  text?: string
-  toolName?: string
-  status?: string
-  agentType?: string
-  agentName?: string
-  message?: string
-  files?: string[]
+export type StoreEvent = Omit<
+  import('../contracts/types').UiEvent,
+  'taskId' | 'action' | 'used' | 'max' | 'totalCost' | 'queryInput' | 'queryIndex' | 'raw' | 'attempt' | 'maxAttempts' | 'nextAt' | 'model'
+> & {
   changedFiles?: FileChange[]
   todos?: { task: string; completed: boolean }[]
-  /** #12 工具具名卡片：lightweight tool-call parameters. */
-  toolInput?: Record<string, unknown>
-  /** #12 read_files 中被敏感檔過濾擋住的路徑。 */
-  blockedPaths?: string[]
 }
 
 export interface SessionEntry {
@@ -45,16 +36,9 @@ export interface SessionEntry {
   status: 'idle' | 'running' | 'interrupted'
 }
 
-export interface TaskViewSnapshot {
-  exists: boolean
-  cwd?: string
-  transcript: TaskMessage[]
-  status: 'idle' | 'running' | 'interrupted'
-  canResume: boolean
-  resumeReason?: string
-  resumeErrorMessage?: string
-  resumeSource?: 'memory' | 'runstate' | 'checkpoint'
-}
+import type { TaskViewSnapshot } from '../contracts/types'
+/** Canonical snapshot shape (contracts/types.ts) — re-exported for old imports. */
+export type { TaskViewSnapshot } from '../contracts/types'
 
 const sessions = new Map<string, SessionEntry>()
 let runningTaskId: string | null = null

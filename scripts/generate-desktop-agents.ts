@@ -41,11 +41,13 @@ import * as path from 'path'
 
 const ROOT = path.join(import.meta.dir, '..')
 const AGENTS_DIR = path.join(ROOT, 'agents')
+// ADR-21: bundled agents moved into the shared host-core package so the
+// Electron shell and the Android proot-Node shell consume the same artifact.
 const OUT_FILE = path.join(
   ROOT,
-  'desktop',
+  'packages',
+  'host-core',
   'src',
-  'main',
   'agents',
   'bundled-agents.ts',
 )

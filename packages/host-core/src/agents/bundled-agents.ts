@@ -5,7 +5,7 @@
  * agents/ directory, with AnyBuff desktop patches baked in (see script
  * header). Regenerate: bun scripts/generate-desktop-agents.ts
  *
- * Generated at: 2026-09-02T13:53:41.647Z
+ * Generated at: 2026-09-03T04:13:16.991Z
  * Agent count: 34
  */
 

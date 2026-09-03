@@ -16,6 +16,7 @@
     "smoke:packaged": "node scripts/smoke-packaged.mjs"
   },
   "dependencies": {
+    "@codebuff/host-core": "*",
     "@codebuff/sdk": "*",
     "dompurify": "^3.4.13",
     "electron-updater": "^6.8.9",

@@ -4,7 +4,7 @@ import { join } from 'path'
 
 import { listMcpToolsForConfig } from '@codebuff/sdk'
 
-import { getSecret, loadSettings, saveSecret, saveSettings } from './settings'
+import { getSecret, loadSettings, saveSecret, saveSettings } from '../settings/settings'
 
 import type { MCPConfig } from '@codebuff/sdk'
 

@@ -1,52 +1,11 @@
 import './env-shim'
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen } from 'electron'
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
-import { homedir } from 'os'
-import { basename, join } from 'path'
-import { attachWindow, startRun, abortRun, isRunning, getLastLocalAgents, respondApproval, respondAskUser } from './start-run'
-import { createLocalAgent, loadProjectLocalAgents, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, type CreateLocalAgentInput } from './agents/local-agents'
-import {
-  getAppSettings,
-  getProviderApiKey,
-  saveProviderApiKey,
-  updateProviders,
-  updateAgentRouting,
-  applySettingsToEnv,
-  saveCwd,
-  listProjects,
-  deleteTask,
-  renameTask,
-  removeProject,
-  searchHistory,
-  touchProject,
-  saveSearchApiKey,
-  setWebSearchProvider,
-  type ProviderConfig,
-  type ReasoningEffort,
-  type ApprovalMode,
-  type AgentRoute,
-  type WebSearchProviderId
-} from './settings'
-import {
-  getMcpServersView,
-  saveMcpServer,
-  deleteMcpServer,
-  updateMcpServerSettings,
-  testMcpServer
-} from './mcp-settings'
-import type { McpServerDraft } from './mcp-settings'
-import {
-  getOrCreateSession,
-  getRunningTaskId,
-  getSessionSnapshot,
-  isTaskRunning,
-  dropSession,
-  trimLastTurn
-} from './session-store'
-import { bundledAgents } from './agents/bundled-agents'
-import { listFiles, listDir, readProjectFile, getGitBranch, getGitDiff, gitAcceptFile, gitRevertFile, projectName } from './fs-utils'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { checkNow, initAutoUpdater, registerUpdaterIpc } from './updater'
-import { writeFileSync } from 'fs'
+import { bindHostToWindow, registerHostIpc } from './host-bridge'
+import { isRunning } from '@codebuff/host-core'
+import { abortRun } from '@codebuff/host-core'
 
 // Handle global uncaught errors gracefully to prevent silent crashes
 process.on('uncaughtException', (error) => {
@@ -60,9 +19,6 @@ process.on('unhandledRejection', (reason) => {
 // Packaged builds carry ripgrep via extraResources (<install>/resources/bin/rg.exe);
 // point the SDK at it before any tool runs (executables cannot be spawned from inside
 // app.asar). Dev mode resolves sdk/dist/vendor relative paths and needs no override.
-// Note: ESM imports below are hoisted above this assignment, but that is safe —
-// getBundledRgPath() is resolved lazily on first code-search tool call, never at
-// module-evaluation time.
 if (app.isPackaged) {
   process.env.CODEBUFF_RG_PATH = join(process.resourcesPath, 'bin', 'rg.exe')
 }
@@ -132,7 +88,7 @@ function loadWindowState(): { x?: number; y?: number; width: number; height: num
       y: visible ? parsed.y : undefined,
       width: clampedWidth,
       height: clampedHeight,
-      maximized: parsed.maximized
+      maximized: parsed.maximized,
     }
   } catch {
     return fallback
@@ -147,7 +103,7 @@ function saveWindowState(win: BrowserWindow): void {
       y: bounds.y,
       width: bounds.width,
       height: bounds.height,
-      maximized: win.isMaximized()
+      maximized: win.isMaximized(),
     }
     writeFileSync(windowStateFile(), JSON.stringify(state))
   } catch {
@@ -165,7 +121,7 @@ function getAppIconPath(): string | undefined {
           join(app.getAppPath(), 'resources/icon.ico'),
           join(app.getAppPath(), 'icon.ico'),
           join(process.cwd(), 'resources/icon.ico'),
-          join(process.cwd(), 'icon.ico')
+          join(process.cwd(), 'icon.ico'),
         ]
       : []),
     join(__dirname, '../../resources/icon.png'),
@@ -174,7 +130,7 @@ function getAppIconPath(): string | undefined {
     join(app.getAppPath(), 'icon.png'),
     join(process.cwd(), 'resources/icon.png'),
     join(process.cwd(), 'icon.png'),
-    join(__dirname, '../renderer/icon.png')
+    join(__dirname, '../renderer/icon.png'),
   ]
   for (const p of candidates) {
     if (existsSync(p)) return p
@@ -203,8 +159,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
+      sandbox: false,
+    },
   })
 
   if (saved.maximized) win.maximize()
@@ -233,7 +189,7 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  attachWindow(win)
+  bindHostToWindow(win)
   activeWindow = win
   win.on('closed', () => {
     if (activeWindow === win) activeWindow = null
@@ -246,61 +202,11 @@ function createWindow(): void {
   }
 }
 
-/* ─── Skills ─────────────────────────────────────────── */
+/* ─── Shell-only IPC (window, dialogs, theme, app version, updater) ─────── */
+// All business channels (projects/tasks/settings/MCP/agents/files/runs) are
+// registered by registerHostIpc() against @codebuff/host-core (ADR-21).
 
-export interface SkillInfo {
-  name: string
-  description: string
-  path: string
-  source: 'project' | 'home'
-}
-
-const SKILL_ROOTS = ['.agents', '.claude'] as const
-
-function scanSkillRoot(dir: string, source: 'project' | 'home'): SkillInfo[] {
-  const out: SkillInfo[] = []
-  for (const rootName of SKILL_ROOTS) {
-    const skillsDir = join(dir, rootName, 'skills')
-    if (!existsSync(skillsDir)) continue
-    let entries: string[]
-    try {
-      entries = (readdirSync(skillsDir, { withFileTypes: true }) as { name: string; isDirectory(): boolean }[])
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-    } catch {
-      continue
-    }
-    for (const name of entries) {
-      const skillFile = join(skillsDir, name, 'SKILL.md')
-      if (!existsSync(skillFile)) continue
-      try {
-        const content = readFileSync(skillFile, 'utf-8')
-        const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-        let description = ''
-        if (fm) {
-          const descMatch = fm[1].match(/^description:\s*(.+)$/m)
-          description = descMatch ? descMatch[1].trim() : ''
-        }
-        out.push({ name, description, path: skillFile, source })
-      } catch {
-        // skip unreadable skill
-      }
-    }
-  }
-  return out
-}
-
-function listSkills(cwd: string): SkillInfo[] {
-  const project = scanSkillRoot(cwd, 'project')
-  const home = scanSkillRoot(homedir(), 'home')
-  return [...project, ...home]
-}
-
-/* ─── Updates (About tab) ─────────────────────────────── */
-// Version comparison + GitHub release lookup moved to ./updater.ts, which now
-// owns both the electron-updater flow and its unpackaged fallback.
-
-function registerIpc(): void {
+function registerShellIpc(): void {
   /* ─── Window Controls (frameless title bar) ─────── */
   ipcMain.on('AnyBuff:windowMinimize', () => {
     BrowserWindow.getFocusedWindow()?.minimize()
@@ -326,32 +232,26 @@ function registerIpc(): void {
     if (win) win.setFullScreen(!win.isFullScreen())
   })
 
-  ipcMain.handle('AnyBuff:getState', () => {
-    const settings = getAppSettings()
-    return {
-      cwd: settings.cwd,
-      settings,
-      running: isRunning(),
-      runningTaskId: getRunningTaskId(),
-      agentIds: Object.keys(bundledAgents).sort()
-    }
-  })
-
   ipcMain.handle('AnyBuff:selectFolder', async () => {
     const result = await dialog.showOpenDialog({
       title: 'Select the project folder to edit',
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    saveCwd(result.filePaths[0])
-    touchProject(result.filePaths[0])
-    return result.filePaths[0]
+    const folder = result.filePaths[0]
+    // Persist the chosen cwd + project through the host (business logic).
+    // touchProject mirrors the pre-extraction behavior: opening an existing
+    // project re-promotes it to the front of the sidebar's recent list.
+    const { saveCwd, touchProject } = await import('@codebuff/host-core')
+    saveCwd(folder)
+    touchProject(folder)
+    return folder
   })
 
   ipcMain.handle('AnyBuff:selectFiles', async () => {
     const result = await dialog.showOpenDialog({
       title: 'Attach files',
-      properties: ['openFile', 'multiSelections']
+      properties: ['openFile', 'multiSelections'],
     })
     if (result.canceled) return []
     return result.filePaths
@@ -360,305 +260,6 @@ function registerIpc(): void {
   ipcMain.on('AnyBuff:setTheme', (_e, theme: 'dark' | 'light') => {
     // The native title bar follows nativeTheme for dark/light mode
     nativeTheme.themeSource = theme
-  })
-
-  ipcMain.handle('AnyBuff:saveSettings', (_e, payload: {
-    providers: ProviderConfig[]
-    activeModel: string
-    reasoningEffort: ReasoningEffort
-    approvalMode: ApprovalMode
-    apiKeys?: Record<string, string> // providerId -> key (empty = unchanged; empty string + deleteKey = delete)
-    deleteKeys?: string[]
-    agentRouting?: Record<string, AgentRoute>
-    /** Active web search provider (Web Search settings tab). */
-    webSearchProvider?: WebSearchProviderId
-    /** Search-provider API keys (tinyfish / firecrawl) → DPAPI storage. */
-    searchApiKeys?: Partial<Record<WebSearchProviderId, string>>
-    /** Search-provider keys to delete. */
-    deleteSearchKeys?: WebSearchProviderId[]
-  }) => {
-    updateProviders(payload.providers, payload.activeModel, payload.reasoningEffort, payload.approvalMode)
-    if (payload.apiKeys) {
-      for (const [id, key] of Object.entries(payload.apiKeys)) {
-        if (key) saveProviderApiKey(id, key.trim())
-      }
-    }
-    for (const id of payload.deleteKeys ?? []) {
-      saveProviderApiKey(id, '')
-    }
-    if (payload.agentRouting) updateAgentRouting(payload.agentRouting)
-    if (payload.webSearchProvider) setWebSearchProvider(payload.webSearchProvider)
-    if (payload.searchApiKeys) {
-      for (const [provider, key] of Object.entries(payload.searchApiKeys)) {
-        if (key && (provider === 'tinyfish' || provider === 'firecrawl')) {
-          saveSearchApiKey(provider, key.trim())
-        }
-      }
-    }
-    for (const provider of payload.deleteSearchKeys ?? []) {
-      if (provider === 'tinyfish' || provider === 'firecrawl') saveSearchApiKey(provider, '')
-    }
-    return { ok: true, settings: getAppSettings() }
-  })
-
-  ipcMain.handle('AnyBuff:listMcpServers', (_e, cwd: string | null) => {
-    return getMcpServersView(cwd)
-  })
-
-  ipcMain.handle('AnyBuff:saveMcpServer', (_e, payload: McpServerDraft) => {
-    try {
-      const server = saveMcpServer(payload)
-      return { ok: true, server }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  ipcMain.handle('AnyBuff:deleteMcpServer', (_e, payload: { id: string }) => {
-    try {
-      deleteMcpServer(payload.id)
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  ipcMain.handle(
-    'AnyBuff:updateMcpServerSettings',
-    (_e, payload: { cwd: string | null; id: string; enabled?: boolean; targetAgents?: string[] }) => {
-      try {
-        const server = updateMcpServerSettings(payload.cwd, {
-          id: payload.id,
-          enabled: payload.enabled,
-          targetAgents: payload.targetAgents
-        })
-        return { ok: true, server }
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    }
-  )
-
-  ipcMain.handle('AnyBuff:testMcpServer', async (_e, payload: { record: McpServerDraft }) => {
-    return await testMcpServer(payload.record)
-  })
-
-  ipcMain.handle('AnyBuff:listSkills', (_e, cwd: string) => {
-    return listSkills(cwd)
-  })
-
-  ipcMain.handle('AnyBuff:listLocalAgents', async (_e, cwd: string) => {
-    if (!cwd) return getLastLocalAgents()
-    try {
-      return await loadProjectLocalAgents(cwd)
-    } catch (err) {
-      return { agents: [], validationErrors: [{ agentId: '', filePath: '', message: err instanceof Error ? err.message : String(err) }] }
-    }
-  })
-
-  ipcMain.handle('AnyBuff:createLocalAgent', (_e, payload: CreateLocalAgentInput) => {
-    return createLocalAgent(payload)
-  })
-
-  ipcMain.handle('AnyBuff:deleteLocalAgent', (_e, payload: { cwd: string; filePath?: string; id?: string }) => {
-    return deleteLocalAgent(payload)
-  })
-
-  ipcMain.handle('AnyBuff:readLocalAgentFile', (_e, payload: { filePath: string }) => {
-    return readLocalAgentFile(payload)
-  })
-
-  ipcMain.handle('AnyBuff:saveLocalAgentFile', (_e, payload: { filePath: string; content: string }) => {
-    return saveLocalAgentFile(payload)
-  })
-
-  ipcMain.handle('AnyBuff:readSkillFile', (_e, path: string) => {
-    try {
-      const stat = statSync(path)
-      if (!stat.isFile() || stat.size > 200 * 1024) return { ok: false, error: 'Not a file or larger than 200KB' }
-      return { ok: true, content: readFileSync(path, 'utf-8') }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  ipcMain.handle('AnyBuff:listProjects', () => {
-    return listProjects()
-  })
-
-  ipcMain.handle('AnyBuff:deleteTask', (_e, taskId: string) => {
-    if (!taskId) return { ok: false, error: 'Missing taskId' }
-    if (isTaskRunning(taskId)) return { ok: false, error: 'Stop the running task before deleting it.' }
-    dropSession(taskId)
-    deleteTask(taskId)
-    return { ok: true }
-  })
-
-  ipcMain.handle('AnyBuff:renameTask', (_e, payload: { taskId: string; newPrompt: string }) => {
-    if (!payload || typeof payload.taskId !== 'string' || typeof payload.newPrompt !== 'string') {
-      return { ok: false, error: 'Invalid payload' }
-    }
-    const ok = renameTask(payload.taskId, payload.newPrompt)
-    return { ok }
-  })
-
-  ipcMain.handle('AnyBuff:removeProject', (_e, projectPath: string) => {
-    if (!projectPath) return { ok: false, error: 'Missing projectPath' }
-    const project = getAppSettings().projects.find((p) => p.path === projectPath)
-    const runningInside = (project?.tasks ?? []).some((t) => isTaskRunning(t.id))
-    if (runningInside) {
-      return { ok: false, error: 'Stop the running task before removing this project.' }
-    }
-    for (const t of project?.tasks ?? []) {
-      dropSession(t.id)
-    }
-    const ok = removeProject(projectPath)
-    return { ok }
-  })
-
-  /** Full view snapshot of a conversation: transcript + status + resume info. */
-  ipcMain.handle('AnyBuff:getTaskView', (_e, taskId: string) => {
-    if (!taskId) return { ok: false, error: 'Missing taskId' }
-    const snapshot = getSessionSnapshot(taskId)
-    return { ok: true, ...snapshot }
-  })
-
-  /**
-   * Revert support: drop the last user turn (and everything after it) from the
-   * persisted transcript AND the SDK run state, keeping earlier context.
-   */
-  ipcMain.handle('AnyBuff:trimTaskLastTurn', (_e, payload: { taskId: string; userText: string }) => {
-    if (!payload?.taskId || !payload.userText) return { ok: false, error: 'Invalid payload' }
-    if (isTaskRunning(payload.taskId)) return { ok: false, error: 'Stop the running task first.' }
-    const ok = trimLastTurn(payload.taskId, payload.userText)
-    return ok ? { ok: true } : { ok: false, error: 'Original turn not found in this conversation.' }
-  })
-
-  ipcMain.handle('AnyBuff:searchHistory', async (_e, query: string) => {
-    return await searchHistory(query)
-  })
-
-  ipcMain.handle(
-    'AnyBuff:runPrompt',
-    async (_e, payload: {
-      cwd: string
-      prompt: string
-      displayText?: string
-      /** Existing conversation to continue; omitted = start a new one. */
-      taskId?: string
-      resume?: boolean
-      /** UI agent mode — selects the bundled root agent. */
-      mode?: 'default' | 'plan' | 'chat'
-    }) => {
-      if (!payload.cwd || !payload.prompt.trim()) return { ok: false, error: 'Missing project folder or prompt' }
-      if (isRunning()) return { ok: false, error: 'Another task is already running' }
-
-      // One record per conversation: reuse the provided task or create a new one.
-      // The record title comes from what the user typed (not the expanded prompt).
-      const title = (payload.displayText ?? payload.prompt).trim().slice(0, 300)
-      let taskId = typeof payload.taskId === 'string' && payload.taskId ? payload.taskId : undefined
-      const entry = getOrCreateSession(payload.cwd, title, taskId)
-      taskId = entry.taskId
-
-      applySettingsToEnv()
-      return await startRun({
-        cwd: payload.cwd,
-        prompt: payload.prompt,
-        displayText: payload.displayText ?? payload.prompt,
-        taskId,
-        resume: payload.resume === true,
-        mode: payload.mode
-      })
-    }
-  )
-
-  ipcMain.handle('AnyBuff:abort', () => {
-    abortRun()
-    return { ok: true }
-  })
-
-  ipcMain.handle('AnyBuff:approvalResponse', (_e, approved: boolean) => {
-    respondApproval(approved)
-    return { ok: true }
-  })
-
-  ipcMain.handle('AnyBuff:listFiles', (_e, root: string) => {
-    return listFiles(root)
-  })
-
-  ipcMain.handle('AnyBuff:listDir', (_e, dir: string) => {
-    return listDir(dir)
-  })
-
-  ipcMain.handle('AnyBuff:gitAccept', async (_e, payload: { cwd: string; file: string }) => {
-    return gitAcceptFile(payload.cwd, payload.file)
-  })
-
-  ipcMain.handle('AnyBuff:gitRevert', async (_e, payload: { cwd: string; file: string }) => {
-    return gitRevertFile(payload.cwd, payload.file)
-  })
-
-  ipcMain.handle('AnyBuff:readFile', (_e, path: string) => {
-    return readProjectFile(path)
-  })
-
-  ipcMain.handle('AnyBuff:pathInfo', (_e, path: string) => {
-    try {
-      const stat = statSync(path)
-      return { ok: true, isDir: stat.isDirectory(), name: basename(path) }
-    } catch {
-      return { ok: false, error: 'Path does not exist' }
-    }
-  })
-
-  ipcMain.handle('AnyBuff:gitBranch', (_e, cwd: string) => {
-    return getGitBranch(cwd)
-  })
-
-  ipcMain.handle('AnyBuff:gitDiff', (_e, cwd: string) => {
-    return getGitDiff(cwd)
-  })
-
-  ipcMain.handle('AnyBuff:projectName', (_e, cwd: string) => {
-    return projectName(cwd)
-  })
-
-  ipcMain.handle('AnyBuff:respondAskUser', (_e, payload: unknown) => {
-    respondAskUser(payload)
-  })
-
-  ipcMain.handle('AnyBuff:fetchModels', async (_e, payload: { baseURL: string; apiKey: string; providerType: string; providerId?: string }) => {
-    try {
-      const base = payload.baseURL.replace(/\/+$/, '')
-      // Stored DPAPI keys are never echoed back to the renderer, so an empty
-      // payload.apiKey after reopening Settings must fall back to the
-      // persisted key — otherwise every re-fetch goes out unauthenticated.
-      const apiKey = payload.apiKey || (payload.providerId ? getProviderApiKey(payload.providerId) : undefined)
-      // Ollama-compatible endpoint (/api/tags)
-      if (/ollama|:11434/i.test(base)) {
-        const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(15000) })
-        if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
-        const data = (await res.json()) as { models?: { name?: string }[] }
-        const models = (data.models ?? []).map((m) => m.name ?? '').filter(Boolean).sort()
-        if (models.length === 0) return { ok: false, error: 'No model data in response' }
-        return { ok: true, models }
-      }
-      // OpenAI-compatible /models
-      const res = await fetch(`${base}/models`, {
-        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-        signal: AbortSignal.timeout(15000)
-      })
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
-      const data = (await res.json()) as { data?: { id?: string }[] }
-      // Gemini-style endpoints list ids with a "models/" prefix; strip it so
-      // stored ids match what /chat/completions expects and selectors render
-      // clean names.
-      const models = [...new Set((data.data ?? []).map((m) => (m.id ?? '').replace(/^models\//, '')).filter(Boolean).sort())]
-      if (models.length === 0) return { ok: false, error: 'No model data in response' }
-      return { ok: true, models }
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
-    }
   })
 
   ipcMain.handle('AnyBuff:getAppVersion', () => {
@@ -677,13 +278,11 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.AnyBuff.desktop')
   }
-  registerIpc()
+  registerHostIpc()
+  registerShellIpc()
   createWindow()
-  // #3 自動更新：IPC handlers always exist（dev 走 GitHub API fallback）；
-  // 背景 GitHub Releases 檢查（~20s 後首次，之後每 4 小時）僅在打包版啟用。
   registerUpdaterIpc()
   initAutoUpdater(() => activeWindow)
-
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

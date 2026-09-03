@@ -57,7 +57,7 @@ project you open.
 | `packages/llm-providers` | Vendored AI-SDK v7 openai-compatible provider + grafted interop features |
 | `common/` | Upstream shared types/tools/contracts (+ local-mode constants) |
 | `agents/` | Upstream agent templates; model strings are *routing keys* resolved through anybuff.json |
-| `scripts/generate-desktop-agents.ts` | Regenerates `desktop/src/main/agents/bundled-agents.ts` from upstream `agents/` with desktop patches baked in |
+| `scripts/generate-desktop-agents.ts` | Regenerates `packages/host-core/src/agents/bundled-agents.ts` from upstream `agents/` with AnyBuff patches baked in (single artifact shared by desktop + Android, ADR-21) |
 | `cli/` | Upstream CLI source kept on disk but OUT of the build graph (v2 candidate) |
 
 ## Key behaviors

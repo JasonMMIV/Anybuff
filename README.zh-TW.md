@@ -50,7 +50,7 @@ provider，即可開始對話。
 | `packages/llm-providers` | 內嵌 AI-SDK v7 openai-compatible provider + 移植的互操作功能 |
 | `common/` | 上游共用類型/工具/契約（+ local-mode 常量） |
 | `agents/` | 上游 agent 模板；模型字串是經 anybuff.json 解析的*路由鍵* |
-| `scripts/generate-desktop-agents.ts` | 從上游 `agents/` 重新產生 `desktop/src/main/agents/bundled-agents.ts`（含桌面修補） |
+| `scripts/generate-desktop-agents.ts` | 從上游 `agents/` 重新產生 `packages/host-core/src/agents/bundled-agents.ts`（含 AnyBuff 修補；桌面 + Android 共用單一產物，ADR-21） |
 | `cli/` | 上游 CLI 原始碼保留在磁碟但不在建置圖中（v2 候選） |
 
 ## 關鍵行為
