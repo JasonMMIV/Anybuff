@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "node scripts/dev-launcher.mjs dev",
     "build": "electron-vite build",
+    "build:web": "vite build --config web-vite.config.ts",
+    "preview:web": "vite preview --config web-vite.config.ts",
     "preview": "node scripts/dev-launcher.mjs preview",
     "start": "node scripts/dev-launcher.mjs preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",

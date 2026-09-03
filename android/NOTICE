@@ -1,0 +1,40 @@
+AnyBuff Android — Third-Party Notices
+=====================================
+
+AnyBuff (this Android application, excluding the items below) is licensed
+under the Apache License 2.0. See the repository LICENSE file.
+
+Bundled third-party components and their licenses:
+
+1. proot (proot-me/proot) — GPL-2.0-or-later
+   -----------------------------------------
+   The application ships prebuilt proot binaries (installed into
+   app/src/main/jniLibs as libproot_exec.so / libproot_loader.so) obtained
+   from the Termux package repository or built from the proot-me/proot
+   sources. proot is free software licensed under the GNU General Public
+   License version 2 or later.
+
+   Source code: https://github.com/proot-me/proot
+   Termux packaging: https://github.com/termux/termux-packages (proot)
+
+   GPL-2.0-or-later license text is available at:
+   https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+   proot is distributed in the hope that it will be useful, but WITHOUT ANY
+   WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+   FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+   details.
+
+2. Ubuntu base rootfs (ubuntu-base 24.04, arm64)
+   ---------------------------------------------
+   Downloaded at runtime into the app sandbox from cdimage.ubuntu.com under
+   the Ubuntu license terms. AnyBuff does not redistribute it inside the APK.
+
+3. Node.js (linux-arm64)
+   ---------------------
+   Downloaded at runtime from nodejs.org under the Node.js MIT-style license.
+   AnyBuff does not redistribute it inside the APK.
+
+The Apache-2.0 licensed AnyBuff code and the GPL-2.0 licensed proot binaries
+are distributed as separate, independently-launched programs within the same
+package; the GPL does not extend to the AnyBuff application code.

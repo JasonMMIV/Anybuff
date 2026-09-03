@@ -1,0 +1,18 @@
+# Android / Gradle build outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+build/
+app/build/
+captures/
+.gradle/
+local.properties
+.idea/
+*.iml
+.kotlin/
+
+# Engine runtime artifacts downloaded at first boot (never committed)
+app/src/main/assets/engine/
+app/src/main/jniLibs/*/libproot_*.so
+app/src/main/assets/www/

@@ -2,7 +2,7 @@ import { writeFileAtomic } from '../files/atomic-write'
 import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
-import { hostPaths, hostSecrets } from '../env'
+import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence } from '../env'
 
 /**
  * Provider settings management (multi-provider).
@@ -465,8 +465,23 @@ export function updateAgentRouting(routing: Record<string, AgentRoute>): void {
 /** Save a single provider's API key; empty string deletes that provider's key.
  * ADR-11: DPAPI is mandatory — when safeStorage is unavailable we refuse to
  * store the key rather than silently downgrading to reversible plaintext.
- * The UI surfaces the error and directs the user to an env-var workflow. */
+ * The UI surfaces the error and directs the user to an env-var workflow.
+ *
+ * Android (Phase B): when the shell installs a keyPersistence seam, the key is
+ * handed to the shell for Keystore storage + re-hydration instead of being
+ * disk-encrypted by the (decrypt-only) in-memory SecretStore. */
 export function saveProviderApiKey(providerId: string, apiKey: string): void {
+  const persistence = hostKeyPersistence()
+  if (persistence) {
+    if (apiKey) persistence.save(providerId, apiKey)
+    else persistence.remove(providerId)
+    // The in-memory overlay is the live read path on Android; refresh it so
+    // the UI and the next run see the change immediately.
+    const overlays = hostKeyOverrides()
+    if (apiKey) overlays[providerId] = apiKey
+    else delete overlays[providerId]
+    return
+  }
   const s = loadSettings()
   s.encryptedKeys = s.encryptedKeys ?? {}
   if (!apiKey) {
@@ -482,6 +497,10 @@ export function saveProviderApiKey(providerId: string, apiKey: string): void {
 }
 
 export function getProviderApiKey(providerId: string): string | undefined {
+  // In-memory overlay first (Android Keystore hydration / dev secrets); the
+  // shell decrypts before host-core runs so plaintext never sits on disk.
+  const overlay = hostKeyOverrides()[providerId]
+  if (overlay !== undefined) return overlay
   const s = loadSettings()
   const enc = s.encryptedKeys?.[providerId]
   if (!enc) return undefined
@@ -502,9 +521,11 @@ export function getProviderApiKey(providerId: string): string | undefined {
  * inside the main process; they are never written to process.env, so
  * agent-spawned child processes cannot read them. */
 export function getProviderApiKeyOverrides(): Record<string, string> {
+  // In-memory overlay entries take precedence over (and include) disk keys.
+  const overrides: Record<string, string> = { ...hostKeyOverrides() }
   const s = loadSettings()
-  const overrides: Record<string, string> = {}
   for (const p of s.providers) {
+    if (overrides[p.id]) continue
     const key = getProviderApiKey(p.id)
     if (key) overrides[p.id] = key
   }
@@ -512,6 +533,7 @@ export function getProviderApiKeyOverrides(): Record<string, string> {
 }
 
 export function hasAnyApiKey(): boolean {
+  if (Object.keys(hostKeyOverrides()).length > 0) return true
   const s = loadSettings()
   return Object.values(s.encryptedKeys ?? {}).some(Boolean)
 }

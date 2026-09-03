@@ -58,6 +58,37 @@ async function build() {
   })
   if (!cjs.success) throw new AggregateError(cjs.logs, 'CJS build failed')
 
+  console.log('📦 Building self-contained host bundle (Android sandbox / browser preview)...')
+  // The sandbox Node 22 runtime has no node_modules for @codebuff/* or ws, so
+  // anybuff-host.mjs inlines everything except node built-ins. Bundling `ws`
+  // pulls in bufferutil/utf-8-validate as optional peers (harmless) but those
+  // need native builds — keep them external so ws falls back to JS.
+  const hostBundle = await Bun.build({
+    entrypoints: ['src/server/anybuff-host.ts'],
+    outdir: 'dist',
+    target: 'node',
+    format: 'esm',
+    minify: false,
+    sourcemap: 'none',
+    external: [
+      // Node.js built-ins + the native-adjacent modules that must stay as real
+      // node_modules files (Bun inlining them breaks emscripten glue / native
+      // peer resolution). web-tree-sitter ships a wasm + emscripten runtime
+      // that does not survive bundling — the SDK itself externalizes it.
+      'node:*',
+      'fs', 'fs/promises', 'path', 'child_process', 'os', 'crypto', 'stream', 'util',
+      'http', 'https', 'net', 'tls', 'url', 'events', 'buffer', 'string_decoder',
+      'assert', 'module', 'zlib', 'perf_hooks', 'bufferutil', 'utf-8-validate',
+      'web-tree-sitter',
+    ],
+    naming: '[dir]/anybuff-host.mjs',
+    env: 'NEXT_PUBLIC_*',
+    loader: { '.scm': 'text' },
+  })
+  if (!hostBundle.success) throw new AggregateError(hostBundle.logs, 'host bundle failed')
+  console.log('  ✓ dist/anybuff-host.mjs')
+
+
   console.log('📝 Generating and bundling TypeScript declarations...')
   try {
     const [bundle] = generateDtsBundle(

@@ -1,0 +1,4 @@
+# Copy to local.properties (gitignored) or set ANDROID_HOME.
+# On this machine:
+# sdk.dir=C\:\\Android\\sdk
+sdk.dir=

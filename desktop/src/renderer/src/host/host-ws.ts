@@ -16,21 +16,109 @@ import type { AnyBuffApi } from '../../../preload'
 
 const shellNoOps = (): void => {}
 
+/**
+ * Result shape of the desktop updater's check (AnyBuff:checkForUpdates /
+ * updateCheck IPC). Kept structurally compatible with the Electron type so the
+ * Settings About tab renders identically over WS.
+ */
+export interface UpdateCheckResult {
+  ok: boolean
+  updateAvailable: boolean
+  currentVersion: string
+  latestVersion: string
+  url?: string
+  error?: string
+}
+
+export interface UpdateUiEvent {
+  type:
+    | 'checking-for-update'
+    | 'update-available'
+    | 'update-not-available'
+    | 'download-progress'
+    | 'update-downloaded'
+    | 'update-error'
+  version?: string
+  percent?: number
+  message?: string
+}
+
+/**
+ * Optional native bridge injected by the shell (Phase-B Android WebView).
+ * WebView JS cannot open SAF pickers or launch external browsers by itself, so
+ * the shell registers a message-channel proxy here; when absent the methods
+ * degrade to the browser-safe fallbacks below.
+ */
+export interface AnyBuffNativeBridge {
+  /** Open the system folder/file picker; resolve the sandbox paths. */
+  pickFolder?(): Promise<string | null>
+  pickFiles?(): Promise<string[]>
+  /** Open an external URL in the system browser (Android: ACTION_VIEW). */
+  openExternal?(url: string): void
+  /** Android-only app version (from BuildConfig). */
+  getVersion?(): Promise<string>
+}
+
 export interface WsHostOptions {
   /** WS URL with token, e.g. ws://127.0.0.1:8765?token=abc */
   url: string
   /** Timeout for a request before rejecting (ms). Default 30s. */
   timeoutMs?: number
+  /** Installed app version reported by getAppVersion (default '0.0.0-ws'). */
+  appVersion?: string
+  /** Optional native bridge (Android shell / Electron preload absent). */
+  native?: AnyBuffNativeBridge
+  /** GitHub repo for the update check, e.g. 'JasonMMIV/Anybuff'. Default unset → update UI disabled. */
+  updateRepo?: string
+}
+
+const GITHUB_RELEASES_PAGE_PREFIX = 'https://github.com/'
+
+/** Returns > 0 when a > b (numeric major.minor.patch, "v" prefix tolerated). */
+function compareVersions(a: string, b: string): number {
+  const pa = a.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = b.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+/** Compare the running version against the latest GitHub release (dev/unpackaged parity). */
+async function githubUpdateCheck(repo: string, currentVersion: string): Promise<UpdateCheckResult> {
+  const latestUrl = `${GITHUB_RELEASES_PAGE_PREFIX}${repo}/releases/latest`
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AnyBuff' },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (res.status === 404) return { ok: true, updateAvailable: false, currentVersion, latestVersion: '', url: latestUrl }
+    if (!res.ok) return { ok: false, updateAvailable: false, currentVersion, latestVersion: '', error: `HTTP ${res.status}` }
+    const data = (await res.json()) as { tag_name?: string; html_url?: string }
+    const tagName = (data.tag_name ?? '').trim()
+    if (!tagName) return { ok: false, updateAvailable: false, currentVersion, latestVersion: '', error: 'Malformed response from GitHub releases API' }
+    return {
+      ok: true,
+      updateAvailable: compareVersions(tagName, currentVersion) > 0,
+      currentVersion,
+      latestVersion: tagName.replace(/^v/i, ''),
+      url: data.html_url && /^https:\/\/github\.com\//.test(data.html_url) ? data.html_url : latestUrl,
+    }
+  } catch (e) {
+    return { ok: false, updateAvailable: false, currentVersion, latestVersion: '', error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
-  const { url, timeoutMs = 30_000 } = options
+  const { url, timeoutMs = 30_000, appVersion = '0.0.0-ws', native, updateRepo } = options
   const ws = new WebSocket(url)
 
   let seq = 0
   const pending = new Map<number, (v: unknown) => void>()
   const eventListeners = new Set<(event: unknown) => void>()
-  const updateListeners = new Set<(event: unknown) => void>()
+  const updateListeners = new Set<(event: UpdateUiEvent) => void>()
 
   /** Invoke a host-core business channel over the WS envelope. */
   function call<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
@@ -146,17 +234,17 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       // No window state over WS — nothing to subscribe to.
       return () => {}
     },
-    getAppVersion: async () => ({ version: '0.0.0-ws' }),
-    checkForUpdates: async () => ({ status: 'disabled' }),
-    updateCheck: async () => ({ status: 'disabled' }),
+    getAppVersion: async () => ({ version: native?.getVersion ? await native.getVersion() : appVersion }),
+    checkForUpdates: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion) : { status: 'disabled' }),
+    updateCheck: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion) : { status: 'disabled' }),
     updateDownload: async () => ({ status: 'disabled' }),
     updateInstall: shellNoOps,
-    onUpdateEvent: (callback: (event: unknown) => void) => {
+    onUpdateEvent: (callback: (event: UpdateUiEvent) => void) => {
       updateListeners.add(callback)
       return () => updateListeners.delete(callback)
     },
-    selectFolder: async () => null,
-    selectFiles: async () => [],
+    selectFolder: async () => (native?.pickFolder ? await native.pickFolder() : null),
+    selectFiles: async () => (native?.pickFiles ? await native.pickFiles() : []),
     getPathForFile: (_file: File) => '',
     setTheme: shellNoOps,
     getZoomFactor: () => 1,

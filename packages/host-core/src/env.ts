@@ -37,6 +37,22 @@ export interface SecretStore {
 export interface HostEnv {
   paths: HostPaths
   secrets: SecretStore
+  /**
+   * Plaintext provider keys hydrated by the shell (Android: decrypted from
+   * Keystore during the localhost handshake; dev hosts: ANYBUFF_HOST_SECRETS).
+   * These take precedence over disk-encrypted entries and live only in this
+   * process's memory (ADR-12 — never written to env or disk by host-core).
+   */
+  keyOverrides?: Record<string, string>
+  /**
+   * Optional shell-backed secret persistence (Android: Kotlin writes the
+   * Keystore and re-hydrates). When absent, saves fall through to the
+   * SecretStore disk-encrypt path (which throws on a decrypt-only store).
+   */
+  keyPersistence?: {
+    save(providerId: string, plain: string): void
+    remove(providerId: string): void
+  }
 }
 
 let env: HostEnv | null = null
@@ -62,4 +78,14 @@ export function hostPaths(): HostPaths {
 
 export function hostSecrets(): SecretStore {
   return getHostEnv().secrets
+}
+
+/** Overlay provider keys (empty when none installed or env not yet installed). */
+export function hostKeyOverrides(): Record<string, string> {
+  return env?.keyOverrides ?? {}
+}
+
+/** Shell-backed key persistence (undefined when the shell does not provide one). */
+export function hostKeyPersistence(): HostEnv['keyPersistence'] {
+  return env?.keyPersistence ?? undefined
 }
