@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { ChevronDownIcon, FileIcon } from './Icons'
 
 export interface FileChange {
@@ -40,7 +40,7 @@ function dirnameOf(p: string): string {
   return parts.join('/') || '.'
 }
 
-export function FileChangesSummary({ files, collapsed: initialCollapsed = false }: { files: FileChange[]; collapsed?: boolean }) {
+export const FileChangesSummary = memo(function FileChangesSummary({ files, collapsed: initialCollapsed = false }: { files: FileChange[]; collapsed?: boolean }) {
   const [collapsed, setCollapsed] = useState(initialCollapsed)
 
   if (!files || files.length === 0) return null
@@ -87,4 +87,4 @@ export function FileChangesSummary({ files, collapsed: initialCollapsed = false 
       )}
     </div>
   )
-}
+})

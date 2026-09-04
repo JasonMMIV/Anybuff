@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { renderMarkdown } from '../utils/markdown'
 import {
   AlertCircleIcon,
@@ -257,7 +257,7 @@ function formatMsgTime(ts?: number): string {
 }
 
 /** Render markdown; code blocks carry a copy button (part of the HTML, delegated click). */
-export function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = (e.target as HTMLElement).closest('.code-copy')
     if (!target) return
@@ -271,14 +271,19 @@ export function Markdown({ text }: { text: string }) {
     }
   }
 
+  // renderMarkdown = marked.parse + hljs.highlight + DOMPurify.sanitize, all
+  // regex/string heavy. Cache per text so re-renders (typing in the composer,
+  // stream chunks) never re-parse messages whose content didn't change.
+  const html = useMemo(() => renderMarkdown(text), [text])
+
   return (
     <div
       className="markdown"
       onClick={handleClick}
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   )
-}
+})
 
 export interface WebResult {
   title: string
@@ -402,7 +407,7 @@ function formatToolDetail(detail: string): string {
 }
 
 /** Render a todo checklist from a list of TodoTodo items. */
-export function TodoCard({ todos, collapsed, onToggleCollapse, inline }: { todos: TodoTodo[]; collapsed?: boolean; onToggleCollapse?: () => void; inline?: boolean }) {
+export const TodoCard = memo(function TodoCard({ todos, collapsed, onToggleCollapse, inline }: { todos: TodoTodo[]; collapsed?: boolean; onToggleCollapse?: () => void; inline?: boolean }) {
   if (!todos || todos.length === 0) return null
   const done = todos.filter((t) => t.completed).length
   return (
@@ -429,9 +434,9 @@ export function TodoCard({ todos, collapsed, onToggleCollapse, inline }: { todos
       )}
     </div>
   )
-}
+})
 
-export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) {
+export const ToolCard = memo(function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) {
   const running = tool.status === 'running' && isLast
   // Collapsed by default; click the header to expand the output
   const [open, setOpen] = useState(false)
@@ -529,10 +534,10 @@ export function ToolCard({ tool, isLast }: { tool: ToolItem; isLast: boolean }) 
       ) : null}
     </div>
   )
-}
+})
 
 /** Collapsible thought process (reasoning / <think>) block */
-export function ThoughtBlock({
+export const ThoughtBlock = memo(function ThoughtBlock({
   reasoning,
   streaming
 }: {
@@ -562,30 +567,23 @@ export function ThoughtBlock({
       )}
     </div>
   )
-}
+})
 
-export function UserBubble({ text, onCopy, onRevert, ts }: { text: string; onCopy?: () => void; onRevert?: () => void; ts?: number }) {
+export const UserBubble = memo(function UserBubble({ text, onRevert, ts }: { text: string; onRevert?: () => void; ts?: number }) {
   return (
     <div className="msg-row user">
       <div className="msg-stack user">
         <div className="user-bubble">
           <span className="user-text">{text}</span>
         </div>
-        {(ts || onCopy || onRevert) && (
+        {(ts || onRevert) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
             {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-            {(onCopy || onRevert) && (
+            {onRevert && (
               <span className="msg-actions">
-                {onCopy && (
-                  <button className="mini-btn" title="Copy" onClick={onCopy}>
-                    <CopyIcon size={12} />
-                  </button>
-                )}
-                {onRevert && (
-                  <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
-                    <UndoIcon size={12} />
-                  </button>
-                )}
+                <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
+                  <UndoIcon size={12} />
+                </button>
               </span>
             )}
           </span>
@@ -593,22 +591,21 @@ export function UserBubble({ text, onCopy, onRevert, ts }: { text: string; onCop
       </div>
     </div>
   )
-}
+})
 
-export function AssistantBubble({
+export const AssistantBubble = memo(function AssistantBubble({
   text,
   reasoning,
   streaming,
-  onCopy,
   ts
 }: {
   text: string
   reasoning?: string
   streaming: boolean
-  onCopy?: () => void
   ts?: number
 }) {
-  const extracted = extractThinkTags(text)
+  // Regex-extract  thinking blocks once per text — not once per parent render.
+  const extracted = useMemo(() => extractThinkTags(text), [text])
   const combinedReasoning = [reasoning?.trim(), extracted.reasoning?.trim()].filter(Boolean).join('\n\n')
   const mainText = extracted.text
   const isReasoningOnly = streaming && !mainText.trim() && Boolean(combinedReasoning || extracted.isThinking)
@@ -643,12 +640,12 @@ export function AssistantBubble({
             {streaming && !isReasoningOnly && <span className="caret" />}
           </div>
         )}
-        {(ts || onCopy) && mainText.trim() && (
+        {(ts || mainText.trim()) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
             {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-            {onCopy && (
+            {mainText.trim() && (
               <span className="msg-actions">
-                <button className="mini-btn" title="Copy" onClick={onCopy}>
+                <button className="mini-btn" title="Copy" onClick={() => copyText(mainText)}>
                   <CopyIcon size={12} />
                 </button>
               </span>
@@ -658,4 +655,4 @@ export function AssistantBubble({
       </div>
     </div>
   )
-}
+})

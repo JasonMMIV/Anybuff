@@ -407,6 +407,13 @@ export default function App() {
   settingsRef.current = settings
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const msgRefs = useRef<(HTMLDivElement | null)[]>([])
+  // Stable per-row ref: the index is read from data-index, so the callback
+  // identity never changes between renders. A fresh `(el) => { msgRefs[i] = el }`
+  // per render would force React to detach/reattach every row on every render
+  // and defeat the memoized row components below.
+  const setMsgRef = useCallback((el: HTMLDivElement | null) => {
+    if (el) msgRefs.current[Number(el.dataset.index)] = el
+  }, [])
 
   // Theme switch
   useEffect(() => {
@@ -1910,6 +1917,17 @@ export default function App() {
 
   const models = settings.providers
 
+  // Index of the last user message — computed once per render instead of a
+  // `chatItems.slice(i + 1).every(...)` scan per user row (O(n²) on long chats,
+  // re-run on every keystroke while the conversation is open).
+  let lastUserIdx = -1
+  for (let i = chatItems.length - 1; i >= 0; i--) {
+    if (chatItems[i].kind === 'user') {
+      lastUserIdx = i
+      break
+    }
+  }
+
   return (
     <div className="app">
       <header className="titlebar">
@@ -2184,13 +2202,12 @@ export default function App() {
                     <ErrorBoundary key={activeViewTaskId ?? historyTask?.id ?? 'chat'}>
                     {chatItems.map((item, i) => {
                       if (item.kind === 'user') {
-                        const isLastUser = chatItems.slice(i + 1).every((it) => it.kind !== 'user')
+                        const isLastUser = i === lastUserIdx
                         return (
-                          <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
+                          <div key={i} data-index={i} ref={setMsgRef}>
                             <UserBubble
                               text={item.text ?? ''}
                               ts={item.ts}
-                              onCopy={() => void navigator.clipboard?.writeText(item.text ?? '')}
                               onRevert={isLastUser && !viewRunning && !historyTask ? () => void requestRevert() : undefined}
                             />
                           </div>
@@ -2199,13 +2216,12 @@ export default function App() {
                       if (item.kind === 'assistant') {
                         const isStreaming = streaming && i === chatItems.length - 1
                         return (
-                          <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
+                          <div key={i} data-index={i} ref={setMsgRef}>
                             <AssistantBubble
                               text={item.text ?? ''}
                               reasoning={item.reasoning}
                               ts={item.ts}
                               streaming={isStreaming}
-                              onCopy={() => void navigator.clipboard?.writeText(item.text ?? '')}
                             />
                           </div>
                         )
@@ -2213,21 +2229,21 @@ export default function App() {
                       if (item.kind === 'tool' && item.tool) {
                         const isLastTool = i === chatItems.length - 1
                         return (
-                          <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
+                          <div key={i} data-index={i} ref={setMsgRef}>
                             <ToolCard tool={item.tool} isLast={isLastTool && running} />
                           </div>
                         )
                       }
                       if (item.kind === 'file-changes') {
                         return (
-                          <div key={i} ref={(el) => { msgRefs.current[i] = el }}>
+                          <div key={i} data-index={i} ref={setMsgRef}>
                             <FileChangesSummary files={item.files} />
                           </div>
                         )
                       }
                       if (item.kind === 'compaction') {
                         return (
-                          <div key={i} className="msg-row system" ref={(el) => { msgRefs.current[i] = el }}>
+                          <div key={i} className="msg-row system" data-index={i} ref={setMsgRef}>
                             <span className="system-bubble compaction-note">ℹ {item.text}</span>
                           </div>
                         )
@@ -2243,7 +2259,7 @@ export default function App() {
                         return null
                       }
                       return (
-                        <div key={i} className="msg-row system" ref={(el) => { msgRefs.current[i] = el }}>
+                        <div key={i} className="msg-row system" data-index={i} ref={setMsgRef}>
                           <span className="system-bubble"><span className="system-warn">⚠</span> {itemText}</span>
                         </div>
                       )
