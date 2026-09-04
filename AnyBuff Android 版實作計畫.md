@@ -1,7 +1,7 @@
 # AnyBuff Android 版實作計畫
 
 > **版本**:v1.1(2026-09-04 更新)
-> **狀態**:已核准。**Phase A 已於 2026-09-03 完成**(host-core 抽取 / WS 契約 / renderer shim / desktop 薄殼化全數落地並通過兩輪 code-review,詳見 §3.0 執行紀錄);ADR-21 已併入指南 §4、§1/ADR-2/§3/§6 同步修訂。**Phase B 引擎鏈路與第六/七輪行動端 UI 重構已於 2026-09-04 實裝**——實機鏈路(rootfs → Node → proot → host → WS → WebView renderer)全通;直立手機小螢幕 UI 全面重構完成(雙抽屜側欄+遮罩點擊關閉、單行精簡工具列、Settings 分類按鈕原地展開下拉選單、全介面 English、自訂 Agent 依附專案檢查與即時提示、ws-server 關閉卡住修復,詳見 §4.0 第六/七輪紀錄)。剩餘:M-C2 出包管線、code-review 暫緩事項(secrets 走 channel / key 同步 / SAF replyProxy)。
+> **狀態**:已核准。**Phase A 已於 2026-09-03 完成**(host-core 抽取 / WS 契約 / renderer shim / desktop 薄殼化全數落地並通過兩輪 code-review,詳見 §3.0 執行紀錄);ADR-21 已併入指南 §4、§1/ADR-2/§3/§6 同步修訂。**Phase B 引擎鏈路與第六/七輪行動端 UI 重構已於 2026-09-04 實裝**——實機鏈路(rootfs → Node → proot → host → WS → WebView renderer)全通;直立手機小螢幕 UI 全面重構完成(雙抽屜側欄+遮罩點擊關閉、單行精簡工具列、Settings 分類按鈕原地展開下拉選單、全介面 English、自訂 Agent 依附專案檢查與即時提示、ws-server 關閉卡住修復,詳見 §4.0 第六/七輪紀錄)。剩餘:M-C1 觸控細化(hover控制項轉touch/44px熱區/軟鍵盤與IME)、M-C2 出包管線、code-review 暫緩事項(secrets 走 channel / key 同步 / SAF replyProxy)。
 > **依據**:2026-09 三輪查證——(1) RikkaHub 原始碼級調研(workspace 模組、proot 打包、rootfs 安裝、授權結構);(2) Android 官方文件 2025-2026 現況(WebView 橋接、Keystore、FGS、Network Security Config、W^X);(3) 四方案比對(Flutter / React Native / Tauri 2 / Capacitor)。關鍵結論已內嵌各節,本計畫只記結論與工作項,不重複論證。
 > **授權紀律**:RikkaHub 為 **AGPL-3.0——僅採用其已公開驗證的架構模式,嚴禁抄襲任何程式碼**;proot 二進位為 GPL-2.0+,隨包散布義務見 §7 R2。
 
@@ -561,7 +561,7 @@ Android 的 `127.0.0.1` 為全裝置共享——其他 App 也能連你的埠。
 | M-B3 | WebView 整合 | 0.5–1 週 | ✅ AssetLoader + bridge + 注入實機跑通(第五輪 renderer 已走真 WS 模式) |
 | M-B4 | FGS + 生命週期 | 0.5 週 | 🟡 EngineService(specialUse)實接 SandboxManager;生命週期 edge(旋轉/背景/殺進程)待實機打磨 |
 | M-B5 | SAF picker + /upload | 0.5 週 | 🟡 SAF folder/files 實機可用(路徑改 guest `/workspace`/`/upload`);附件完整流(拷貝→guest 讀取→attach)待 round-6 驗證 |
-| M-C1 | 觸控 pass | 1 週 | ✅ 核心適配完成(2026-09-04 晚;直立手機 UI 全面重構:雙抽屜側欄+遮罩、單行精簡工具列、Settings 頂部下拉選單、單欄卡片、English UI、按鈕與觸控優化) |
+| M-C1 | 觸控 pass | 1 週 | 🟡 進行中(2026-09-04 晚;直立手機版面骨架已重構:雙抽屜側欄+遮罩、單行精簡工具列、Settings 分類下拉選單、English UI;hover控制項觸控化、44px熱區、軟鍵盤/IME待細化) |
 | M-C2 | CI 出包 | 0.5 週 | B*, C1(部分) |
 | M-C3 | 電池穩定性 | 0.5 週 | B4 |
 | M-D* | 裝置矩陣 / Play 評估 | 持續 | C |
