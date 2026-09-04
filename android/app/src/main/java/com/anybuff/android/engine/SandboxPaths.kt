@@ -14,12 +14,6 @@ class SandboxPaths(context: Context) {
     /** Host bundle + native assets expanded to (host bundle, rg, wasm). */
     val installDir = File(engineDir, "install")
 
-    /** Rootfs tarball staged for extraction. */
-    val rootfsArchive = File(engineDir, "rootfs.tar.gz")
-
-    /** Node tarball staged for extraction. */
-    val nodeArchive = File(engineDir, "node.tar.xz")
-
     /** Extraction staging, then rename-atomic swap into rootfs/node. */
     val rootfsStaging = File(engineDir, "rootfs.staging")
     val rootfs = File(engineDir, "rootfs")

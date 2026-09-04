@@ -74,9 +74,6 @@ function isSilentTool(name?: string): boolean {
 const DEFAULT_PROMPT_HEIGHT = 44
 const MAX_PROMPT_HEIGHT = 160
 
-// Browser preview mode: renders the full UI with mock data when Electron preload is absent
-const IS_PREVIEW = typeof window.AnyBuff === 'undefined'
-
 /** Human-readable banner text per failure reason. */
 function resumeBannerText(reason: string | undefined): string {
   switch (reason) {
@@ -281,6 +278,12 @@ function deriveStage(events: UiEvent[], running: boolean): string | null {
 export type ColorTheme = 'default' | 'black' | 'grey' | 'vermillion' | 'amber' | 'teal'
 
 export default function App() {
+  // Browser preview mode (no Electron preload and no WS host): the UI renders
+  // with mock data. Deliberately evaluated INSIDE the component — a module-level
+  // check would freeze before main.tsx assigns window.AnyBuff (ES import
+  // hoisting evaluates App.tsx first), which sent the Android WebView into demo
+  // mode (fake calculator.js attach, mocked state) even though a WS host existed.
+  const [isPreview] = useState(() => typeof window.AnyBuff === 'undefined')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('AnyBuff-theme')
     return saved === 'light' ? 'light' : 'dark'
@@ -308,7 +311,14 @@ export default function App() {
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [fileCandidates, setFileCandidates] = useState<string[]>([])
 
-  const [leftOpen, setLeftOpen] = useState(true)
+  // Narrow screens (phones) start with the sidebar collapsed; toggling it
+  // open pushes the main content (flex layout) rather than overlaying it.
+  const [leftOpen, setLeftOpen] = useState(
+    () =>
+      typeof window.matchMedia !== 'undefined' && window.matchMedia('(max-width: 640px)').matches
+        ? false
+        : true
+  )
   const [rightOpen, setRightOpen] = useState(false)
   const [rightTab, setRightTab] = useState<RightTab>('activity')
 
@@ -381,8 +391,8 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('AnyBuff-theme', theme)
-    if (!IS_PREVIEW) window.AnyBuff.setTheme(theme)
-  }, [theme])
+    if (!isPreview) window.AnyBuff.setTheme(theme)
+  }, [theme, isPreview])
 
   // Color theme switch
   useEffect(() => {
@@ -392,26 +402,26 @@ export default function App() {
 
   // Window maximize state (frameless title bar)
   useEffect(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     void window.AnyBuff.windowIsMaximized().then(setIsMaximized)
     const unsub = window.AnyBuff.onWindowMaximizeChange(setIsMaximized)
     return unsub
-  }, [])
+  }, [isPreview])
 
 
 
   const reloadPage = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     window.AnyBuff.windowReload()
   }, [])
 
   const forceReloadPage = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     window.AnyBuff.windowForceReload()
   }, [])
 
   const zoomIn = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     setZoomLevel((prev) => {
       const next = Math.min(prev + 10, 300)
       window.AnyBuff.setZoomFactor(next / 100)
@@ -420,7 +430,7 @@ export default function App() {
   }, [])
 
   const zoomOut = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     setZoomLevel((prev) => {
       const next = Math.max(prev - 10, 30)
       window.AnyBuff.setZoomFactor(next / 100)
@@ -429,13 +439,13 @@ export default function App() {
   }, [])
 
   const resetZoom = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     setZoomLevel(100)
     window.AnyBuff.setZoomFactor(1)
   }, [])
 
   const toggleFullScreen = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     window.AnyBuff.windowToggleFullScreen()
   }, [])
 
@@ -465,7 +475,7 @@ export default function App() {
 
   // Initial state
   useEffect(() => {
-    if (IS_PREVIEW) {
+    if (isPreview) {
       setCwd('~/demo-project')
       setProjectName('demo-project')
       setBranch('main')
@@ -560,12 +570,12 @@ export default function App() {
       })
       setProjects(state.settings.projects ?? [])
     })()
-  }, [])
+  }, [isPreview])
 
   // Project name, git branch, @-file candidates, skills
   useEffect(() => {
     if (!cwd) return
-    if (IS_PREVIEW) {
+    if (isPreview) {
       setFileCandidates(['src/calculator.js', 'src/index.js', 'README.md', 'package.json'])
       return
     }
@@ -573,7 +583,7 @@ export default function App() {
     void window.AnyBuff.gitBranch(cwd).then(setBranch)
     void window.AnyBuff.listFiles(cwd).then((t) => setFileCandidates(flattenTree(t as TreeNode[], cwd)))
     void window.AnyBuff.listSkills(cwd).then((s) => setSkills(s as SkillInfo[]))
-  }, [cwd])
+  }, [cwd, isPreview])
 
   // Auto-scroll to bottom — paused while the user has scrolled up to read
   // history; scrolling back near the bottom resumes following the stream.
@@ -597,7 +607,7 @@ export default function App() {
 
   // SDK events → UI
   useEffect(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     const unsubscribe = window.AnyBuff.onEvent((event) => {
       /* ── Global lifecycle events (apply regardless of visible conversation) ── */
 
@@ -906,16 +916,16 @@ export default function App() {
       setEvents((prev) => [...prev.slice(-299), event])
     })
     return unsubscribe
-  }, [])
+  }, [isPreview])
 
   // Keep chatItems in a ref for event callbacks
   const chatItemsRef = useRef(chatItems)
   chatItemsRef.current = chatItems
 
   const refreshProjects = useCallback(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     void window.AnyBuff.listProjects().then((p) => setProjects(p as ProjectRecord[]))
-  }, [])
+  }, [isPreview])
 
   const openAgentWizard = useCallback(() => {
     if (!cwd) {
@@ -927,7 +937,7 @@ export default function App() {
   }, [cwd])
 
   const selectFolder = useCallback(async () => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     const path = await window.AnyBuff.selectFolder()
     if (path) {
       setCwd(path as string)
@@ -956,7 +966,7 @@ export default function App() {
       for (const token of skillTokens) {
         const name = token.replace('/skill:', '')
         const skill = skills.find((s) => s.name === name)
-        if (skill && skill.path && !IS_PREVIEW) {
+        if (skill && skill.path && !isPreview) {
           const res = (await window.AnyBuff.readSkillFile(skill.path)) as { ok: boolean; content?: string }
           if (res.ok) {
             lines.push(`I invoke the following skill: ${name}\n\n${res.content}`)
@@ -984,7 +994,7 @@ export default function App() {
         lines.push('## Attached files')
         for (const att of allAttachments) {
           const full = att.isRelative ? absPath(cwd, att.path) : att.path
-          if (IS_PREVIEW) {
+          if (isPreview) {
             lines.push(`\n<file path="${att.path}">\n(preview content)\n</file>`)
             continue
           }
@@ -1098,7 +1108,7 @@ export default function App() {
         : (builtPrompt ?? bakedBody)
 
       if (running) {
-        if (IS_PREVIEW) return
+        if (isPreview) return
         // A run is in flight → park the message in the execution queue instead
         // of rejecting it; the queue drains automatically when the turn ends.
         setQueuedMessages((prev) => [
@@ -1134,14 +1144,14 @@ export default function App() {
       setResumeInfo(null)
       // New conversations get their id up front so streamed events route to
       // this view immediately; existing conversations reuse their id.
-      if (!currentTaskRef.current && !IS_PREVIEW) {
+      if (!currentTaskRef.current && !isPreview) {
         const newId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
         setViewTask(newId)
       }
       // Optimistic: this view owns the run until events say otherwise.
-      if (!IS_PREVIEW) setRunningTaskId(currentTaskRef.current)
+      if (!isPreview) setRunningTaskId(currentTaskRef.current)
 
-    if (IS_PREVIEW) {
+    if (isPreview) {
       const reply =
         'Got it! I will analyze the project first, then make the changes.\n\n```js\nconsole.log(\'hello\')\n```\n\nDoes this look right?'
       let i = 0
@@ -1223,7 +1233,7 @@ export default function App() {
   // run sees the in-flight state immediately.
   const drainingQueueRef = useRef(false)
   useEffect(() => {
-    if (IS_PREVIEW) return
+    if (isPreview) return
     if (running || drainingQueueRef.current) return
     const next = queuedMessages[0]
     if (!next) return
@@ -1238,7 +1248,7 @@ export default function App() {
     setApprovalRequest(null)
     setStopping(true)
     setNotice('Stop requested. Waiting for agent to safely halt...')
-    if (!IS_PREVIEW) void window.AnyBuff.abort()
+    if (!isPreview) void window.AnyBuff.abort()
   }, [])
 
   // Resume an interrupted run from its preserved state (no re-appending the user prompt).
@@ -1251,7 +1261,7 @@ export default function App() {
     setNotice(null)
     setResumeInfo(null)
     setChatItems((prev) => [...prev, { kind: 'assistant', text: '' }])
-    if (IS_PREVIEW) {
+    if (isPreview) {
       setRunning(false)
       setStopping(false)
       setNotice('Resume is available in the Electron app (preview mode does not persist run state).')
@@ -1347,7 +1357,7 @@ export default function App() {
     // Undo the file changes in parallel so a large exchange doesn't stall the UI.
     let okCount = 0
     const errors: string[] = []
-    if (!IS_PREVIEW) {
+    if (!isPreview) {
       if (files.length > 0) setNotice(`Reverting ${files.length} file(s)…`)
       const results = await Promise.all(
         files.map(async (f) => {
@@ -1367,7 +1377,7 @@ export default function App() {
     // so the conversation KEEPS its earlier context. The task record survives —
     // resending the edited message continues this same conversation.
     const taskId = currentTaskRef.current
-    if (taskId && !IS_PREVIEW) {
+    if (taskId && !isPreview) {
       if (lastUserText) {
         const res = (await window.AnyBuff.trimTaskLastTurn({ taskId, userText: lastUserText })) as {
           ok: boolean
@@ -1400,7 +1410,7 @@ export default function App() {
   }, [pendingRevert, cwd, refreshProjects])
 
   const openFileByPath = useCallback(async (path: string, name: string) => {
-    if (IS_PREVIEW) {
+    if (isPreview) {
       setSelectedFile({ path, content: '// simulated file content (preview mode)', name })
       return
     }
@@ -1420,7 +1430,7 @@ export default function App() {
 
   const handleCloseSettings = useCallback(() => {
     setShowSettings(false)
-    if (!IS_PREVIEW) {
+    if (!isPreview) {
       void window.AnyBuff.getState().then((state) => {
         const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[]; hasProvider?: boolean } }).settings
         if (s) {
@@ -1435,7 +1445,7 @@ export default function App() {
   const onSettingsSaved = useCallback(
     (saved: { hasProvider: boolean }) => {
       setHasProvider(saved.hasProvider)
-      if (!IS_PREVIEW) {
+      if (!isPreview) {
         void window.AnyBuff.getState().then((state) => {
           const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[] } }).settings
           if (s) {
@@ -1450,7 +1460,7 @@ export default function App() {
 
   const onModelChange = useCallback((m: string) => {
     setSettings((prev) => ({ ...prev, activeModel: m }))
-    if (!IS_PREVIEW) {
+    if (!isPreview) {
       void window.AnyBuff.saveSettings({
         providers: settingsRef.current.providers,
         activeModel: m,
@@ -1464,7 +1474,7 @@ export default function App() {
 
   const onReasoningChange = useCallback((r: string) => {
     setSettings((prev) => ({ ...prev, reasoningEffort: r }))
-    if (!IS_PREVIEW) {
+    if (!isPreview) {
       void window.AnyBuff.saveSettings({
         providers: settingsRef.current.providers,
         activeModel: settingsRef.current.activeModel,
@@ -1478,7 +1488,7 @@ export default function App() {
 
   // Attachments (dialog picker + drag & drop both land here as absolute paths)
   const onAttachFilesPaths = useCallback(async (paths: string[]) => {
-    if (IS_PREVIEW) {
+    if (isPreview) {
       // No preload bridge in browser preview — attach by display name only.
       setAttachments((prev) => {
         const next = [...prev]
@@ -1508,7 +1518,7 @@ export default function App() {
   }, [])
 
   const onAttachFiles = useCallback(async () => {
-    if (IS_PREVIEW) {
+    if (isPreview) {
       setAttachments((prev) => [...prev, { path: 'src/calculator.js', name: 'calculator.js', isDir: false, isRelative: true }])
       return
     }
@@ -1541,7 +1551,7 @@ export default function App() {
     }
     const q = searchQuery.trim().toLowerCase()
     const timer = setTimeout(async () => {
-      if (IS_PREVIEW) {
+      if (isPreview) {
         // Preview mode: search through preview projects' tasks (user and assistant only)
         const out: SearchResult[] = []
         for (const proj of projects) {
@@ -1651,7 +1661,7 @@ export default function App() {
   const onOpenProject = useCallback(
     async (path: string) => {
       if (path === cwd) return
-      if (IS_PREVIEW) return
+      if (isPreview) return
       // Switching projects only changes the view — a running task keeps going
       // in the background and its history stays persisted in the main process.
       setCwd(path)
@@ -1681,7 +1691,7 @@ export default function App() {
       // the per-turn attachment strip here too — attachments never follow the
       // user across conversations.
       setAttachments([])
-      if (IS_PREVIEW) {
+      if (isPreview) {
         setViewTask(task.id)
         setChatItems((task.messages ?? []) as ChatItem[])
         setHistoryTask({ id: task.id, prompt: task.prompt })
@@ -1737,7 +1747,7 @@ export default function App() {
   const onRenameTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord, newPrompt: string) => {
       if (!newPrompt || newPrompt === task.prompt) return
-      if (!IS_PREVIEW) {
+      if (!isPreview) {
         await window.AnyBuff.renameTask({ taskId: task.id, newPrompt })
       }
       setProjects((prev) =>
@@ -1758,7 +1768,7 @@ export default function App() {
 
   const onDeleteTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord) => {
-      if (!IS_PREVIEW) {
+      if (!isPreview) {
         const res = (await window.AnyBuff.deleteTask(task.id)) as { ok: boolean; error?: string }
         if (!res?.ok) {
           setNotice(res?.error ?? 'Failed to delete the task.')
@@ -1783,7 +1793,7 @@ export default function App() {
 
   const onRemoveProject = useCallback(
     async (project: ProjectRecord) => {
-      if (!IS_PREVIEW) {
+      if (!isPreview) {
         const res = (await window.AnyBuff.removeProject(project.path)) as { ok: boolean; error?: string }
         if (!res?.ok) {
           setNotice(res?.error ?? 'Failed to remove the project.')
@@ -1806,7 +1816,7 @@ export default function App() {
         if (!cwd) return
         const abs = absPath(cwd, r.text)
         const name = basenameOf(r.text)
-        if (IS_PREVIEW) {
+        if (isPreview) {
           setSelectedFile({ path: abs, content: '// simulated file content (preview mode)', name })
         } else {
           void window.AnyBuff.readFile(abs).then((res) => {
@@ -1926,7 +1936,7 @@ export default function App() {
           </nav>
         </div>
         <div className="titlebar-drag-region" />
-        {!IS_PREVIEW && (
+        {!isPreview && (
           <div className="window-controls">
             <button className="window-control-btn" onClick={() => window.AnyBuff.windowMinimize()} title="Minimize">
               <WindowMinimizeIcon size={12} />

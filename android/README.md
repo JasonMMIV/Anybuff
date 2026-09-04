@@ -35,8 +35,9 @@ This directory is intentionally **not** part of the bun workspace (plan §4).
 | `.../crypto/` | Keystore AES/GCM vault (M-B2) |
 | `.../bridge/` | WebView ↔ native message channel (M-B3) |
 | `app/src/main/assets/www/` | renderer web build (synced from `desktop/dist-web`) |
-| `app/src/main/jniLibs/arm64-v8a/` | proot `libproot_exec.so` / `libproot_loader.so` (exec surface) |
-| `app/src/main/assets/engine/` | downloaded runtime: rootfs tar, node tar.xz, host bundle |
+| `app/src/main/jniLibs/arm64-v8a/` | proot `libproot_exec.so` / `libproot_loader.so` / `libandroid-shmem.so` (exec surface) |
+| `app/src/main/assets/runtime/` | bundled engine runtime: ubuntu-base rootfs (.tgz) + Node.js tar.xz + manifest.json (SHA256-pinned by `scripts/fetch-engine-runtime.sh`) |
+| `engine-libs/` | `libtalloc.so.2` (proot dependency; packaged as an asset — AGP jniLibs only accepts `lib*.so` names) |
 | `scripts/` | build & fetch helpers |
 
 ## Build
@@ -47,10 +48,13 @@ bun run build:sdk
 bun --cwd packages/host-core run build     # emits dist/anybuff-host.mjs
 bun --cwd desktop run build:web            # emits desktop/dist-web/ (renderer)
 
-# 2. place proot binaries (once; see scripts/fetch-proot.sh)
-#    → app/src/main/jniLibs/arm64-v8a/libproot_exec.so, libproot_loader.so
+# 2. fetch the bundled engine payloads (once; pinned + SHA256-verified)
+#    → jniLibs proot binaries, engine-libs/libtalloc.so.2,
+#      assets/runtime/ (ubuntu-base rootfs .tgz + Node.js tar.xz + manifest.json)
+bash scripts/fetch-proot.sh
+bash scripts/fetch-engine-runtime.sh
 
-# 3. assemble
+# 3. assemble (~117MB APK: the engine runtime ships inside — no first-boot downloads)
 cd android
 ./gradlew :app:assembleDebug
 ```

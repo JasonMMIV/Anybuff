@@ -19,6 +19,7 @@ import java.io.IOException
  *   libproot_exec.so --root-id --sysvipc --link2symlink --kill-on-exit
  *       --kernel-release=<fake> -r <rootfs> -w /workspace
  *       -b <hostdata>:/hostdata -b <engineAssets>:/engine-assets
+ *       -b <nodeInstall>:/opt/node
  *       -b /dev -b /dev/urandom:/dev/random
  *       -b <proc-fakes>:/proc/stat -b <proc-fakes>:/proc/loadavg …
  *       -b <empty>:/sys/fs/selinux
@@ -26,8 +27,11 @@ import java.io.IOException
  *       /usr/bin/env -i HOME=/root PATH=… TERM=xterm-256color …
  *       <node> <host bundle>
  *
- * The host bundle (anybuff-host.mjs) is the self-contained @codebuff/host-core
- * WS server. Env vars ANYBUFF_HOST_* configure data dirs / secrets / rg path.
+ * NOTE: `env -i` wipes the environment INSIDE the guest, so the host's
+ * ANYBUFF_HOST_* settings must be passed as env -i ARGUMENTS (after -i), not
+ * merely set on the Android-side ProcessBuilder env. Getting this wrong
+ * leaves the host with no data dir / wasm path / secrets — the exact class of
+ * silent boot failure the 2026-09-03 device test surfaced.
  */
 class ProotRunner(private val context: Context, private val paths: SandboxPaths) {
 
@@ -36,6 +40,9 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         private const val PROOT_EXEC = "libproot_exec.so"
         private const val PROOT_LOADER = "libproot_loader.so"
         private const val FAKE_KERNEL = "6.1.0-android"
+
+        /** Only origin allowed to open the host WS (the WebView origin). */
+        private const val HOST_ORIGINS = "https://appassets.androidplatform.net"
     }
 
     /** Result of launching the host process. */
@@ -45,10 +52,29 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         val token: String,
     )
 
-    /** The node binary inside the installed rootfs. */
+    /**
+     * The node runtime is installed to engineDir/node and BOUND into the guest
+     * at /opt/node (a full copy into the rootfs would double ~190MB of device
+     * storage for zero gain). The first command in the chain is the ROOTFS's
+     * /usr/bin/env (coreutils), which applies env -i KEY=VALUE then execs
+     * $guestNodeDir/bin/node → /engine-assets/anybuff-host.mjs.
+     *
+     * Legacy fallback kept only for trees installed by the very first device
+     * build (node copied into rootfs /usr/local). The marker check re-installs
+     * node on any SHA mismatch, so this path goes away after one clean boot.
+     */
     private val guestNode: File
-        get() = File(paths.rootfs, "usr/bin/node").takeIf { it.exists() }
-            ?: File(paths.rootfs, "usr/local/bin/node")
+        get() = File(paths.node, "bin/node").takeIf { it.exists() }
+            ?: File(paths.rootfs, "usr/local/bin/node") // pre-/opt-bind layout
+
+    /**
+     * Guest path where node is bound (must match guestNode + -b bind below).
+     * /opt is a real directory in the ubuntu-base rootfs (mode 0755), so the
+     * bind lands on an existing dir instead of a proot-created virtual one —
+     * avoids the bind-to-missing-dir corner where proot <5 emulates the dir
+     * with a symlink that trips --link2symlink handling.
+     */
+    private val guestNodeDir = "/opt/node"
 
     /** Find proot libs (nativeLibraryDir). Throws when absent. */
     private fun prootLib(name: String): File {
@@ -63,18 +89,61 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         return f
     }
 
-    /** Environment the guest shell sees (hygienic — no host secrets/env leak). */
-    private fun guestEnv(): Map<String, String> {
-        // env -i semantics: start from nothing; only these are passed.
+    /**
+     * libtalloc.so.2 ships as an asset (AGP jniLibs drops non-lib*.so files).
+     * Stage it to filesDir so the Android linker can find it via
+     * LD_LIBRARY_PATH — dlopen maps PROT_EXEC pages which is allowed on
+     * app_data_file (unlike execve, which SELinux denies on targetSdk 29+).
+     * Written via tmp+rename so a mid-copy kill can never poison the cache
+     * (a corrupt .so would give proot an unexplainable linker error forever).
+     */
+    private fun stageTallocLib(): File {
+        val dir = File(paths.engineDir, "libs")
+        dir.mkdirs()
+        val dest = File(dir, "libtalloc.so.2")
+        if (!dest.exists()) {
+            val tmp = File(dir, "libtalloc.so.2.tmp")
+            context.assets.open("engine/lib/libtalloc.so.2").use { input ->
+                tmp.outputStream().use { input.copyTo(it) }
+            }
+            if (!tmp.renameTo(dest)) {
+                tmp.delete()
+                throw IOException("failed to stage libtalloc.so.2")
+            }
+        }
+        return dir
+    }
+
+    /**
+     * Environment the guest shell sees — passed as `env -i` arguments so they
+     * survive the wipe (hygienic: nothing else from the host leaks in).
+     * ANYBUFF_HOST_* values are passed to the host process this way because
+     * env -i would otherwise strip them (see class doc).
+     */
+    private fun guestEnv(hostSecretsJson: String): Map<String, String> {
         return mapOf(
             "HOME" to "/root",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            // /opt/node/bin first: node is bound at /opt/node (not copied into
+            // the rootfs), so guest shells must find it on PATH.
+            "PATH" to "/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "TERM" to "xterm-256color",
             "LANG" to "C.UTF-8",
             "LC_ALL" to "C.UTF-8",
             "CI" to "true",
             "NO_COLOR" to "1",
             "PAGER" to "cat",
+            // Host process env (reaches the guest via env -i args).
+            "ANYBUFF_HOST_DATA_DIR" to "/hostdata",
+            "ANYBUFF_HOST_HOME" to "/root",
+            "ANYBUFF_HOST_APPDATA" to "/hostdata",
+            "ANYBUFF_HOST_ORIGINS" to HOST_ORIGINS,
+            "ANYBUFF_HOST_RG_PATH" to "/engine-assets/vendor/ripgrep/arm64-linux/rg",
+            // tree-sitter.wasm lives beside the host bundle in engine-assets;
+            // the bundle reads CODEBUFF_TREE_SITTER_WASM_PATH (verified against
+            // the dist bundle's resolveTreeSitterWasm).
+            "CODEBUFF_TREE_SITTER_WASM_PATH" to "/engine-assets/tree-sitter.wasm",
+            "CODEBUFF_WASM_DIR" to "/engine-assets/wasm",
+            "ANYBUFF_HOST_SECRETS" to hostSecretsJson,
         )
     }
 
@@ -100,6 +169,12 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         val hostBundle = File(installDir, "anybuff-host.mjs")
         if (!hostBundle.exists()) throw IOException("host bundle missing at ${hostBundle.path}")
 
+        // web-tree-sitter must be importable inside the guest: node resolves
+        // it from <bundleDir>/node_modules/...
+        val wtsDir = File(installDir, "node_modules/web-tree-sitter")
+        if (!File(wtsDir, "tree-sitter.js").exists()) {
+            throw IOException("web-tree-sitter module missing at ${wtsDir.path}")
+        }
 
         // Pre-generate /proc fakes.
         val procFakes = paths.procFakes
@@ -124,6 +199,8 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
             "-w", "/workspace",
             "-b", "${wsWorkspace.absolutePath}:/workspace",
             "-b", "${installDir.absolutePath}:/engine-assets",
+            "-b", "${paths.node.absolutePath}:$guestNodeDir",
+            "-b", "${paths.hostData.absolutePath}:/hostdata",
             "-b", "${uploadDir.absolutePath}:/upload",
             "-b", "${skillsDir.absolutePath}:/skills",
             "-b", "/dev",
@@ -136,31 +213,37 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
             "-b", "/sys",
             "/usr/bin/env", "-i",
         )
-        for ((k, v) in guestEnv()) {
+        // Guest env as env -i arguments — these survive the wipe and reach the
+        // host process (data dir, wasm paths, origins, secrets; see class doc).
+        // NOTE: pass the SECRETS JSON (one-shot handshake), not the hostData
+        // path — the previous build passed the wrong argument here, which left
+        // ANYBUFF_HOST_SECRETS unusable (and only visible via the drains).
+        for ((k, v) in guestEnv(hostSecretsJson)) {
             command += "$k=$v"
         }
         command += listOf(
-            "/usr/local/bin/node",
+            "$guestNodeDir/bin/node",
             "/engine-assets/anybuff-host.mjs",
         )
 
         val pb = ProcessBuilder(command)
         pb.redirectErrorStream(true)
-        // Host env — NOTE: secrets only in memory via the ONE env var, and the
-        // host deletes it from its own process.env immediately (ADR-12).
+        // Android-side (pre-proot) environment. This env is NOT what the guest
+        // sees — proot is the process being exec'd here, so this env must only
+        // carry what PROOT ITSELF needs: its loader path, tmp dir, and the
+        // LD_LIBRARY_PATH so its NEEDED libs (libtalloc.so.2, libandroid-shmem.so)
+        // resolve from nativeLibraryDir. Everything meant for the guest goes as
+        // env -i arguments instead (see guestEnv), because env -i wipes it.
         val hostEnv = pb.environment()
         hostEnv.clear()
-        hostEnv["ANYBUFF_HOST_DATA_DIR"] = paths.hostData.absolutePath
-        hostEnv["ANYBUFF_HOST_HOME"] = "/root"
-        hostEnv["ANYBUFF_HOST_ORIGINS"] = "https://appassets.androidplatform.net"
-        hostEnv["ANYBUFF_HOST_RG_PATH"] = "/engine-assets/vendor/ripgrep/arm64-linux/rg"
-        hostEnv["ANYBUFF_HOST_WASM_DIR"] = "/engine-assets/wasm"
-        hostEnv["ANYBUFF_HOST_TS_WASM"] = "/engine-assets/wasm/tree-sitter.wasm"
-        hostEnv["ANYBUFF_HOST_SECRETS"] = hostSecretsJson
         hostEnv["PROOT_LOADER"] = prootLib(PROOT_LOADER).absolutePath
-        hostEnv["PROOT_TMP_DIR"] = paths.engineDir.absolutePath + "/proot-tmp"
-        hostEnv["TMPDIR"] = "/tmp"
-        hostEnv["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+        val prootTmp = File(paths.engineDir, "proot-tmp").apply { mkdirs() }
+        hostEnv["PROOT_TMP_DIR"] = prootTmp.absolutePath
+        // libtalloc.so.2 (asset-staged, see stageTallocLib) + nativeLibraryDir
+        // (libandroid-shmem.so) — both must be visible to the proot process.
+        hostEnv["LD_LIBRARY_PATH"] =
+            stageTallocLib().absolutePath + ":" + context.applicationInfo.nativeLibraryDir
+        hostEnv["TMPDIR"] = prootTmp.absolutePath
 
         Log.i(TAG, "Starting host: ${command.joinToString(" ")}")
         val process = pb.start()

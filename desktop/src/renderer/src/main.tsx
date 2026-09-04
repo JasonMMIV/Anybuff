@@ -46,6 +46,11 @@ if (wsUrl) {
     updateRepo: g.__ANYBUFF_UPDATE_REPO__,
     native: g.__ANYBUFF_NATIVE__,
   }) as never
+
+  // WebView / browser-shell host (no Electron frame): the desktop titlebar
+  // chrome (File/Edit/View menus, min/max/close) is irrelevant here — mark the
+  // document so CSS can hide it. Electron never enters this branch.
+  document.documentElement.classList.add('is-webview')
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

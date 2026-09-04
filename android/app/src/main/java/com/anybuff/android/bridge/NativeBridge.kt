@@ -195,11 +195,15 @@ class NativeBridge(
         val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(activity, uri)
             ?: return null
         val name = docFile.name ?: "folder"
-        val destRoot = File(activity.filesDir, "upload").apply { mkdirs() }
+        // A picked FOLDER becomes a project workspace: it must live under the
+        // dir ProotRunner binds at /workspace (filesDir/workspaces/workspace),
+        // and the returned path must be the GUEST path — a host-absolute
+        // /data/user/0/... path does not exist inside the chrooted host.
+        val destRoot = File(activity.filesDir, "workspaces/workspace").apply { mkdirs() }
         val dest = File(destRoot, name)
         if (dest.exists()) dest.deleteRecursively()
         copyDocTree(docFile, dest)
-        dest.absolutePath
+        "/workspace/$name"
     } catch (e: Exception) {
         Log.e(TAG, "copyTreeToUpload failed", e)
         null
@@ -218,12 +222,15 @@ class NativeBridge(
 
     private fun copyToUpload(uri: Uri): String? = try {
         val name = queryDisplayName(uri) ?: "upload_${System.currentTimeMillis()}"
-        val destRoot = File(activity.filesDir, "upload").apply { mkdirs() }
+        // Picked FILES are agent attachments: copy under the dir ProotRunner
+        // binds at /upload (filesDir/workspaces/upload) and return the GUEST
+        // path, which is what the sandboxed host can actually read.
+        val destRoot = File(activity.filesDir, "workspaces/upload").apply { mkdirs() }
         val dest = File(destRoot, name)
         activity.contentResolver.openInputStream(uri)?.use { input ->
             dest.outputStream().use { input.copyTo(it) }
         }
-        dest.absolutePath
+        "/upload/$name"
     } catch (e: Exception) {
         Log.e(TAG, "copyToUpload failed", e)
         null

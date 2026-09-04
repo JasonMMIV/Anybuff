@@ -12,7 +12,11 @@ local.properties
 *.iml
 .kotlin/
 
-# Engine runtime artifacts downloaded at first boot (never committed)
-app/src/main/assets/engine/
+# Engine runtime payloads — pinned + SHA256-verified by scripts/fetch-*.sh
+# (never committed: GPL proot binaries + large distro/Node tarballs; NOTICE covers redistribution)
+app/src/main/assets/runtime/
+engine-libs/
 app/src/main/jniLibs/*/libproot_*.so
+app/src/main/jniLibs/*/libtalloc.so*
+app/src/main/jniLibs/*/libandroid-shmem.so
 app/src/main/assets/www/

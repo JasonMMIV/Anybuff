@@ -418,19 +418,8 @@ textarea {
   border-right-color: transparent;
 }
 
-/* 響應式：小螢幕自動收起側邊欄 */
-@media (max-width: 500px) {
-  .sidebar {
-    position: absolute;
-    z-index: 100;
-    height: 100%;
-    box-shadow: 4px 0 24px var(--shadow-lg);
-  }
-  
-  .sidebar.closed {
-    transform: translateX(-100%);
-  }
-}
+/* 響應式：小螢幕側邊欄沿用桌面 flex 推擠（不 overlay）——覆寫規則見檔尾
+   「Mobile / WebView overrides」區塊（2026-09-04 實機回饋 #4/#6）。 */
 
 .sidebar-top {
   padding: 12px 10px 0;
@@ -6813,4 +6802,88 @@ select option {
 .mcp-mode-btn.active {
   background: var(--accent);
   color: #fff;
+}
+
+/* ─── Mobile / WebView overrides (2026-09-04 Android device feedback) ───── */
+
+/* The File/Edit/View menus + min/max/close are desktop frame chrome. main.tsx
+   adds `html.is-webview` when it mounts the WS-backed host (Android WebView,
+   browser ?ws= preview), so hide the whole 32px titlebar — the app's own
+   topbar keeps all navigation. */
+.is-webview .titlebar {
+  display: none;
+}
+
+/* Edge-to-edge Android: 100vh can include space behind the system bars and
+   pushes the last row off-screen (#6). dvh tracks the visible viewport. */
+.app {
+  height: 100dvh;
+}
+
+/* Keep content clear of the status / gesture bars (viewport-fit=cover). */
+.is-webview .app-body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 窄螢幕側邊欄：與桌面相同的 flex 推擠（舊 absolute-overlay 已刪除）。
+   開關時把主內容往右推而非覆蓋（回饋 #4）；寬度上限避免在 360px 手機上
+   佔滿畫面。App 於窄螢幕預設收起（App.tsx matchMedia）。 */
+@media (max-width: 500px) {
+  .sidebar {
+    width: min(232px, 78vw);
+  }
+}
+
+@media (max-width: 640px) {
+  .branch-badge {
+    display: none;
+  }
+
+  .composer-wrap {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  /* Right panel opened on a phone: never exceed the screen width. */
+  .activity-panel.right-content-panel {
+    width: min(276px, 92vw);
+  }
+
+  /* Settings becomes a top-strip layout so the form keeps full width. */
+  .settings-page {
+    flex-direction: column;
+  }
+
+  .settings-page-sidebar {
+    width: 100%;
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .settings-page-sidebar-title {
+    display: none;
+  }
+
+  .settings-modal-nav {
+    flex-direction: row;
+    flex: 1;
+  }
+
+  .settings-modal-nav-item {
+    flex-shrink: 0;
+  }
+
+  /* Keep the form area scrollable under the column (top-strip) layout. */
+  .settings-page-main {
+    flex: 1;
+    min-height: 0;
+  }
 }

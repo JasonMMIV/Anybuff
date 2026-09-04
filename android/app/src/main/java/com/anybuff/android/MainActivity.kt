@@ -126,14 +126,25 @@ class MainActivity : ComponentActivity() {
 
     private fun showBootError(error: String) {
         runOnUiThread {
-            // Load a minimal inline error (the renderer may not be reachable).
+            // Inline error page (renderer may not be reachable). The retry
+            // button calls back into the activity via the JS bridge object —
+            // location.reload() cannot re-run the Kotlin boot path.
+            webView.addJavascriptInterface(BootErrorJs { bootEngine() }, "__AnyBuffBoot")
             webView.loadDataWithBaseURL(
                 null,
                 "<html><body style='background:#0F1115;color:#e5e7eb;font-family:sans-serif;padding:24px'>" +
                     "<h2>引擎啟動失敗</h2><p style='color:#9ca3af'>$error</p>" +
-                    "<p><button onclick='location.reload()'>重試</button></p></body></html>",
+                    "<p><button onclick='__AnyBuffBoot.retry()'>重試</button></p></body></html>",
                 "text/html", "utf-8", null,
             )
+        }
+    }
+
+    /** JS entry point for the boot-error page's retry button. */
+    private inner class BootErrorJs(private val onRetry: () -> Unit) {
+        @android.webkit.JavascriptInterface
+        fun retry() {
+            runOnUiThread { onRetry() }
         }
     }
 

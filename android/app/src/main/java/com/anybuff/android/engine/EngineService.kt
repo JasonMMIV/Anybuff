@@ -55,16 +55,15 @@ class EngineService : Service() {
         return START_STICKY
     }
 
-    /** Boot the engine if it is not already running (M-B1 fills this in). */
+    /** Boot the engine if it is not already running (M-B1 filled in). */
     private fun ensureEngineRunning() {
-        // TODO(M-B1): SandboxManager.ensureStarted { wsUrl, token ->
-        //   publish ws url + token to the WebView via the bridge, then
-        //   MainActivity navigates the renderer at it.
-        // }
+        // The actual boot is owned by MainActivity (it needs the WebView to
+        // publish the WS URL to). The service's job is lifecycle + notification
+        // only; if the activity is gone there is nothing to boot for.
     }
 
     private fun stopEngine() {
-        // TODO(M-B1): SandboxManager.stop() — kill the proot process tree.
+        SandboxManager.get(this).stop()
     }
 
     private fun startAsForeground() {
@@ -93,7 +92,7 @@ class EngineService : Service() {
         return Notification.Builder(this, AnyBuffApp.CHANNEL_ENGINE)
             .setContentTitle(getString(R.string.engine_notification_title))
             .setContentText("Agent engine sandbox")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .addAction(
