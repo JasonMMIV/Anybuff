@@ -333,9 +333,8 @@ interface Props {
 }
 
 const COLOR_THEMES: { id: ColorTheme; label: string; previewColor: string; description: string }[] = [
-  { id: 'default', label: 'Slate Blue', previewColor: '#7a9bf0', description: 'Desaturated classic slate blue with subtle cool undertones' },
+  { id: 'default', label: 'Pure Blue', previewColor: '#3b82f6', description: 'Vibrant pure sapphire blue with deep, crisp high-contrast surfaces' },
   { id: 'black', label: 'Obsidian Black', previewColor: '#0a0a0a', description: 'Monochrome pure black and white high-contrast theme' },
-  { id: 'grey', label: 'Neutral Grey', previewColor: '#a1a1aa', description: 'Balanced un-tinted neutral steel and zinc tones' },
   { id: 'vermillion', label: 'Vermillion', previewColor: '#ef4444', description: 'Energetic crimson and scarlet with warm ruby-tinted undertones' },
   { id: 'amber', label: 'Amber', previewColor: '#f59e0b', description: 'Warm amber gold with rich honey and terracotta undertones' },
   { id: 'teal', label: 'Teal', previewColor: '#14b8a6', description: 'Clean modern cyan-teal with high-tech marine undertones' }

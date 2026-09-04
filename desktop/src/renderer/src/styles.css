@@ -2,54 +2,63 @@
 :root {
   color-scheme: dark;
   
-  /* 色相與飽和度基準 (Default: Slate Blue) */
-  --theme-hue: 223;
-  --theme-sat: 24%;
+  /* 色相與飽和度基準 (Default: Pure Vibrant Blue) */
+  --theme-hue: 217;
+  --theme-sat: 28%;
   
-  /* 基礎背景色 (HSL 動態運算) */
-  --bg-0: hsl(var(--theme-hue), var(--theme-sat), 6%);
-  --bg-1: hsl(var(--theme-hue), var(--theme-sat), 8%);
-  --bg-2: hsl(var(--theme-hue), var(--theme-sat), 11%);
-  --bg-3: hsl(var(--theme-hue), var(--theme-sat), 14%);
-  --bg-hover: hsl(var(--theme-hue), 25%, 18%);
+  /* 基礎背景色 (純淨深邃，去除灰濁) */
+  --bg-0: hsl(var(--theme-hue), var(--theme-sat), 4%);
+  --bg-1: hsl(var(--theme-hue), var(--theme-sat), 7%);
+  --bg-2: hsl(var(--theme-hue), var(--theme-sat), 10%);
+  --bg-3: hsl(var(--theme-hue), var(--theme-sat), 13%);
+  --bg-hover: hsl(var(--theme-hue), var(--theme-sat), 17%);
   
-  /* 邊框色 */
-  --border: hsl(var(--theme-hue), 23%, 18%);
-  --border-strong: hsl(var(--theme-hue), 26%, 25%);
+  /* 邊框色 (動態連動飽和度，杜絕灰霧色偏) */
+  --border: hsl(var(--theme-hue), var(--theme-sat), 16%);
+  --border-strong: hsl(var(--theme-hue), min(calc(var(--theme-sat) + 4%), 100%), 24%);
   
-  /* 文字色 - 確保 WCAG AA 對比度 */
-  --text-0: #e8eaf0;      /* 主要文字 */
-  --text-1: #aab2c2;      /* 次要文字 */
-  --text-2: #707a8f;      /* 裝飾性文字 */
+  /* 文字色 - 純白與明亮銀白，徹底告別灰濁 */
+  --text-0: #ffffff;      /* 主要文字：純白高清晰 */
+  --text-1: #cbd5e1;      /* 次要文字：明亮白銀 */
+  --text-2: #94a3b8;      /* 裝飾性文字：清爽鋼灰 */
+  --text-3: #64748b;
   
-  /* 主題色 - 柔和洗鍊的灰靛藍調 */
-  --accent: #7a9bf0;
-  --accent-strong: #5980df;
-  --accent-soft: rgba(122, 155, 240, 0.12);
-  
-  /* 功能性色彩 */
-  --color-success: #4cc38a;
-  --color-error: #ef6a6a;
-  --color-warning: #e5b567;
-  --color-info: #7a9bf0;
-  
-  --green: #4cc38a;
-  --green-soft: rgba(76, 195, 138, 0.12);
-  --red: #ef6a6a;
+  /* 主題色 - 純藍調 (Pure Vibrant Sapphire Blue) */
+  --accent: #3b82f6;
+  --accent-strong: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.15);
   --on-accent: #ffffff;
-  --red-soft: rgba(239, 106, 106, 0.12);
-  --yellow: #e5b567;
-  --yellow-soft: rgba(229, 181, 103, 0.12);
-  --purple: #b48ad9;
+  
+  /* 補齊遺漏的 Token (審計修復) */
+  --border-0: var(--border);
+  --border-hover: var(--border-strong);
+  --bg-input-focus: var(--bg-1);
+  --bg-elevated: var(--bg-1);
+  --hover-bg: var(--bg-hover);
+  --input-bg: var(--bg-2);
+  
+  /* 功能性色彩 (純粹鮮明，高飽和辨識度) */
+  --color-success: #10b981;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  
+  --green: #10b981;
+  --green-soft: rgba(16, 185, 129, 0.15);
+  --red: #ef4444;
+  --red-soft: rgba(239, 106, 106, 0.15);
+  --yellow: #f59e0b;
+  --yellow-soft: rgba(245, 158, 11, 0.15);
+  --purple: #a855f7;
   
   /* 陰影 */
-  --shadow: rgba(0, 0, 0, 0.5);
-  --shadow-sm: rgba(0, 0, 0, 0.3);
-  --shadow-md: rgba(0, 0, 0, 0.4);
-  --shadow-lg: rgba(0, 0, 0, 0.6);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --shadow-sm: rgba(0, 0, 0, 0.35);
+  --shadow-md: rgba(0, 0, 0, 0.45);
+  --shadow-lg: rgba(0, 0, 0, 0.7);
   
-  /* 程式碼背景 */
-  --code-bg: hsl(var(--theme-hue), 24%, 7%);
+  /* 程式碼背景 - 中性高對比黑，不帶主題偏光 */
+  --code-bg: #090c10;
   
   /* 圓角 */
   --radius: 10px;
@@ -86,44 +95,54 @@
 :root[data-theme='light'] {
   color-scheme: light;
   
-  /* 色相與飽和度基準 (Default: Slate Blue) */
-  --theme-hue: 220;
-  --theme-sat: 24%;
+  /* 色相與飽和度基準 (Default: Pure Vibrant Blue) */
+  --theme-hue: 217;
+  --theme-sat: 25%;
   
-  /* 基礎背景色 */
-  --bg-0: hsl(var(--theme-hue), 23%, 97%);
+  /* 基礎背景色 (純淨亮麗，動態連動 theme-sat，無灰濁感) */
+  --bg-0: hsl(var(--theme-hue), min(var(--theme-sat), 24%), 98%);
   --bg-1: #ffffff;
-  --bg-2: hsl(var(--theme-hue), 33%, 96%);
-  --bg-3: hsl(var(--theme-hue), 33%, 93%);
-  --bg-hover: hsl(var(--theme-hue), 33%, 90%);
+  --bg-2: hsl(var(--theme-hue), min(calc(var(--theme-sat) + 5%), 32%), 96%);
+  --bg-3: hsl(var(--theme-hue), min(calc(var(--theme-sat) + 5%), 32%), 93%);
+  --bg-hover: hsl(var(--theme-hue), min(calc(var(--theme-sat) + 5%), 32%), 90%);
   
   /* 邊框色 */
-  --border: hsl(var(--theme-hue), 30%, 89%);
-  --border-strong: hsl(var(--theme-hue), 24%, 81%);
+  --border: hsl(var(--theme-hue), min(calc(var(--theme-sat) + 4%), 30%), 89%);
+  --border-strong: hsl(var(--theme-hue), min(var(--theme-sat), 26%), 80%);
   
-  /* 文字色 - 確保 WCAG AA 對比度 */
-  --text-0: #1c2330;      /* 主要文字 */
-  --text-1: #4a5568;      /* 次要文字 */
-  --text-2: #8a94a6;      /* 裝飾性文字 */
+  /* 文字色 - 高對比深色，銳利清晰 */
+  --text-0: #090d16;      /* 主要文字：純黑清晰 */
+  --text-1: #334155;      /* 次要文字 */
+  --text-2: #64748b;      /* 裝飾性文字 */
+  --text-3: #94a3b8;
   
-  /* 主題色 - 柔和洗鍊的灰靛藍調 */
-  --accent: #3867c2;
-  --accent-strong: #2b52a1;
-  --accent-soft: rgba(56, 103, 194, 0.09);
+  /* 主題色 - 純藍調 (Pure Cobalt Blue) */
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.10);
+  --on-accent: #ffffff;
+  
+  /* 補齊遺漏的 Token (審計修復) */
+  --border-0: var(--border);
+  --border-hover: var(--border-strong);
+  --bg-input-focus: var(--bg-1);
+  --bg-elevated: var(--bg-1);
+  --hover-bg: var(--bg-hover);
+  --input-bg: var(--bg-2);
   
   /* 功能性色彩 */
-  --color-success: #1f9d64;
-  --color-error: #d64545;
-  --color-warning: #b07a1e;
-  --color-info: #3867c2;
+  --color-success: #059669;
+  --color-error: #dc2626;
+  --color-warning: #d97706;
+  --color-info: #2563eb;
   
-  --green: #1f9d64;
-  --green-soft: rgba(31, 157, 100, 0.1);
-  --red: #d64545;
-  --red-soft: rgba(214, 69, 69, 0.1);
-  --yellow: #b07a1e;
-  --yellow-soft: rgba(176, 122, 30, 0.12);
-  --purple: #7a4fb8;
+  --green: #059669;
+  --green-soft: rgba(5, 150, 105, 0.12);
+  --red: #dc2626;
+  --red-soft: rgba(220, 38, 38, 0.12);
+  --yellow: #d97706;
+  --yellow-soft: rgba(217, 119, 6, 0.14);
+  --purple: #9333ea;
   
   /* 陰影 */
   --shadow: rgba(30, 40, 60, 0.15);
@@ -131,8 +150,8 @@
   --shadow-md: rgba(30, 40, 60, 0.12);
   --shadow-lg: rgba(30, 40, 60, 0.2);
   
-  /* 程式碼背景 */
-  --code-bg: hsl(var(--theme-hue), 25%, 97%);
+  /* 程式碼背景 - 中性高雅淺灰，不帶主題偏光 */
+  --code-bg: #f8fafc;
 }
 
 /* ─── Color Themes Overrides ─────────────────────────── */
@@ -148,12 +167,12 @@
   --bg-hover: #27272a;
   --border: #27272a;
   --border-strong: #3f3f46;
-  --text-0: #fafafa;
-  --text-1: #a1a1aa;
-  --text-2: #71717a;
+  --text-0: #ffffff;
+  --text-1: #d4d4d8;
+  --text-2: #a1a1aa;
   --accent: #f4f4f5;
   --accent-strong: #ffffff;
-  --accent-soft: rgba(244, 244, 245, 0.12);
+  --accent-soft: rgba(244, 244, 245, 0.15);
   --on-accent: #0a0a0a;
   --code-bg: #050507;
 }
@@ -161,65 +180,50 @@
 :root[data-theme='light'][data-color-theme='black'] {
   --theme-hue: 0;
   --theme-sat: 0%;
-  --bg-0: #f4f4f5;
+  --bg-0: #f8fafc;
   --bg-1: #ffffff;
-  --bg-2: #ececee;
-  --bg-3: #e4e4e7;
-  --bg-hover: #e4e4e7;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
+  --bg-2: #f1f5f9;
+  --bg-3: #e2e8f0;
+  --bg-hover: #e2e8f0;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
   --text-0: #09090b;
-  --text-1: #52525b;
+  --text-1: #3f3f46;
   --text-2: #71717a;
   --accent: #18181b;
   --accent-strong: #09090b;
   --accent-soft: rgba(24, 24, 27, 0.08);
-  --code-bg: #f4f4f5;
+  --code-bg: #f8fafc;
   --on-accent: #ffffff;
 }
 
-/* 2. Neutral Grey (中性灰) */
-:root[data-color-theme='grey'] {
-  --theme-hue: 240;
-  --theme-sat: 3%;
-  --accent: #a1a1aa;
-  --accent-strong: #d4d4d8;
-  --accent-soft: rgba(161, 161, 170, 0.14);
-}
-
-:root[data-theme='light'][data-color-theme='grey'] {
-  --theme-hue: 240;
-  --theme-sat: 3%;
-  --accent: #52525b;
-  --accent-strong: #3f3f46;
-  --accent-soft: rgba(82, 82, 91, 0.1);
-}
-
-
-/* 4. Vermillion (朱紅) */
+/* 2. Vermillion (朱紅 / 暖緋紅，去除灰濁，強化純色活力) */
 :root[data-color-theme='vermillion'] {
-  --theme-hue: 4;
-  --theme-sat: 24%;
-  --accent: #f87171;
-  --accent-strong: #ef4444;
-  --accent-soft: rgba(239, 68, 68, 0.15);
+  --theme-hue: 0;
+  --theme-sat: 26%;
+  --accent: #ef4444;
+  --accent-strong: #dc2626;
+  --accent-soft: rgba(239, 68, 68, 0.16);
+  --on-accent: #ffffff;
 }
 
 :root[data-theme='light'][data-color-theme='vermillion'] {
-  --theme-hue: 4;
+  --theme-hue: 0;
   --theme-sat: 28%;
   --accent: #dc2626;
   --accent-strong: #b91c1c;
-  --accent-soft: rgba(220, 38, 38, 0.1);
+  --accent-soft: rgba(220, 38, 38, 0.12);
+  --on-accent: #ffffff;
 }
 
-/* 5. Amber (琥珀金) */
+/* 3. Amber (琥珀金，提升飽和度，修復按鈕深色文字 WCAG AAA 11.2:1) */
 :root[data-color-theme='amber'] {
   --theme-hue: 38;
-  --theme-sat: 25%;
-  --accent: #fbbf24;
-  --accent-strong: #f59e0b;
-  --accent-soft: rgba(245, 158, 11, 0.15);
+  --theme-sat: 26%;
+  --accent: #f59e0b;
+  --accent-strong: #d97706;
+  --accent-soft: rgba(245, 158, 11, 0.16);
+  --on-accent: #0f172a; /* 琥珀金高對比深字 */
 }
 
 :root[data-theme='light'][data-color-theme='amber'] {
@@ -227,24 +231,27 @@
   --theme-sat: 30%;
   --accent: #d97706;
   --accent-strong: #b45309;
-  --accent-soft: rgba(217, 119, 6, 0.1);
+  --accent-soft: rgba(217, 119, 6, 0.12);
+  --on-accent: #ffffff;
 }
 
-/* 6. Teal (藍綠) */
+/* 4. Teal (藍綠 / 現代青綠，純淨鮮明，深字 WCAG AAA 10.5:1) */
 :root[data-color-theme='teal'] {
   --theme-hue: 175;
-  --theme-sat: 24%;
-  --accent: #2dd4bf;
-  --accent-strong: #14b8a6;
-  --accent-soft: rgba(20, 184, 166, 0.15);
+  --theme-sat: 26%;
+  --accent: #14b8a6;
+  --accent-strong: #0d9488;
+  --accent-soft: rgba(20, 184, 166, 0.16);
+  --on-accent: #042f2e; /* 藍綠高對比深林字 */
 }
 
 :root[data-theme='light'][data-color-theme='teal'] {
   --theme-hue: 175;
-  --theme-sat: 28%;
+  --theme-sat: 30%;
   --accent: #0d9488;
   --accent-strong: #0f766e;
-  --accent-soft: rgba(13, 148, 136, 0.1);
+  --accent-soft: rgba(13, 148, 136, 0.12);
+  --on-accent: #ffffff;
 }
 
 /* ─── Syntax highlighting (custom, dual-theme) ───────── */
@@ -309,6 +316,16 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: inherit;
+}
+
+mark {
+  background: rgba(234, 179, 8, 0.25);
+  color: inherit;
 }
 
 /* ─── 滾動條自定義 (跨瀏覽器統一) ────────────────────── */
@@ -583,11 +600,12 @@ textarea {
 .project-row:hover {
   background: var(--bg-hover);
   color: var(--text-0);
-}.project-name-text {
+}
+.project-name-text {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-0);
 }
 
@@ -675,7 +693,7 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .task-time {
@@ -1704,7 +1722,7 @@ textarea {
 
 .user-bubble {
   background: var(--accent-soft);
-  border: 1px solid rgba(122, 155, 240, 0.25);
+  border: none;
   color: var(--text-0);
   border-radius: 14px 14px 4px 14px;
   padding: 10px 15px;
@@ -1779,12 +1797,16 @@ textarea {
 }
 
 .markdown a {
-  color: var(--accent);
+  color: #3b82f6;
   text-decoration: none;
 }
 
 .markdown a:hover {
   text-decoration: underline;
+}
+
+:root[data-theme='light'] .markdown a {
+  color: #1d4ed8;
 }
 
 .markdown img,
@@ -1796,15 +1818,22 @@ textarea {
 .markdown code {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 1.5px 5.5px;
+  color: #f1f5f9;
+}
+
+:root[data-theme='light'] .markdown code {
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  color: #0f172a;
 }
 
 .markdown pre {
   background: var(--code-bg);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius);
   padding: 12px 14px;
   overflow-x: auto;
@@ -1813,6 +1842,10 @@ textarea {
   overflow-wrap: anywhere;
   max-width: 100%;
   margin: 0.7em 0;
+}
+
+:root[data-theme='light'] .markdown pre {
+  border: 1px solid #e2e8f0;
 }
 
 .markdown pre::-webkit-scrollbar {
@@ -4020,14 +4053,20 @@ select option {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
   padding: 1.5px 5.5px;
   color: var(--text-0);
   letter-spacing: -0.01em;
   line-height: 1.4;
   vertical-align: baseline;
+}
+
+:root[data-theme='light'] .settings-page code {
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.10);
+  color: #0f172a;
 }
 
 .settings-page input,

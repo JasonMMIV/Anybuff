@@ -275,7 +275,7 @@ function deriveStage(events: UiEvent[], running: boolean): string | null {
   return 'Working'
 }
 
-export type ColorTheme = 'default' | 'black' | 'grey' | 'vermillion' | 'amber' | 'teal'
+export type ColorTheme = 'default' | 'black' | 'vermillion' | 'amber' | 'teal'
 
 export default function App() {
   // Browser preview mode (no Electron preload and no WS host): the UI renders
@@ -290,6 +290,7 @@ export default function App() {
   })
   const [colorTheme, setColorTheme] = useState<ColorTheme>(() => {
     const saved = localStorage.getItem('AnyBuff-color-theme') as ColorTheme | null
+    if (saved === ('grey' as unknown)) return 'default'
     return saved || 'default'
   })
   const [cwd, setCwd] = useState<string | null>(null)
