@@ -8,7 +8,8 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
-  TrashIcon
+  TrashIcon,
+  XIcon
 } from './Icons'
 
 export interface SearchResult {
@@ -38,6 +39,7 @@ export interface ProjectRecord {
 
 interface SidebarProps {
   open: boolean
+  onClose?: () => void
   // nav
   onNewTask: () => void
   searchOpen: boolean
@@ -136,8 +138,27 @@ export default function Sidebar(props: SidebarProps) {
     })
   return (
     <aside className={`sidebar ${props.open ? 'open' : 'closed'}`}>
+      <div className="sidebar-mobile-header">
+        <span className="sidebar-title">AnyBuff</span>
+        <button
+          type="button"
+          className="icon-btn sidebar-close-btn"
+          onClick={props.onClose}
+          title="Close sidebar"
+        >
+          <XIcon size={16} />
+        </button>
+      </div>
+
       <div className="sidebar-top">
-        <button className="nav-item new-task-btn" onClick={props.onNewTask} title="New task">
+        <button
+          className="nav-item new-task-btn"
+          onClick={() => {
+            props.onNewTask()
+            props.onClose?.()
+          }}
+          title="New task"
+        >
           <NotePenIcon size={16} />
           <span>New Task</span>
         </button>
@@ -167,7 +188,10 @@ export default function Sidebar(props: SidebarProps) {
                   <button
                     key={r.key ?? `${r.taskId ?? 'current'}-${r.index}-${i}`}
                     className="search-result"
-                    onClick={() => props.onSearchJump(r)}
+                    onClick={() => {
+                      props.onSearchJump(r)
+                      props.onClose?.()
+                    }}
                     title={r.taskPrompt ? `${r.projectName ? `${r.projectName} • ` : ''}${r.taskPrompt}` : undefined}
                   >
                     <div className="search-result-row">
@@ -203,7 +227,7 @@ export default function Sidebar(props: SidebarProps) {
           const isOpen = expandedProject === p.path
           const isCurrent = p.path === props.currentProjectPath
 
-  return (
+          return (
             <div key={p.path} className={`project-item ${isCurrent ? 'current' : ''}`}>
               <div
                 className="project-row"
@@ -234,9 +258,26 @@ export default function Sidebar(props: SidebarProps) {
                     e.stopPropagation()
                     props.onOpenProject(p.path)
                     props.onNewTask()
+                    props.onClose?.()
                   }}
                 >
                   <PlusIcon size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="row-more-btn"
+                  title="Project options"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    const menuWidth = 130
+                    const menuHeight = 44
+                    const x = Math.min(rect.right, window.innerWidth - menuWidth - 8)
+                    const y = Math.min(rect.bottom + 4, window.innerHeight - menuHeight - 8)
+                    setProjectContextMenu({ x, y, project: p })
+                  }}
+                >
+                  ···
                 </button>
               </div>
               {isOpen && (
@@ -274,10 +315,21 @@ export default function Sidebar(props: SidebarProps) {
                         />
                       </div>
                     ) : (
-                      <button
+                      <div
                         key={t.id}
+                        role="button"
+                        tabIndex={0}
                         className={`task-row ${props.activeTaskId === t.id ? 'active' : ''}`}
-                        onClick={() => props.onOpenTask(p, t)}
+                        onClick={() => {
+                          props.onOpenTask(p, t)
+                          props.onClose?.()
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            props.onOpenTask(p, t)
+                            props.onClose?.()
+                          }
+                        }}
                         onContextMenu={(e) => {
                           e.preventDefault()
                           e.stopPropagation()
@@ -294,7 +346,23 @@ export default function Sidebar(props: SidebarProps) {
                         ) : null}
                         <span className="task-text">{t.prompt}</span>
                         <span className="task-time">{timeAgo(t.updatedAt ?? t.createdAt)}</span>
-                      </button>
+                        <button
+                          type="button"
+                          className="row-more-btn"
+                          title="Task options"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            const menuWidth = 130
+                            const menuHeight = 74
+                            const x = Math.min(rect.right, window.innerWidth - menuWidth - 8)
+                            const y = Math.min(rect.bottom + 4, window.innerHeight - menuHeight - 8)
+                            setContextMenu({ x, y, project: p, task: t })
+                          }}
+                        >
+                          ···
+                        </button>
+                      </div>
                     )
                   )}
                 </div>
@@ -305,7 +373,13 @@ export default function Sidebar(props: SidebarProps) {
       </div>
 
       <div className="sidebar-bottom">
-        <button className="nav-item" onClick={props.onSettings}>
+        <button
+          className="nav-item"
+          onClick={() => {
+            props.onSettings()
+            props.onClose?.()
+          }}
+        >
           <SettingsIcon size={15} />
           <span>Settings</span>
         </button>

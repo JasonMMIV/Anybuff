@@ -5,6 +5,7 @@ import {
   AppIcon,
   BoltIcon,
   CheckCircleIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   EditIcon,
   GitHubIcon,
@@ -330,6 +331,7 @@ interface Props {
   colorTheme: ColorTheme
   onSelectColorTheme: (theme: ColorTheme) => void
   initialTab?: SettingsTab
+  cwd?: string | null
 }
 
 const COLOR_THEMES: { id: ColorTheme; label: string; previewColor: string; description: string }[] = [
@@ -400,15 +402,36 @@ export default function SettingsModal({
   onToggleTheme,
   colorTheme,
   onSelectColorTheme,
-  initialTab
+  initialTab,
+  cwd: propCwd
 }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
+  const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false)
+  const categoryDropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (initialTab) {
       setActiveTab(initialTab)
     }
   }, [initialTab])
+
+  useEffect(() => {
+    if (!categoryDropdownOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (categoryDropdownRef.current && !categoryDropdownRef.current.contains(e.target as Node)) {
+        setCategoryDropdownOpen(false)
+      }
+    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCategoryDropdownOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [categoryDropdownOpen])
   const [providers, setProviders] = useState<ProviderDraft[]>([])
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
   const [fetchedModelsMap, setFetchedModelsMap] = useState<Record<string, string[]>>({})
@@ -426,6 +449,7 @@ export default function SettingsModal({
   const [routeDraftAgent, setRouteDraftAgent] = useState('')
   const [routeDraftModel, setRouteDraftModel] = useState('')
   const [cwd, setCwd] = useState('')
+  const activeCwd = propCwd !== undefined ? (propCwd || '') : cwd
   const [localAgents, setLocalAgents] = useState<LocalAgentItem[]>([])
   const [localAgentErrors, setLocalAgentErrors] = useState<{ agentId: string; message: string }[]>([])
   const [loadingAgents, setLoadingAgents] = useState(false)
@@ -435,6 +459,15 @@ export default function SettingsModal({
   const [deletingAgent, setDeletingAgent] = useState<{ id: string; displayName: string; filePath: string } | null>(null)
   const [deletingInProgress, setDeletingInProgress] = useState(false)
   const [agentActionNotice, setAgentActionNotice] = useState<string | null>(null)
+
+  const handleCreateAgentClick = () => {
+    if (!activeCwd) {
+      setAgentEditError('Please open a project folder before creating a custom agent.')
+      return
+    }
+    setAgentEditError(null)
+    onCreateAgent()
+  }
   // Web Search settings tab
   const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProviderId>('duckduckgo')
   const [webSearchHasKey, setWebSearchHasKey] = useState<Record<string, boolean>>({})
@@ -1418,7 +1451,83 @@ export default function SettingsModal({
 
   return (
     <div className="settings-page">
-      {/* Left Category Sidebar */}
+      {/* Mobile Topbar with Category Dropdown */}
+      <header className="settings-mobile-topbar">
+        <button
+          type="button"
+          className="settings-back-btn"
+          onClick={() => {
+            if (editingProviderId) {
+              setEditingProviderId(null)
+              setError(null)
+              setTestMsg(null)
+            } else {
+              onClose()
+            }
+          }}
+          title={editingProviderId ? 'Back to providers' : 'Back to workspace'}
+        >
+          <ChevronLeftIcon size={16} />
+        </button>
+
+        <div className="settings-category-selector" ref={categoryDropdownRef}>
+          <button
+            type="button"
+            className="settings-category-btn"
+            onClick={() => setCategoryDropdownOpen((v) => !v)}
+            aria-haspopup="listbox"
+            aria-expanded={categoryDropdownOpen}
+          >
+            <span className="settings-category-icon">
+              {NAV_ITEMS.find((n) => n.id === activeTab)?.icon}
+            </span>
+            <span className="settings-category-name">
+              {editingProviderId
+                ? 'Provider Configuration'
+                : (NAV_ITEMS.find((n) => n.id === activeTab)?.label ?? 'Settings')}
+            </span>
+            <ChevronDownIcon size={12} className={`settings-category-chevron ${categoryDropdownOpen ? 'open' : ''}`} />
+          </button>
+
+          {categoryDropdownOpen && (
+            <div className="settings-category-dropdown" role="listbox">
+              {NAV_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="option"
+                  aria-selected={activeTab === item.id && !editingProviderId}
+                  className={`settings-category-dropdown-item ${activeTab === item.id && !editingProviderId ? 'active' : ''}`}
+                  onClick={() => {
+                    setError(null)
+                    setActiveTab(item.id)
+                    setEditingProviderId(null)
+                    if (item.id === 'mcp') setMcpNotice(null)
+                    setCategoryDropdownOpen(false)
+                  }}
+                >
+                  <span className="sc-item-icon">{item.icon}</span>
+                  <span className="sc-item-label">{item.label}</span>
+                  {activeTab === item.id && !editingProviderId && (
+                    <span className="sc-item-check">✓</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <button
+          type="button"
+          className="icon-btn settings-close-btn"
+          onClick={onClose}
+          title="Close Settings"
+        >
+          <XIcon size={16} />
+        </button>
+      </header>
+
+      {/* Left Category Sidebar (desktop) */}
       <aside className="settings-page-sidebar">
         <div className="settings-page-sidebar-header">
           <button type="button" className="settings-back-btn" onClick={onClose} title="Back to workspace">
@@ -2106,15 +2215,15 @@ export default function SettingsModal({
                 <div className="settings-section-actions">
                   <button
                     className="btn ghost small"
-                    onClick={onCreateAgent}
-                    title="Create a custom agent"
+                    onClick={handleCreateAgentClick}
+                    title={activeCwd ? 'Create a custom agent' : 'Requires an open project folder'}
                   >
                     <PlusIcon size={12} /> Create Agent
                   </button>
                   <button
                     className="btn ghost small"
                     onClick={() => void refreshLocalAgents()}
-                    disabled={loadingAgents}
+                    disabled={loadingAgents || !activeCwd}
                     title="Reload agents from .agents directories"
                   >
                     <RefreshIcon size={12} className={loadingAgents ? 'spin-icon' : ''} />
@@ -2125,6 +2234,12 @@ export default function SettingsModal({
               <p className="hint">
                 Custom agents are loaded from <code>.agents/</code> in your project or home directory. Files can be <code>.ts</code>, <code>.js</code>, <code>.mjs</code> or <code>.cjs</code> and are merged over the bundled agents.
               </p>
+
+              {!activeCwd && (
+                <div className="test-msg fail" style={{ marginBottom: '8px' }}>
+                  No project folder opened. Open a project folder first to create custom agents.
+                </div>
+              )}
 
               {agentActionNotice && (
                 <div className="test-msg success" style={{ marginBottom: '8px' }}>
@@ -2140,8 +2255,12 @@ export default function SettingsModal({
 
               {localAgents.length === 0 && !loadingAgents ? (
                 <div className="settings-empty-card">
-                  <p>No custom agents found in <code>.agents/</code>.</p>
-                  <button className="btn accent small" onClick={onCreateAgent}>
+                  <p>
+                    {activeCwd
+                      ? 'No custom agents found in .agents/.'
+                      : 'No project folder opened. Open a project folder to create or manage custom agents.'}
+                  </p>
+                  <button className="btn accent small" onClick={handleCreateAgentClick}>
                     <PlusIcon size={12} /> Create Custom Agent
                   </button>
                 </div>
@@ -3197,27 +3316,29 @@ function McpKvEditor({
       {entries.length === 0 && <p className="hint">No entries.</p>}
       {entries.map(([k, v]) => (
         <div key={k} className="mcp-kv-row">
-          <input
-            className="mcp-kv-key"
-            value={k}
-            onChange={(e) => onRename(k, e.target.value)}
-            placeholder="Key"
-            spellCheck={false}
-          />
-          <input
-            className="mcp-kv-value"
-            type={v === MCP_SECRET_PLACEHOLDER ? 'password' : 'text'}
-            // The stored secret never reaches the renderer: the sentinel value
-            // stays in the draft (so save keeps it) while the field shows an
-            // empty password input with an explanatory placeholder. Typing a
-            // replacement value swaps in the new plaintext to be re-encrypted.
-            value={v === MCP_SECRET_PLACEHOLDER ? '' : v}
-            onChange={(e) => onValue(k, e.target.value)}
-            placeholder={v === MCP_SECRET_PLACEHOLDER ? '•••••••• (stored — type to replace)' : 'value or $ENV_VAR'}
-            spellCheck={false}
-          />
-          <button type="button" className="mini-btn danger" onClick={() => onRemove(k)} title="Remove row">
-            <XIcon size={11} />
+          <div className="mcp-kv-inputs">
+            <input
+              className="mcp-kv-key"
+              value={k}
+              onChange={(e) => onRename(k, e.target.value)}
+              placeholder="Key"
+              spellCheck={false}
+            />
+            <input
+              className="mcp-kv-value"
+              type={v === MCP_SECRET_PLACEHOLDER ? 'password' : 'text'}
+              // The stored secret never reaches the renderer: the sentinel value
+              // stays in the draft (so save keeps it) while the field shows an
+              // empty password input with an explanatory placeholder. Typing a
+              // replacement value swaps in the new plaintext to be re-encrypted.
+              value={v === MCP_SECRET_PLACEHOLDER ? '' : v}
+              onChange={(e) => onValue(k, e.target.value)}
+              placeholder={v === MCP_SECRET_PLACEHOLDER ? '•••••••• (stored — type to replace)' : 'value or $ENV_VAR'}
+              spellCheck={false}
+            />
+          </div>
+          <button type="button" className="mini-btn danger mcp-kv-del-btn" onClick={() => onRemove(k)} title="Remove row">
+            <XIcon size={12} />
           </button>
         </div>
       ))}

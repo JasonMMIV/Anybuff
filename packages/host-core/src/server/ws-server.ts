@@ -193,8 +193,19 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
           new Promise<void>((done) => {
             broadcastUnsub?.()
             broadcastUnsub = null
-            for (const client of wss.clients) client.terminate()
-            wss.close(() => httpServer.close(() => done()))
+            for (const client of wss.clients) {
+              try { client.terminate() } catch {}
+            }
+            if (typeof (httpServer as unknown as { closeAllConnections?: () => void }).closeAllConnections === 'function') {
+              try { (httpServer as unknown as { closeAllConnections: () => void }).closeAllConnections() } catch {}
+            }
+            const timer = setTimeout(() => done(), 800)
+            wss.close(() => {
+              httpServer.close(() => {
+                clearTimeout(timer)
+                done()
+              })
+            })
           }),
       })
     }

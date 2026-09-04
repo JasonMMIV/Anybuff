@@ -542,6 +542,7 @@ export default function Composer(props: ComposerProps) {
             disabled={running}
             size="small"
             placement="top"
+            className="mode-select"
             options={[
               { value: 'chat', label: 'Chat', icon: <ChatIcon size={13} /> },
               { value: 'default', label: 'Build', icon: <HammerIcon size={13} /> },
@@ -575,6 +576,7 @@ export default function Composer(props: ComposerProps) {
             disabled={running}
             size="small"
             placement="top"
+            className="reasoning-select"
             options={getReasoningOptionsForModel(activeModel).map((r) => ({
               value: r,
               label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')

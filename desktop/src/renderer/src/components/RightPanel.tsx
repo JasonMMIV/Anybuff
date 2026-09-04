@@ -15,6 +15,7 @@ interface RightPanelProps {
   events: UiEvent[]
   onCloseFile: () => void
   running: boolean
+  onClose?: () => void
 }
 
 /**
@@ -22,18 +23,30 @@ interface RightPanelProps {
  * the content renders inside the right panel itself.
  */
 export default function RightPanel(props: RightPanelProps) {
-  const { open, tab, onTab, cwd, selectedFile, onSelectFile, onOpenFile, events, onCloseFile, running } = props
+  const { open, tab, onTab, cwd, selectedFile, onSelectFile, onOpenFile, events, onCloseFile, running, onClose } = props
 
   return (
     <aside className={`activity-panel right-content-panel ${open ? 'open' : 'closed'}`}>
-      <div className="tabs">
-        <button className={`tab ${tab === 'files' ? 'active' : ''}`} onClick={() => onTab('files')}>
-          File Tree
-        </button>
-        <button className={`tab ${tab === 'activity' ? 'active' : ''}`} onClick={() => onTab('activity')}>
-          Activity & Diff
-          {running && <span className="rail-dot" />}
-        </button>
+      <div className="tabs right-panel-tabs">
+        <div className="tabs-left">
+          <button className={`tab ${tab === 'files' ? 'active' : ''}`} onClick={() => onTab('files')}>
+            File Tree
+          </button>
+          <button className={`tab ${tab === 'activity' ? 'active' : ''}`} onClick={() => onTab('activity')}>
+            Activity & Diff
+            {running && <span className="rail-dot" />}
+          </button>
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            className="icon-btn right-panel-close-btn"
+            onClick={onClose}
+            title="Close panel"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {tab === 'files' && cwd &&

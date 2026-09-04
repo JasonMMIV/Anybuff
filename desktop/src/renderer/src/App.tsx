@@ -323,6 +323,26 @@ export default function App() {
   const [rightOpen, setRightOpen] = useState(false)
   const [rightTab, setRightTab] = useState<RightTab>('activity')
 
+  const toggleLeft = useCallback(() => {
+    setLeftOpen((v) => {
+      const next = !v
+      if (next && typeof window.matchMedia !== 'undefined' && window.matchMedia('(max-width: 640px)').matches) {
+        setRightOpen(false)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleRight = useCallback(() => {
+    setRightOpen((v) => {
+      const next = !v
+      if (next && typeof window.matchMedia !== 'undefined' && window.matchMedia('(max-width: 640px)').matches) {
+        setLeftOpen(false)
+      }
+      return next
+    })
+  }, [])
+
   const [showSettings, setShowSettings] = useState(false)
   const [settingsTab, setSettingsTab] = useState<'general' | 'providers' | 'theme' | 'routing' | 'agents' | 'search'>('general')
   const [showAgentWizard, setShowAgentWizard] = useState(false)
@@ -1977,6 +1997,7 @@ export default function App() {
             colorTheme={colorTheme}
             onSelectColorTheme={setColorTheme}
             initialTab={settingsTab}
+            cwd={cwd}
           />
         ) : (
           <>
@@ -1985,6 +2006,7 @@ export default function App() {
             )}
             <Sidebar
               open={leftOpen}
+              onClose={() => setLeftOpen(false)}
               onNewTask={newTask}
               searchOpen={searchOpen}
               onToggleSearch={() => setSearchOpen((v) => !v)}
@@ -2005,12 +2027,22 @@ export default function App() {
               activeTaskId={activeViewTaskId}
             />
 
+            {(leftOpen || rightOpen) && (
+              <div
+                className="drawer-backdrop"
+                onClick={() => {
+                  setLeftOpen(false)
+                  setRightOpen(false)
+                }}
+              />
+            )}
+
             <main className="main">
               <header className="topbar">
                 <div className="topbar-left">
                   <button
                     className="btn icon-only panel-toggle"
-                    onClick={() => setLeftOpen((v) => !v)}
+                    onClick={toggleLeft}
                     title={leftOpen ? 'Collapse sidebar' : 'Open sidebar'}
                   >
                     <PanelLeftIcon size={15} />
@@ -2068,18 +2100,18 @@ export default function App() {
                 </div>
                 <div className="topbar-right">
                   {!cwd && (
-                    <button className="btn primary" onClick={() => void selectFolder()}>
-                      <FolderIcon size={14} /> Select Folder
+                    <button className="btn primary topbar-select-folder-btn" onClick={() => void selectFolder()} title="Select Folder">
+                      <FolderIcon size={14} /> <span className="topbar-btn-text">Select Folder</span>
                     </button>
                   )}
                   {!hasProvider && (
-                    <button className="btn warn" onClick={() => setShowSettings(true)}>
-                      Set API Key
+                    <button className="btn warn topbar-set-key-btn" onClick={() => setShowSettings(true)} title="Set API Key">
+                      <AlertCircleIcon size={14} /> <span className="topbar-btn-text">Set API Key</span>
                     </button>
                   )}
                   <button
                     className="btn icon-only panel-toggle"
-                    onClick={() => setRightOpen((v) => !v)}
+                    onClick={toggleRight}
                     title={rightOpen ? 'Collapse panel' : 'Open panel'}
                   >
                     <PanelRightIcon size={15} />
@@ -2357,6 +2389,7 @@ export default function App() {
 
             <RightPanel
               open={rightOpen}
+              onClose={() => setRightOpen(false)}
               tab={rightTab}
               onTab={onRightTab}
               cwd={cwd}
