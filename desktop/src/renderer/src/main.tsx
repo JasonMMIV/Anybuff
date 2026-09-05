@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import ErrorBoundary from './components/ErrorBoundary'
 import './styles.css'
 import { createWsAnyBuff, type AnyBuffNativeBridge } from './host/host-ws'
 
@@ -53,8 +54,13 @@ if (wsUrl) {
   document.documentElement.classList.add('is-webview')
 }
 
+// Top-level boundary (Android WebView hardening): an uncaught render error
+// anywhere in the app used to unmount the whole React tree — a dead white
+// screen on the phone. This catches it and renders a recoverable card instead.
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary title="The app hit an unexpected error">
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 )

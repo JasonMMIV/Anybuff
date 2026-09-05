@@ -159,6 +159,15 @@ describe('request envelope routing', () => {
     ws.close()
   })
 
+  test('saveCwd round-trips over WS', async () => {
+    const ws = await openWs(wsUrl())
+    const res = await roundTrip(ws, 100, 'saveCwd', ['/ws/example'])
+    expect(res.ok).toBe(true)
+    const res2 = await roundTrip(ws, 101, 'touchProject', ['/ws/example'])
+    expect(res2.ok).toBe(true)
+    ws.close()
+  })
+
   test('unknown channels are rejected at the envelope layer', async () => {
     const ws = await openWs(wsUrl())
     const res = await roundTrip(ws, 2, 'nonsense', [])

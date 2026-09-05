@@ -103,6 +103,9 @@ const api = {
     ipcRenderer.invoke('AnyBuff:saveLocalAgentFile', payload),
   readSkillFile: (path: string) => ipcRenderer.invoke('AnyBuff:readSkillFile', path),
   listProjects: () => ipcRenderer.invoke('AnyBuff:listProjects'),
+  /** Persist the currently open project folder (restored by getState on reload). */
+  saveCwd: (cwd: string) => ipcRenderer.invoke('AnyBuff:saveCwd', cwd),
+  touchProject: (cwd: string) => ipcRenderer.invoke('AnyBuff:touchProject', cwd),
   deleteTask: (taskId: string) => ipcRenderer.invoke('AnyBuff:deleteTask', taskId),
   renameTask: (payload: { taskId: string; newPrompt: string }) =>
     ipcRenderer.invoke('AnyBuff:renameTask', payload),
@@ -136,6 +139,8 @@ const api = {
   fetchModels: (payload: { baseURL: string; apiKey?: string; providerType?: string; providerId?: string }) =>
     ipcRenderer.invoke('AnyBuff:fetchModels', payload),
   setTheme: (theme: 'dark' | 'light') => ipcRenderer.send('AnyBuff:setTheme', theme),
+  /** Android-only: on-device engine diagnostics log (always null on desktop). */
+  readEngineLog: async (): Promise<string | null> => null,
   getZoomFactor: () => webFrame.getZoomFactor(),
   setZoomFactor: (factor: number) => webFrame.setZoomFactor(factor),
   onEvent: (callback: (event: UiEvent) => void) => {

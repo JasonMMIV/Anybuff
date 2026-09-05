@@ -9,6 +9,7 @@
 //   - contract tests (bun).
 
 import { mkdir, readFile, writeFile, rm } from 'fs/promises'
+import { join } from 'path'
 import { generateDtsBundle } from 'dts-bundle-generator'
 
 async function build() {
@@ -59,6 +60,33 @@ async function build() {
   if (!cjs.success) throw new AggregateError(cjs.logs, 'CJS build failed')
 
   console.log('📦 Building self-contained host bundle (Android sandbox / browser preview)...')
+  // ── NEXT_PUBLIC_* defaults for the self-contained host bundle ────────────
+  // common/src/env.ts validates the web-era NEXT_PUBLIC_* variables the moment
+  // any bundled module tree is evaluated, and the Android sandbox boots this
+  // bundle under a wiped `env -i` guest environment — no runtime env exists
+  // there. So the values MUST be baked into the bundle. Desktop shells never
+  // needed this: they inject the same values at runtime (bootstrap.cjs /
+  // env-shim.ts / dev-launcher.mjs).
+  //
+  // Why `define` and not the `env: 'NEXT_PUBLIC_*'` inliner: Bun snapshots
+  // process.env at process STARTUP, so `env: 'NEXT_PUBLIC_*'` only inlines
+  // values exported in the build shell — setting process.env at runtime here
+  // is invisible to it (verified: a bare-shell build shipped a bundle that
+  // died at import with "Invalid environment configuration", 2026-09-06
+  // device round). `define` replaces the `process.env.NEXT_PUBLIC_*` reads
+  // with literals directly. Read from env-defaults.json — the single source
+  // of truth shared with the desktop shells; an explicitly exported var in
+  // the build shell still wins.
+  const envDefaultsText = await readFile(
+    join(import.meta.dir, '..', '..', '..', 'desktop', 'env-defaults.json'),
+    'utf8',
+  )
+  const hostEnvDefine: Record<string, string> = {}
+  for (const [key, value] of Object.entries(JSON.parse(envDefaultsText) as Record<string, unknown>)) {
+    if (!key.startsWith('_') && typeof value === 'string') {
+      hostEnvDefine[`process.env.${key}`] = JSON.stringify(process.env[key] ?? value)
+    }
+  }
   // The sandbox Node 22 runtime has no node_modules for @codebuff/* or ws, so
   // anybuff-host.mjs inlines everything except node built-ins. Bundling `ws`
   // pulls in bufferutil/utf-8-validate as optional peers (harmless) but those
@@ -83,6 +111,9 @@ async function build() {
     ],
     naming: '[dir]/anybuff-host.mjs',
     env: 'NEXT_PUBLIC_*',
+    // NEXT_PUBLIC_* literals (see the env-defaults comment above). Bun merges
+    // this with the option-set defaults; define entries win.
+    define: hostEnvDefine,
     loader: { '.scm': 'text' },
   })
   if (!hostBundle.success) throw new AggregateError(hostBundle.logs, 'host bundle failed')

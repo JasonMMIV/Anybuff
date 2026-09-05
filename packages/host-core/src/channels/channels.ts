@@ -18,6 +18,8 @@ export const CHANNELS = [
   'fetchModels',
   // Projects & tasks
   'listProjects',
+  'saveCwd',
+  'touchProject',
   'getTaskView',
   'deleteTask',
   'renameTask',

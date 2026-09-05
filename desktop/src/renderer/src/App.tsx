@@ -74,6 +74,9 @@ function isSilentTool(name?: string): boolean {
 const DEFAULT_PROMPT_HEIGHT = 44
 const MAX_PROMPT_HEIGHT = 160
 
+/** Mobile/WebView cap on in-view conversation items (see the trim effect). */
+const MAX_MOBILE_CHAT_ITEMS = 300
+
 /** Human-readable banner text per failure reason. */
 function resumeBannerText(reason: string | undefined): string {
   switch (reason) {
@@ -347,6 +350,8 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'general' | 'providers' | 'theme' | 'routing' | 'agents' | 'search'>('general')
   const [showAgentWizard, setShowAgentWizard] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  /** The local engine host (proot/Node) died: WS closed, every call fails fast. */
+  const [hostDown, setHostDown] = useState(false)
 
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tokenUsage, setTokenUsage] = useState<{ used: number; max: number } | null>(null)
@@ -619,6 +624,73 @@ export default function App() {
     if (!autoScrollRef.current) return
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight })
   }, [chatItems])
+
+  // The WS shim dispatches this when the engine socket closes (host process
+  // died / was killed). Surface a restart overlay — otherwise the UI silently
+  // freezes: every request times out and no events ever arrive again.
+  useEffect(() => {
+    if (isPreview) return
+    const onDown = (): void => setHostDown(true)
+    window.addEventListener('anybuff:host-disconnected', onDown)
+    return () => window.removeEventListener('anybuff:host-disconnected', onDown)
+  }, [isPreview])
+
+  // Android: a folder picked in SAF while this page was being (re)created — the
+  // requesting page died with the old WebView, so the shell stages the guest
+  // path and pushes it here once the page can run JS. Applied via
+  // applyOpenedFolder (declared below with the other handlers).
+  useEffect(() => {
+    if (isPreview) return
+    const onFolderPending = (ev: Event): void => {
+      const path = (ev as CustomEvent<string>).detail
+      if (typeof path !== 'string' || !path) return
+      applyOpenedFolderRef.current(path)
+      // Mirror selectFolder's persistence so a later reload restores the project.
+      void window.AnyBuff.saveCwd?.(path)
+      void window.AnyBuff.touchProject?.(path)
+      void window.AnyBuff.listProjects().then((p) => setProjects(p as ProjectRecord[]))
+    }
+    window.addEventListener('anybuff:folder-pending', onFolderPending)
+    return () => window.removeEventListener('anybuff:folder-pending', onFolderPending)
+  }, [isPreview])
+
+  // Android shell pushes folder-import progress as DOM events during the SAF
+  // copy (a large project can take minutes over DocumentsProvider IPC).
+  // Surface it as a notice so silence never reads as "the pick did nothing".
+  useEffect(() => {
+    if (isPreview) return
+    const onProgress = (ev: Event): void => {
+      const d = (ev as CustomEvent<{ phase?: string; copied?: number; error?: string }>).detail
+      if (!d || typeof d !== 'object') return
+      if (d.phase === 'copying') setNotice(`Importing project folder… ${d.copied ?? 0} files copied`)
+      else if (d.phase === 'done') setNotice(null)
+      else if (d.phase === 'error' && d.error) setNotice(`Folder import failed: ${d.error}`)
+    }
+    window.addEventListener('anybuff:folder-progress', onProgress)
+    return () => window.removeEventListener('anybuff:folder-progress', onProgress)
+  }, [isPreview])
+
+  // Mobile/WebView only: cap the in-view conversation so a long session cannot
+  // balloon the renderer's DOM past what the device can hold — unbounded growth
+  // is the classic trigger for render-process death (the app then white-screens
+  // with no clicks). Full history stays in the host; switching tasks reloads it.
+  useEffect(() => {
+    if (!document.documentElement.classList.contains('is-webview')) return
+    if (chatItems.length <= MAX_MOBILE_CHAT_ITEMS) return
+    setChatItems((prev) => {
+      if (prev.length <= MAX_MOBILE_CHAT_ITEMS) return prev
+      const existing = prev.find((i) => i.kind === 'system' && i.text.startsWith('Older messages were trimmed'))
+      const keep = prev.slice(-(MAX_MOBILE_CHAT_ITEMS - 1))
+      if (existing) return [existing, ...keep]
+      return [
+        {
+          kind: 'system',
+          text: 'Older messages were trimmed to keep this device responsive. Full history stays in the sidebar.'
+        },
+        ...keep
+      ]
+    })
+  }, [chatItems.length])
 
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current
@@ -964,11 +1036,39 @@ export default function App() {
     setShowAgentWizard(true)
   }, [cwd])
 
-  const selectFolder = useCallback(async () => {
+  // The local engine host (proot/Node) died or its socket broke: the WS shim
+  // dispatched anybuff:host-disconnected and the recovery overlay is up. The
+  // renderer cannot restart the host by itself — the shell tears the sandbox
+  // down, boots it again and reloads this page with the fresh WS URL. In
+  // shells without a native restart bridge (browser preview), fall back to a
+  // page reload: it re-reads the ?ws= URL, and the shim's reconnect loop
+  // finishes the job once the host is back.
+  const retryEngine = useCallback(() => {
+    const native = (window as unknown as { __ANYBUFF_NATIVE__?: { restartEngine?: () => void } }).__ANYBUFF_NATIVE__
+    if (native?.restartEngine) {
+      native.restartEngine()
+      return
+    }
+    window.location.reload()
+  }, [])
+
+  // The shim dispatches this once a reconnect attempt succeeds. Dismiss the
+  // overlay instead of trapping the user on it forever — a socket-only break
+  // (engine alive) recovers with no reload, and a browser preview recovers
+  // automatically when the host comes back up.
+  useEffect(() => {
     if (isPreview) return
-    const path = await window.AnyBuff.selectFolder()
-    if (path) {
-      setCwd(path as string)
+    const onUp = (): void => setHostDown(false)
+    window.addEventListener('anybuff:host-reconnected', onUp)
+    return () => window.removeEventListener('anybuff:host-reconnected', onUp)
+  }, [isPreview])
+
+  // Shared by selectFolder and the Android folder-pending push: reset the view
+  // to a fresh conversation in the newly opened project. The ref lets the
+  // folder-pending listener (declared earlier) reach it without a TDZ issue.
+  const applyOpenedFolder = useCallback(
+    (path: string) => {
+      setCwd(path)
       autoScrollRef.current = true
       setChatItems([])
       setEvents([])
@@ -979,9 +1079,25 @@ export default function App() {
       setHistoryTask(null)
       setResumeInfo(null)
       setViewTask(null)
+    },
+    [setViewTask],
+  )
+  const applyOpenedFolderRef = useRef(applyOpenedFolder)
+  applyOpenedFolderRef.current = applyOpenedFolder
+
+  const selectFolder = useCallback(async () => {
+    if (isPreview) return
+    try {
+      const path = await window.AnyBuff.selectFolder()
+      if (!path) return
+      applyOpenedFolder(path as string)
       refreshProjects()
+    } catch (err) {
+      // Copy failures / picker errors surface instead of silently doing nothing
+      // (the folder pick used to fail quiet — UI stayed on "no project yet").
+      setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [refreshProjects, setViewTask])
+  }, [refreshProjects, setViewTask, applyOpenedFolder])
 
   // Compose final prompt: resolve @ files, /skills, and attachments
   const buildFinalPrompt = useCallback(
@@ -1917,6 +2033,13 @@ export default function App() {
 
   const models = settings.providers
 
+  // True when the shell injected a native restart bridge (Android WebView).
+  // Without it (browser preview) the Restart Engine button reloads the page
+  // instead, and the hint below explains that reconnect is automatic.
+  const hasNativeRestart =
+    typeof (window as unknown as { __ANYBUFF_NATIVE__?: { restartEngine?: () => void } }).__ANYBUFF_NATIVE__
+      ?.restartEngine === 'function'
+
   // Index of the last user message — computed once per render instead of a
   // `chatItems.slice(i + 1).every(...)` scan per user row (O(n²) on long chats,
   // re-run on every keystroke while the conversation is open).
@@ -2450,6 +2573,35 @@ export default function App() {
                 Revert
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {hostDown && (
+        <div className="engine-down-overlay">
+          <div className="engine-down-card">
+            <div className="welcome-logo">
+              <AppIcon size={56} />
+            </div>
+            <h2>Engine connection lost</h2>
+            <p className="hint">
+              The local engine stopped responding. Your projects and conversations are preserved — restarting the engine brings everything back.
+            </p>
+            <button className="btn primary big" onClick={retryEngine}>
+              Restart Engine
+            </button>
+            {hasNativeRestart ? (
+              <p className="hint engine-down-hint">
+                The engine restarts automatically — this screen dismisses itself when it's back.
+              </p>
+            ) : (
+              <p className="hint engine-down-hint">
+                This page reconnects automatically as soon as the engine is back.
+              </p>
+            )}
+            <button className="btn engine-down-secondary" onClick={() => window.location.reload()}>
+              Reload Page
+            </button>
           </div>
         </div>
       )}

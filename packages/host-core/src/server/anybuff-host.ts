@@ -141,6 +141,28 @@ async function main(): Promise<void> {
   // Single machine-readable ready line consumed by the Kotlin shell.
   console.log(`ANYBUFF_HOST_READY ${wsHost.port} ${wsHost.token}`)
 
+  // ── Stay-alive guards ──────────────────────────────────────────────────
+  // On Android this process IS the engine: an uncaught error used to exit it,
+  // the WebView socket died with it, and the user saw "Engine connection
+  // lost" — repeatedly, since whatever triggered the error keeps firing.
+  // A stray async rejection must not take the whole engine down: log it and
+  // keep serving. Escape hatch: a flood of uncaught errors (>10 in 60s)
+  // means the process is genuinely broken — exit(1) and let the shell's
+  // restart flow boot a clean host instead of limping in an unknown state.
+  let uncaughtTimestamps: number[] = []
+  const noteUncaught = (kind: string, error: unknown): void => {
+    const now = Date.now()
+    uncaughtTimestamps = [...uncaughtTimestamps, now].filter((t) => now - t < 60_000)
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
+    console.error(`[anybuff-host] uncaught ${kind}: ${detail}`)
+    if (uncaughtTimestamps.length > 10) {
+      console.error('[anybuff-host] uncaught-error flood — exiting for a clean shell reboot')
+      process.exit(1)
+    }
+  }
+  process.on('uncaughtException', (error) => noteUncaught('exception', error))
+  process.on('unhandledRejection', (reason) => noteUncaught('rejection', reason))
+
   const shutdown = (): void => {
     void wsHost.close().finally(() => process.exit(0))
   }

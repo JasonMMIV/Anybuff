@@ -38,6 +38,17 @@ export interface WsHostOptions {
   allowedOrigins?: string[]
   /** Bind host. Defaults to 127.0.0.1 (loopback only). */
   bindAddress?: string
+  /**
+   * Heartbeat interval in ms (ping every client, terminate the ones that do
+   * not pong). 0 disables. Default 30s.
+   *
+   * Without this, a half-open socket (device slept, network torn down without
+   * FIN/RST — routine on Android) lingers forever: the client looks connected,
+   * never receives pushed events, and every request it sends vanishes into
+   * the void. The heartbeat reaps those sockets so their 'close' fires and
+   * the event-bus subscription refreshes.
+   */
+  heartbeatMs?: number
 }
 
 export interface WsHost {
@@ -72,6 +83,7 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
     token = randomBytes(32).toString('hex'),
     allowedOrigins,
     bindAddress = '127.0.0.1',
+    heartbeatMs = 30_000,
   } = options
 
   const httpServer: HttpServer = createServer()
@@ -103,7 +115,34 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
     })
   })
 
+  // ── Heartbeat (dead-socket reaper) ───────────────────────────────────
+  // Ping every client on an interval; terminate the ones that did not pong
+  // since the previous tick. Browsers (incl. the Android WebView) answer
+  // protocol pings automatically at the network layer, so this costs nothing
+  // and never disturbs idle-but-healthy pages.
+  const aliveClients = new WeakSet<WebSocket>()
+  const heartbeat =
+    heartbeatMs > 0
+      ? setInterval(() => {
+          for (const client of wss.clients) {
+            if (!aliveClients.has(client)) {
+              // No pong since the last interval: the socket is dead. terminate()
+              // (not close()) — a half-open socket cannot complete a closing
+              // handshake; terminate frees the resources immediately and fires
+              // 'close' → refreshBroadcast() drops the dead subscriber.
+              try { client.terminate() } catch {}
+              continue
+            }
+            aliveClients.delete(client)
+            try { client.ping() } catch {}
+          }
+        }, heartbeatMs)
+      : null
+  if (heartbeat && typeof heartbeat.unref === 'function') heartbeat.unref()
+
   wss.on('connection', (ws) => {
+    aliveClients.add(ws)
+    ws.on('pong', () => { aliveClients.add(ws) })
     refreshBroadcast()
     ws.on('close', () => refreshBroadcast())
     ws.on('message', (raw) => {
@@ -191,6 +230,7 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
         token,
         close: () =>
           new Promise<void>((done) => {
+            if (heartbeat) clearInterval(heartbeat)
             broadcastUnsub?.()
             broadcastUnsub = null
             for (const client of wss.clients) {

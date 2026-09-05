@@ -76,6 +76,15 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
      */
     private val guestNodeDir = "/opt/node"
 
+    /** Host output lines worth surfacing in the on-device engine log. */
+    private val FAILURE_LINE_REGEX = Regex(
+        "uncaught|fatal|exception|error|killed|abort|out of memory|oom",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Whether the startup banner already reached the engine log ring. */
+    private var loggedStartupLine = false
+
     /** Find proot libs (nativeLibraryDir). Throws when absent. */
     private fun prootLib(name: String): File {
         val dir = File(context.applicationInfo.nativeLibraryDir)
@@ -176,6 +185,13 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
             throw IOException("web-tree-sitter module missing at ${wtsDir.path}")
         }
 
+        // Reap stray sandbox processes from earlier sessions BEFORE spawning a
+        // new one. A proot killed with SIGKILL cannot run --kill-on-exit, so
+        // its guest Node survived as an ORPHAN — several hundred MB per
+        // restart cycle, until memory pressure started killing the fresh
+        // engine too (the "connection lost even after reload" spiral).
+        killStraySandboxProcesses()
+
         // Pre-generate /proc fakes.
         val procFakes = paths.procFakes
         procFakes.mkdirs()
@@ -223,6 +239,15 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         }
         command += listOf(
             "$guestNodeDir/bin/node",
+            // Bound the host's V8 heap: on a phone the engine shares the device
+            // with the WebView browser+renderer processes, and an unbounded
+            // Node heap is the likeliest path to system memory pressure that
+            // gets the WebView RENDERER killed — the app then white-screens
+            // (render-process death) even though the engine itself is fine.
+            // 768MB old-space + ~150MB native is well inside the plan's peak
+            // budget while giving long-context runs real headroom. A heap OOM
+            // fails one run with a clear error instead of blanking the UI.
+            "--max-old-space-size=768",
             "/engine-assets/anybuff-host.mjs",
         )
 
@@ -247,17 +272,34 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
 
         Log.i(TAG, "Starting host: ${command.joinToString(" ")}")
         val process = pb.start()
-        // Drain stdout in a thread so the pipe never deadlocks (128KB cap).
+        // Drain stdout+stderr in a thread so the pipe never deadlocks (128KB
+        // cap). Error-ish lines land in the on-device EngineLog (visible in
+        // the app's Engine diagnostics tab — no adb needed).
         val outBuf = StringBuilder()
         val drainer = Thread {
-            val buf = CharArray(4096)
             try {
                 process.inputStream.bufferedReader().use { r ->
                     while (true) {
-                        val n = r.read(buf)
-                        if (n < 0) break
-                        if (outBuf.length < 128 * 1024) outBuf.append(buf, 0, n)
-                        Log.d(TAG, String(buf, 0, n).trim())
+                        val line = r.readLine() ?: break
+                        if (outBuf.length < 128 * 1024) {
+                            outBuf.append(line)
+                            outBuf.append('\n')
+                        }
+                        val t = line.trim()
+                        if (t.isEmpty()) continue
+                        val isFailure = FAILURE_LINE_REGEX.containsMatchIn(t)
+                        if (isFailure) {
+                            Log.w(TAG, t)
+                            EngineLog.append(context, "host: $t")
+                        } else {
+                            Log.d(TAG, t)
+                            // The ready line and the first startup line go to
+                            // the ring as anchors; the full volume would flood it.
+                            if (t.startsWith("ANYBUFF_HOST_READY") || !loggedStartupLine) {
+                                loggedStartupLine = true
+                                EngineLog.append(context, "host: $t")
+                            }
+                        }
                     }
                 }
             } catch (_: IOException) {
@@ -298,15 +340,92 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
             "procs_blocked 0\n"
     }
 
-    /** Kill the whole proot tree (used on destroy / stop). */
+    /**
+     * Kill the whole proot tree (used on destroy / stop).
+     *
+     * Graceful first: SIGTERM lets proot exit and --kill-on-exit reap the
+     * guest. If proot ignores it, SIGKILLing proot alone would orphan the
+     * guest Node (kill-on-exit never runs) — so the forceful path kills the
+     * whole /proc process TREE (guest descendants deepest-first, then proot).
+     * This is what stops the orphan pileup that kept killing fresh engines.
+     */
     fun stop(process: Process) {
         try {
-            process.destroy()
-            // Give it a moment, then force.
-            if (!process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroy() // SIGTERM → proot exits, kill-on-exit reaps the guest
+            if (!process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                // Forceful: tree-first, not just the tracer process.
+                killStraySandboxProcesses()
                 process.destroyForcibly()
+            }
+            if (!process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                EngineLog.append(context, "stop: proot refused to die (pid unknown)")
+            }
+            // Reap anything the graceful path may still have left behind.
+            killStraySandboxProcesses()
+        } catch (e: Exception) {
+            EngineLog.append(context, "stop error: ${e.message}")
+        }
+    }
+
+    /**
+     * SIGKILL every stray sandbox process tree of this app: any /proc entry
+     * whose cmdline contains our proot exec path (nativeLibraryDir is private
+     * to this app install, so a cmdline match IS ours — including orphans
+     * left by previous SIGKILLed restarts), plus all its descendants.
+     */
+    fun killStraySandboxProcesses() {
+        try {
+            val parentOf = procParentMap()
+            for (pid in sandboxPids()) {
+                // Children first (reverse DFS = deepest first) so nothing can
+                // re-parent or respawn while we work through the tree.
+                for (t in descendantsOf(pid, parentOf).asReversed()) {
+                    try { android.os.Process.killProcess(t) } catch (_: Exception) {}
+                }
+                try { android.os.Process.killProcess(pid) } catch (_: Exception) {}
             }
         } catch (_: Exception) {
         }
+    }
+
+    /** child-pid → parent-pid from /proc/<pid>/stat (field 4). */
+    private fun procParentMap(): Map<Int, Int> {
+        val map = mutableMapOf<Int, Int>()
+        for (d in File("/proc").listFiles() ?: emptyArray()) {
+            val pid = d.name.toIntOrNull() ?: continue
+            val stat = try { File(d, "stat").readText() } catch (_: Exception) { continue }
+            val close = stat.lastIndexOf(')') // skip past pid + (comm)
+            if (close < 0) continue
+            val ppid = stat.substring(close + 2).split(' ').getOrNull(1)?.toIntOrNull() ?: continue
+            map[pid] = ppid
+        }
+        return map
+    }
+
+    /** All descendant pids of [root] (excluding the root itself). */
+    private fun descendantsOf(root: Int, parentOf: Map<Int, Int>): List<Int> {
+        val childrenOf = parentOf.entries.groupBy({ it.value }, { it.key })
+        val out = mutableListOf<Int>()
+        val stack = ArrayDeque<Int>().apply { add(root) }
+        while (stack.isNotEmpty()) {
+            val p = stack.removeLast()
+            for (c in childrenOf[p].orEmpty()) {
+                out.add(c)
+                stack.addLast(c)
+            }
+        }
+        return out
+    }
+
+    /** pids whose cmdline contains our proot exec path (ours by definition). */
+    private fun sandboxPids(): List<Int> {
+        val needle = try { prootLib(PROOT_EXEC).absolutePath } catch (_: Exception) { return emptyList() }
+        val out = mutableListOf<Int>()
+        for (d in File("/proc").listFiles() ?: emptyArray()) {
+            val pid = d.name.toIntOrNull() ?: continue
+            val cmd = try { File(d, "cmdline").readBytes().toString(Charsets.UTF_8) } catch (_: Exception) { continue }
+            if (cmd.contains(needle)) out.add(pid)
+        }
+        return out
     }
 }

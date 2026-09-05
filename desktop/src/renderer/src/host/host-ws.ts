@@ -57,6 +57,12 @@ export interface AnyBuffNativeBridge {
   openExternal?(url: string): void
   /** Android-only app version (from BuildConfig). */
   getVersion?(): Promise<string>
+  /** Android-only: stop + restart the local engine host (WS dead recovery). */
+  restartEngine?(): void
+  /** Android-only: tail of the on-device engine diagnostics log. */
+  readEngineLog?: () => Promise<string>
+  /** Android-only: append a renderer lifecycle event to the engine log. */
+  logEvent?: (kind: string, detail: string) => void
 }
 
 export interface WsHostOptions {
@@ -113,12 +119,184 @@ async function githubUpdateCheck(repo: string, currentVersion: string): Promise<
 
 export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
   const { url, timeoutMs = 30_000, appVersion = '0.0.0-ws', native, updateRepo } = options
-  const ws = new WebSocket(url)
 
   let seq = 0
   const pending = new Map<number, (v: unknown) => void>()
   const eventListeners = new Set<(event: unknown) => void>()
   const updateListeners = new Set<(event: UpdateUiEvent) => void>()
+
+  /** The host died or the socket broke: fail every in-flight request NOW
+   * (instead of letting each wait out its 30s timeout) and tell the UI, which
+   * surfaces a restart affordance. Without this the renderer silently freezes
+   * on a dead engine — every call resolves a timeout envelope and no events
+   * ever arrive again. */
+  function failPending(reason: string): void {
+    for (const [id, resolve] of [...pending]) {
+      pending.delete(id)
+      resolve({ ok: false, error: reason })
+    }
+  }
+
+  // ── Reconnect loop ─────────────────────────────────────────────────────
+  // A single socket would leave the page permanently dead after one close:
+  // onclose fired, the UI shows the lost-connection overlay, and nothing ever
+  // re-establishes the socket — the only escape was a full page reload (and on
+  // Android, a shell-driven reboot + reload). The socket can also die while
+  // the ENGINE is perfectly alive (OS network teardown, a transient loopback
+  // hiccup); in that case the engine never reboots and only reconnecting
+  // helps. So: keep trying the same URL with backoff, and tell the UI both
+  // ways — 'anybuff:host-disconnected' when the socket drops (restart
+  // affordance), 'anybuff:host-reconnected' when it comes back (overlay
+  // auto-dismisses, no reload needed). The shell's own recovery (Android
+  // reboot + reload with a FRESH URL) simply replaces this page, killing the
+  // loop with it — no conflict.
+  let ws: WebSocket | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let reconnectDelayMs = 1000
+
+  // ── Liveness watchdog + engine auto-restart ────────────────────────
+  // Two failure modes need different cures:
+  //   1. Socket-only break (engine alive): reconnect loop fixes it — no
+  //      reload, no reboot, overlay auto-dismisses on 'host-reconnected'.
+  //   2. Engine process dead: reconnecting to the SAME URL can never
+  //      succeed — the proot host is gone, its port+token are invalid. The
+  //      page used to sit on the overlay forever; now, after several
+  //      consecutive failed upgrades, we drive the native restart bridge
+  //      ourselves (Kotlin tears the sandbox down, boots a fresh host,
+  //      and reloads this page with a FRESH URL — the only real fix).
+  // A reload alone can't help either: location.reload() re-reads the STALE
+  // __ANYBUFF_WS_URL__ of the dead host. That is exactly why "reload page
+  // 沒多久又 Engine connection lost" — the reload reconnected to a dead
+  // engine and the overlay came right back. Only a fresh boot publishes a
+  // new URL.
+  const MAX_DEAD_UPGRADES = 3
+  let failedUpgrades = 0
+  let restartRequested = false
+  let lastMessageAt = Date.now()
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null
+  /** Whether the CURRENT socket ever reached open (reset in connect()). */
+  let socketEverOpened = false
+
+  /** On-device engine log (Android only; no-op elsewhere) — the app's Engine
+   * diagnostics tab shows these entries so a tester without adb can see WHY
+   * the connection drops. */
+  const logEvent = (kind: string, detail: string): void => {
+    try {
+      native?.logEvent?.(kind, detail)
+    } catch {
+      // Logging must never break the transport.
+    }
+  }
+
+  /** Half-dead socket detector: nothing (not even a pong or broadcast) for
+   * 45s while the socket claims to be open → treat it as dead. The
+   * server-side heartbeat (ping every 30s) normally surfaces a dead socket
+   * as a clean 'close' long before this; this is the belt to the suspenders.
+   */
+  function startWatchdog(): void {
+    if (watchdogTimer != null) return
+    watchdogTimer = setInterval(() => {
+      if (ws == null || ws.readyState !== WebSocket.OPEN) return
+      if (Date.now() - lastMessageAt < 45_000) return
+      // Force the socket through close → the reconnect loop takes over.
+      try { ws.close() } catch {}
+    }, 15_000)
+    if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref()
+  }
+
+  function requestEngineRestart(reason: string): void {
+    if (restartRequested) return
+    restartRequested = true
+    const native = (typeof window !== 'undefined'
+      ? (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
+      : undefined)
+    if (native?.restartEngine) {
+      console.warn(`[host-ws] engine appears dead (${reason}) — requesting native restart`)
+      logEvent('engine', `auto-restart requested: ${reason}`)
+      try { native.restartEngine() } catch {}
+      // Keep the reconnect loop running: if the reboot lands while this page
+      // is still alive, the fresh URL re-injection reloads us anyway.
+      setTimeout(() => { restartRequested = false }, 20_000)
+    }
+    // No native bridge (browser preview): the overlay's Restart button is
+    // the manual path; the reconnect loop keeps trying the same URL.
+  }
+
+  function connect(): void {
+    socketEverOpened = false
+    const socket = new WebSocket(url)
+    ws = socket
+
+    socket.onopen = () => {
+      if (socket !== ws) return // superseded by a newer attempt
+      reconnectDelayMs = 1000
+      failedUpgrades = 0
+      socketEverOpened = true
+      lastMessageAt = Date.now()
+      startWatchdog()
+      logEvent('ws', 'connected')
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('anybuff:host-reconnected'))
+      }
+    }
+
+    socket.onerror = () => {
+      // onclose follows; fail-fast there so the page can offer recovery.
+    }
+
+    socket.onclose = () => {
+      if (socket !== ws) return // superseded by a newer attempt
+      logEvent('ws', `closed (failedUpgrades=${failedUpgrades}, everOpened=${socketEverOpened})`)
+      failPending('Host connection lost')
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('anybuff:host-disconnected'))
+      }
+      // The upgrade was REJECTED (engine down / stale token) rather than
+      // dropped mid-session? A handshake that never completes goes
+      // error → close without ever opening. Count consecutive never-opened
+      // failures — that signature means the engine is gone, not the socket.
+      if (!socketEverOpened) failedUpgrades++
+      if (failedUpgrades >= MAX_DEAD_UPGRADES) {
+        requestEngineRestart('multiple failed connections')
+      }
+      // Schedule the next attempt (only once per close; the timer itself
+      // re-arms via connect()).
+      if (reconnectTimer == null) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5000)
+          connect()
+        }, reconnectDelayMs)
+      }
+    }
+
+    socket.onmessage = (raw: MessageEvent) => {
+      lastMessageAt = Date.now()
+      let msg: { id?: number; ok?: boolean; result?: unknown; error?: string; event?: string; payload?: unknown }
+      try {
+        msg = JSON.parse(String(raw.data))
+      } catch {
+        return
+      }
+      if (msg.event === 'event') {
+        for (const l of [...eventListeners]) l(msg.payload)
+        return
+      }
+      if (typeof msg.id === 'number' && pending.has(msg.id)) {
+        const p = pending.get(msg.id)!
+        pending.delete(msg.id)
+        if (msg.ok) p(msg.result)
+        // Parity with the Electron IPC path: business-channel failures travel as
+        // RESOLVED { ok: false, error } objects (dispatch never rejects and the
+        // host-bridge returns the envelope), never as thrown exceptions. The
+        // renderer branches on `.ok` either way — only a true transport failure
+        // (timeout / dead socket) resolves an error envelope.
+        else p({ ok: false, error: msg.error ?? 'WS request failed' })
+      }
+    }
+  }
+
+  connect()
 
   /** Invoke a host-core business channel over the WS envelope. */
   function call<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
@@ -134,32 +312,19 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
         clearTimeout(timer)
         resolve(v as T)
       })
-      ws.send(JSON.stringify({ id, channel, args }))
+      const socket = ws
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        // Socket down (reconnecting): fail fast instead of throwing
+        // InvalidStateError from send() on a closed socket. The overlay is up
+        // and the reconnect loop owns recovery; the caller gets an error
+        // envelope like any other failed call.
+        pending.delete(id)
+        clearTimeout(timer)
+        resolve({ ok: false, error: 'Host connection lost' } as T)
+        return
+      }
+      socket.send(JSON.stringify({ id, channel, args }))
     })
-  }
-
-  ws.onmessage = (raw: MessageEvent) => {
-    let msg: { id?: number; ok?: boolean; result?: unknown; error?: string; event?: string; payload?: unknown }
-    try {
-      msg = JSON.parse(String(raw.data))
-    } catch {
-      return
-    }
-    if (msg.event === 'event') {
-      for (const l of [...eventListeners]) l(msg.payload)
-      return
-    }
-    if (typeof msg.id === 'number' && pending.has(msg.id)) {
-      const p = pending.get(msg.id)!
-      pending.delete(msg.id)
-      if (msg.ok) p(msg.result)
-      // Parity with the Electron IPC path: business-channel failures travel as
-      // RESOLVED { ok: false, error } objects (dispatch never rejects and the
-      // host-bridge returns the envelope), never as thrown exceptions. The
-      // renderer branches on `.ok` either way — only a true transport failure
-      // (timeout / dead socket) resolves an error envelope.
-      else p({ ok: false, error: msg.error ?? 'WS request failed' })
-    }
   }
 
   // Result shape note: the WS host mirrors the Electron host-bridge unwrap —
@@ -187,6 +352,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     saveLocalAgentFile: (payload: { filePath: string; content: string }) => call('saveLocalAgentFile', payload),
     readSkillFile: (path: string) => call('readSkillFile', path),
     listProjects: () => call('listProjects'),
+    saveCwd: (cwd: string) => call('saveCwd', cwd),
+    touchProject: (cwd: string) => call('touchProject', cwd),
     deleteTask: (taskId: string) => call('deleteTask', taskId),
     renameTask: (payload: { taskId: string; newPrompt: string }) => call('renameTask', payload),
     removeProject: (projectPath: string) => call('removeProject', projectPath),
@@ -243,12 +410,35 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       updateListeners.add(callback)
       return () => updateListeners.delete(callback)
     },
-    selectFolder: async () => (native?.pickFolder ? await native.pickFolder() : null),
+    selectFolder: async () => {
+      if (!native?.pickFolder) return null
+      const path = await native.pickFolder()
+      // Parity with the desktop shell's selectFolder IPC handler, which
+      // persists the picked folder (saveCwd + touchProject) so a page reload
+      // restores the open project. Android must do the same or every reload
+      // (renderer crash recovery, activity recreation, process restart) lands
+      // back on the "select a project folder" welcome screen. Best-effort: a
+      // dead/connecting socket must never swallow a successful pick — the UI
+      // applies the returned path either way.
+      if (path) {
+        try {
+          await call('saveCwd', path)
+          await call('touchProject', path)
+        } catch {
+          // Host unreachable; the folder is still copied on the device and the
+          // in-session cwd below still applies until the next reload.
+        }
+      }
+      return path
+    },
     selectFiles: async () => (native?.pickFiles ? await native.pickFiles() : []),
     getPathForFile: (_file: File) => '',
     setTheme: shellNoOps,
     getZoomFactor: () => 1,
     setZoomFactor: shellNoOps,
+    /** Android-only: on-device engine diagnostics log (null elsewhere). */
+    readEngineLog: async (): Promise<string | null> =>
+      native?.readEngineLog ? await native.readEngineLog() : null,
   }
 
   return api as unknown as AnyBuffApi

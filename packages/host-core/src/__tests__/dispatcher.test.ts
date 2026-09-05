@@ -63,6 +63,22 @@ describe('read-only round-trips', () => {
     expect(Array.isArray(inner)).toBe(true)
   })
 
+  test('saveCwd persists the cwd and getState reflects it', async () => {
+    const save = await host.dispatch('saveCwd', ['/tmp/example-project'])
+    expect(save.ok).toBe(true)
+    const state = (await host.dispatch('getState', [])) as {
+      ok: true
+      result: { cwd: string | null }
+    }
+    expect(state.result.cwd).toBe('/tmp/example-project')
+    expect((await host.dispatch('saveCwd', [''])).ok).toBe(false)
+  })
+
+  test('touchProject round-trips without throwing for an unknown project', async () => {
+    expect((await host.dispatch('touchProject', ['/tmp/never-seen'])).ok).toBe(true)
+    expect((await host.dispatch('touchProject', [''])).ok).toBe(false)
+  })
+
   test('listDir round-trips tree nodes for an existing dir', async () => {
     const res = await host.dispatch('listDir', [dataDir])
     expect(res.ok).toBe(true)

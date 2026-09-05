@@ -28,7 +28,7 @@ import {
 import CustomSelect from './CustomSelect'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'about'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'about' | 'engine'
 
 type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
 
@@ -1443,6 +1443,11 @@ export default function SettingsModal({
       icon: <SpecialistIcon size={16} />
     },
     {
+      id: 'engine',
+      label: 'Engine',
+      icon: <ServerIcon size={16} />
+    },
+    {
       id: 'about',
       label: 'About',
       icon: <InfoIcon size={16} />
@@ -2620,7 +2625,10 @@ export default function SettingsModal({
             </div>
           )}
 
-          {/* 8. About Tab */}
+          {/* 8. Engine Diagnostics Tab (Android: on-device ring-buffer log) */}
+          {activeTab === 'engine' && <EngineDiagnostics />}
+
+          {/* 9. About Tab */}
           {activeTab === 'about' && (
             <div className="settings-tab-content">
               <div className="settings-section-card about-card">
@@ -3342,6 +3350,64 @@ function McpKvEditor({
           </button>
         </div>
       ))}
+    </div>
+  )
+}
+
+/* ─── Engine diagnostics tab ────────────────────────────── */
+
+/**
+ * On-device engine diagnostics (Android): shows the Kotlin-side ring-buffer
+ * log — boot stages, host stdout incl. crash lines, unexpected process exits,
+ * auto-reboots and renderer WS lifecycle events. Written on-device so engine
+ * drops can be diagnosed without adb.
+ */
+function EngineDiagnostics() {
+  const [log, setLog] = useState<string>('')
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const tail = await window.AnyBuff.readEngineLog()
+      setLog(
+        tail && tail.trim().length > 0
+          ? tail
+          : 'No engine log yet — it fills as the engine boots, exits or reconnects.'
+      )
+    } catch (err) {
+      setLog(`(failed to read engine log: ${err instanceof Error ? err.message : String(err)})`)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  return (
+    <div className="settings-tab-content">
+      <div className="settings-section-head">
+        <span>Engine Log</span>
+        <div className="settings-section-actions">
+          <button
+            className="btn ghost small"
+            onClick={() => void refresh()}
+            disabled={loading}
+            title="Read the newest entries from the on-device log"
+          >
+            <RefreshIcon size={12} className={loading ? 'spin-icon' : ''} />
+            {loading ? 'Reading…' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+      <p className="hint">
+        Ring buffer of engine boot stages, host output (incl. crash lines), unexpected process exits, auto-reboots and
+        WebSocket reconnects. If the connection keeps dropping, this is the first place to look — screenshot it when
+        reporting an issue.
+      </p>
+      <pre className="engine-log-box">{log || '…'}</pre>
     </div>
   )
 }

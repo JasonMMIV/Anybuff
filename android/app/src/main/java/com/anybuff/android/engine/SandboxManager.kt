@@ -38,6 +38,24 @@ class SandboxManager private constructor(context: Context) {
     /** Active host process + its URL (null when stopped). */
     val host = AtomicReference<ProotRunner.HostProcess?>(null)
 
+    /** Most recent listener — the exit monitor's auto-reboot reuses it so a
+     * dead host re-injects the fresh URL into the live page (injectAndLoad). */
+    @Volatile
+    private var primaryListener: Listener? = null
+
+    /** One-shot handshake JSON retained in RAM for auto-reboots (same
+     * exposure as the running host process itself — ADR-12 keeps it off disk). */
+    @Volatile
+    private var lastSecretsJson: String = "{}"
+
+    /** True while a deliberate stop is settling — the exit monitor must not
+     * auto-reboot those (FGS stop, activity finishing, renderer restart). */
+    @Volatile
+    private var stopping = false
+
+    /** Unexpected host-exit timestamps for the crash-loop guard. */
+    private val recentExits = java.util.ArrayDeque<Long>()
+
     /** Callbacks for install progress / boot state. */
     interface Listener {
         fun onStage(stage: String)
@@ -48,6 +66,10 @@ class SandboxManager private constructor(context: Context) {
     companion object {
         private const val TAG = "AnyBuffSandbox"
         private const val ASSET_ENGINE = "engine" // assets/engine
+
+        /** Crash-loop guard: >3 unexpected exits in 10min suspends auto-reboot. */
+        private const val CRASH_LOOP_MAX_EXITS = 3
+        private const val CRASH_LOOP_WINDOW_MS = 10 * 60_000L
 
         /**
          * Bump when the expanded-assets layout/versioning logic changes.
@@ -77,6 +99,9 @@ class SandboxManager private constructor(context: Context) {
 
     /** Idempotent boot. Safe to call repeatedly; no-ops when already up. */
     fun start(listener: Listener, hostSecretsJson: String = "{}") {
+        primaryListener = listener
+        if (hostSecretsJson.isNotEmpty()) lastSecretsJson = hostSecretsJson
+        stopping = false
         val alive = host.get()?.process?.isAlive == true
         if (alive) {
             listener.onHostReady(host.get()!!.wsUrl)
@@ -108,6 +133,9 @@ class SandboxManager private constructor(context: Context) {
                 val workspaceDir = File(appContext.filesDir, "workspaces")
                 val h = runner.startHost(hostSecretsJson, workspaceDir)
                 host.set(h)
+                EngineLog.append(appContext, "HOST READY ${h.wsUrl}")
+                synchronized(recentExits) { recentExits.clear() } // healthy boot resets the crash-loop guard
+                watchForUnexpectedExit(h)
                 listener.onHostReady(h.wsUrl)
                 // Replay to late subscribers (recreated activities).
                 while (true) {
@@ -190,9 +218,81 @@ class SandboxManager private constructor(context: Context) {
 
     /** Stop the host and tear down the process tree. */
     fun stop() {
+        stopping = true
         host.get()?.let { h ->
             runner.stop(h.process)
             host.set(null)
+        }
+    }
+
+    /**
+     * Unexpected host death watchdog: when the engine process dies while it
+     * was SUPPOSED to be running (LMK kill, native crash, OOM abort), reboot
+     * it automatically instead of leaving the app on "Engine connection
+     * lost". Deliberate stops (stopping=true) never trigger this. A crash
+     * loop (>3 unexpected exits in 10 minutes) suspends auto-reboot so a
+     * genuinely broken sandbox doesn't thrash — the renderer's manual
+     * Restart path still works and a successful boot resets the guard.
+     */
+    private fun watchForUnexpectedExit(h: ProotRunner.HostProcess) {
+        val bootAt = System.currentTimeMillis()
+        Thread {
+            val code = try {
+                h.process.waitFor()
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
+            // React only if this host is still the active one — a deliberate
+            // stop() has already cleared the reference and owns the reboot.
+            if (host.compareAndSet(h, null)) {
+                EngineLog.append(
+                    appContext,
+                    "HOST EXITED code=$code after ${System.currentTimeMillis() - bootAt}ms",
+                )
+                handleHostExited(code)
+            }
+        }.apply {
+            isDaemon = true
+            name = "host-exit-monitor"
+            start()
+        }
+    }
+
+    private fun handleHostExited(code: Int) {
+        if (stopping) return
+        val now = System.currentTimeMillis()
+        synchronized(recentExits) {
+            recentExits.addLast(now)
+            while (recentExits.isNotEmpty() && now - recentExits.first() > CRASH_LOOP_WINDOW_MS) {
+                recentExits.removeFirst()
+            }
+            if (recentExits.size > CRASH_LOOP_MAX_EXITS) {
+                EngineLog.append(
+                    appContext,
+                    "AUTO-REBOOT SUSPENDED: ${recentExits.size} unexpected exits in the last 10min (crash-loop guard)",
+                )
+                return
+            }
+        }
+        EngineLog.append(appContext, "auto-rebooting host after unexpected exit code=$code")
+        Thread {
+            try {
+                Thread.sleep(2_000)
+            } catch (_: InterruptedException) {
+                return@Thread
+            }
+            start(
+                primaryListener ?: object : Listener {
+                    override fun onStage(stage: String) {}
+                    override fun onHostReady(wsUrl: String) {}
+                    override fun onError(error: String) {}
+                },
+                lastSecretsJson,
+            )
+        }.apply {
+            isDaemon = true
+            name = "host-auto-reboot"
+            start()
         }
     }
 

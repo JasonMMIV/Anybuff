@@ -11,6 +11,8 @@ import {
   renameTask as renameTaskFn,
   removeProject as removeProjectFn,
   searchHistory as searchHistoryFn,
+  saveCwd as saveCwdFn,
+  touchProject as touchProjectFn,
 } from '../settings/settings'
 import {
   getSessionSnapshot,
@@ -23,6 +25,22 @@ import { getAppSettings } from '../settings/settings'
 /** AnyBuff:listProjects */
 export function listProjects(): unknown {
   return listProjectsFn()
+}
+
+/** AnyBuff:saveCwd — persist the currently open project folder. The desktop
+ * shell persists it inside its selectFolder IPC handler; the WS shim (Android)
+ * calls this channel instead so a page reload restores the project. */
+export function saveCwd(cwd: string): unknown {
+  if (!cwd) return { ok: false, error: 'Missing cwd' }
+  saveCwdFn(cwd)
+  return { ok: true }
+}
+
+/** AnyBuff:touchProject — bump a known project to the front of the sidebar. */
+export function touchProject(cwd: string): unknown {
+  if (!cwd) return { ok: false, error: 'Missing cwd' }
+  touchProjectFn(cwd)
+  return { ok: true }
 }
 
 /** AnyBuff:deleteTask */

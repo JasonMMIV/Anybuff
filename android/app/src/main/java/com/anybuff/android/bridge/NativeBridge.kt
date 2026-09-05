@@ -11,6 +11,7 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import android.webkit.WebView
 import com.anybuff.android.crypto.KeyVault
+import com.anybuff.android.engine.EngineLog
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -36,11 +37,27 @@ class NativeBridge(
     private val pickFilesLauncher: ActivityResultLauncher<Array<String>>,
     private val vault: KeyVault,
     private val appVersion: String,
+    private val onRestartEngine: () -> Unit = {},
+    /** Set by MainActivity: true once the appassets page finished loading. */
+    private val pageReady: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
 ) {
     companion object {
         private const val TAG = "AnyBuffBridge"
         private const val OBJECT_NAME = "androidNative"
         private const val ALLOWED_ORIGIN = "https://appassets.androidplatform.net"
+
+        /**
+         * Guest path of a folder the user picked in SAF that arrived with NO
+         * live pending request — the Activity/WebView was recreated while the
+         * picker was open, so the page that asked for it is gone and its
+         * replyProxy is dead (plan §4.0 deferred item "SAF pending 跨 navigation
+         * 的 replyProxy 失效"). Kept process-wide; delivery to the freshly
+         * loaded page happens either when the page becomes ready
+         * (flushPendingFolder from onPageFinished) or immediately when the
+         * result arrives on an already-ready page.
+         */
+        @Volatile
+        var pendingFolderPath: String? = null
     }
 
     /** Pending SAF results routed by request id. */
@@ -77,7 +94,23 @@ class NativeBridge(
             when (method) {
                 "pickFolder" -> {
                     pendingFolder[id] = replyProxy
-                    pickFolderLauncher.launch(null)
+                    try {
+                        EngineLog.append(activity, "pick: picker opening (id=$id)")
+                        pickFolderLauncher.launch(null)
+                    } catch (e: Exception) {
+                        // Never leave the renderer's promise hanging: an
+                        // unusable picker must resolve, not time out forever.
+                        pendingFolder.remove(id)
+                        Log.e(TAG, "pickFolder launch failed", e)
+                        post(id, replyProxy) { put("ok", false); put("error", "failed to open folder picker") }
+                    }
+                }
+                "restartEngine" -> {
+                    // WS-dead recovery (renderer shows the lost-connection
+                    // overlay): stop + reboot the sandbox host, then the page
+                    // reloads with the fresh WS URL (injectAndLoad).
+                    post(id, replyProxy) { put("ok", true) }
+                    onRestartEngine()
                 }
                 "pickFiles" -> {
                     pendingFiles[id] = replyProxy
@@ -90,6 +123,20 @@ class NativeBridge(
                 }
                 "getVersion" -> {
                     post(id, replyProxy) { put("version", appVersion) }
+                }
+                "readEngineLog" -> {
+                    // Engine diagnostics WITHOUT adb: the renderer reads the
+                    // on-device ring buffer (host stdout, exits, WS events)
+                    // and shows it in Settings → Engine.
+                    val log = EngineLog.readTail(activity)
+                    post(id, replyProxy) { put("ok", true); put("log", log) }
+                }
+                "logEvent" -> {
+                    EngineLog.append(
+                        activity,
+                        "ui/${msg.optString("kind")}: ${msg.optString("detail")}",
+                    )
+                    post(id, replyProxy) { put("ok", true) }
                 }
                 "saveKey" -> {
                     // { providerId, apiKey } → Keystore encrypt → filesDir.
@@ -173,13 +220,99 @@ class NativeBridge(
     /* ── SAF result delivery ─────────────────────────────────── */
 
     fun onFolderPicked(uri: Uri?) {
-        val entry = pendingFolder.entries.firstOrNull() ?: return
-        pendingFolder.remove(entry.key)
-        val replyProxy = entry.value
-        val dest = if (uri == null) null else copyTreeToUpload(uri)
-        val id = entry.key
-        post(id, replyProxy) {
-            if (dest != null) put("path", dest) else put("path", JSONObject.NULL)
+        // The request may be gone: opening DocumentsUI (a heavyweight activity)
+        // frequently gets the app's activity killed and recreated on return,
+        // which destroys this bridge's pending map along with the old page.
+        EngineLog.append(activity, "pick: SAF result uri=${uri ?: "null"}")
+        val entry = pendingFolder.entries.firstOrNull()
+        if (entry != null) pendingFolder.remove(entry.key)
+        val id = entry?.key ?: -1L
+        val replyProxy = entry?.value
+        if (entry == null) EngineLog.append(activity, "pick: no live pending request — result will be staged")
+
+        // Copy OFF the main thread: a project tree can be thousands of files
+        // and DocumentsProvider IPC is slow — copying inline would freeze the
+        // UI (ANR) for minutes.
+        Thread {
+            val result = if (uri == null) CopyResult(null, null) else copyTreeToUpload(uri)
+            if (result.error != null) {
+                // Surface copy failures as a UI notice too — a failed pick must
+                // never look like a silent no-op on the welcome screen.
+                pushProgress("{\"phase\":\"error\",\"error\":${JSONObject.quote(result.error)}}")
+            } else if (result.path != null) {
+                pushProgress("{\"phase\":\"done\"}")
+            }
+            if (replyProxy != null && postSafely(id, replyProxy, result)) {
+                EngineLog.append(activity, "pick: replied live id=$id path=${result.path}")
+                return@Thread
+            }
+            // No live request (page recreated mid-pick) or the old page's
+            // replyProxy is dead: stage the result for the next page load
+            // instead of silently dropping the user's selection.
+            if (result.path != null) {
+                pendingFolderPath = result.path
+                EngineLog.append(activity, "pick: staged ${result.path} for the loaded page")
+                activity.runOnUiThread {
+                    // If the (recreated) page already finished loading, push the
+                    // folder to it now; otherwise the holder stays and the
+                    // onPageFinished flush delivers it right after the load.
+                    if (pageReady.get()) flushPendingFolder()
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * Push a staged SAF folder to the current page (main thread only). Called
+     * from onPageFinished and from onFolderPicked when the page is already
+     * ready. The renderer listens for 'anybuff:folder-pending' and applies the
+     * path like a successful pickFolder (setCwd + persist).
+     */
+    fun flushPendingFolder() {
+        val p = pendingFolderPath ?: return
+        pendingFolderPath = null
+        EngineLog.append(activity, "pick: flushing staged folder $p")
+        val escaped = p.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+        try {
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('anybuff:folder-pending', { detail: '$escaped' }));",
+                null,
+            )
+        } catch (e: Exception) {
+            // Page not in a state that can run JS (still loading / destroyed) —
+            // keep the holder so a later flush (next onPageFinished) retries.
+            Log.w(TAG, "pending folder push failed; will retry", e)
+            pendingFolderPath = p
+        }
+    }
+
+    /** Reply to the live page (main thread); false when the proxy is dead. */
+    private fun postSafely(id: Long, replyProxy: JavaScriptReplyProxy, result: CopyResult): Boolean {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val failed = java.util.concurrent.atomic.AtomicBoolean(false)
+        activity.runOnUiThread {
+            try {
+                post(id, replyProxy) {
+                    if (result.path != null) {
+                        put("path", result.path)
+                    } else {
+                        put("path", JSONObject.NULL)
+                        if (result.error != null) put("error", result.error)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "replyProxy postMessage failed (page likely recreated)", e)
+                EngineLog.append(activity, "pick: live reply failed (${e.message})")
+                failed.set(true)
+            } finally {
+                latch.countDown()
+            }
+        }
+        return try {
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            !failed.get()
+        } catch (e: InterruptedException) {
+            false
         }
     }
 
@@ -191,9 +324,31 @@ class NativeBridge(
         post(entry.key, replyProxy) { put("paths", JSONArray(paths)) }
     }
 
-    private fun copyTreeToUpload(uri: Uri): String? = try {
+    private data class CopyResult(val path: String?, val error: String?)
+
+    /**
+     * Push folder-import progress to the page (main thread, best-effort).
+     * [detailJson] is a raw JSON object literal. The renderer listens for
+     * 'anybuff:folder-progress' and surfaces it as a notice — a large project
+     * can copy for minutes over DocumentsProvider IPC, and silence reads as
+     * "the pick did nothing" (the exact welcome-screen complaint).
+     */
+    private fun pushProgress(detailJson: String) {
+        activity.runOnUiThread {
+            try {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('anybuff:folder-progress', { detail: $detailJson }));",
+                    null,
+                )
+            } catch (_: Exception) {
+                // Progress is cosmetic; never let it break the pick.
+            }
+        }
+    }
+
+    private fun copyTreeToUpload(uri: Uri): CopyResult = try {
         val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(activity, uri)
-            ?: return null
+            ?: return CopyResult(null, "could not open the selected folder")
         val name = docFile.name ?: "folder"
         // A picked FOLDER becomes a project workspace: it must live under the
         // dir ProotRunner binds at /workspace (filesDir/workspaces/workspace),
@@ -202,20 +357,35 @@ class NativeBridge(
         val destRoot = File(activity.filesDir, "workspaces/workspace").apply { mkdirs() }
         val dest = File(destRoot, name)
         if (dest.exists()) dest.deleteRecursively()
-        copyDocTree(docFile, dest)
-        "/workspace/$name"
+        EngineLog.append(activity, "pick: copying '$name' → /workspace/$name")
+        pushProgress("{\"phase\":\"copying\",\"copied\":0}")
+        val copied = intArrayOf(0)
+        copyDocTree(docFile, dest, copied)
+        EngineLog.append(activity, "pick: copy done ${copied[0]} files → /workspace/$name")
+        CopyResult("/workspace/$name", null)
     } catch (e: Exception) {
         Log.e(TAG, "copyTreeToUpload failed", e)
-        null
+        EngineLog.append(activity, "pick: copy FAILED: ${e.message}")
+        CopyResult(null, e.message ?: "could not copy the selected folder")
     }
 
-    private fun copyDocTree(doc: androidx.documentfile.provider.DocumentFile, dest: File) {
+    private fun copyDocTree(
+        doc: androidx.documentfile.provider.DocumentFile,
+        dest: File,
+        copied: IntArray,
+    ) {
         dest.mkdirs()
         doc.listFiles().forEach { child ->
             val out = File(dest, child.name ?: return@forEach)
-            if (child.isDirectory) copyDocTree(child, out)
-            else activity.contentResolver.openInputStream(child.uri)?.use { input ->
-                out.outputStream().use { input.copyTo(it) }
+            if (child.isDirectory) copyDocTree(child, out, copied)
+            else {
+                activity.contentResolver.openInputStream(child.uri)?.use { input ->
+                    out.outputStream().use { input.copyTo(it) }
+                }
+                copied[0]++
+                if (copied[0] % 100 == 0) {
+                    pushProgress("{\"phase\":\"copying\",\"copied\":${copied[0]}}")
+                }
             }
         }
     }
@@ -278,8 +448,8 @@ class NativeBridge(
     /** The JS the WS shim expects — a bridge that returns Promises. */
     fun bootstrapJs(wsUrl: String): String {
         // The renderer's createWsAnyBuff reads __ANYBUFF_NATIVE__ (host-ws.ts)
-        // for pickFolder/pickFiles/openExternal/getVersion. This exposes that
-        // object backed by the message channel.
+        // for pickFolder/pickFiles/openExternal/getVersion/restartEngine. This
+        // exposes that object backed by the message channel.
         val escapedWs = wsUrl.replace("\\", "\\\\").replace("'", "\\'")
         return """
         (function () {
@@ -299,10 +469,13 @@ class NativeBridge(
           window.__ANYBUFF_WS_URL__ = '$escapedWs';
           window.__ANYBUFF_APP_VERSION__ = '$appVersion';
           window.__ANYBUFF_NATIVE__ = {
-            pickFolder: () => send('pickFolder').then(r => r.path || null),
+            pickFolder: () => send('pickFolder').then(r => (r.error ? Promise.reject(new Error(r.error)) : r.path || null)),
             pickFiles: () => send('pickFiles').then(r => r.paths || []),
             openExternal: (url) => { androidNative.postMessage(JSON.stringify({ method: 'openExternal', url })); },
             getVersion: () => send('getVersion').then(r => r.version),
+            restartEngine: () => { androidNative.postMessage(JSON.stringify({ method: 'restartEngine' })); },
+            readEngineLog: () => send('readEngineLog').then(r => r.log || ''),
+            logEvent: (kind, detail) => { try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: String(kind || ''), detail: String(detail || '') })); } catch (e) {} },
             // saveKey/deleteKey hand a freshly-typed key to the shell for
             // Keystore storage (same transient renderer→native crossing the
             // desktop IPC does). Stored keys are NEVER readable back by the

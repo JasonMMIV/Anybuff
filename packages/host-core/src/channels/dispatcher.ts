@@ -13,7 +13,17 @@
 
 import { CHANNELS, type HostChannel } from './channels'
 import { getState, saveSettings, fetchModels } from './handlers-app'
-import { listProjects, getTaskView, deleteTask, renameTask, removeProject, trimTaskLastTurn, searchHistory } from './handlers-projects'
+import {
+  listProjects,
+  saveCwd,
+  touchProject,
+  getTaskView,
+  deleteTask,
+  renameTask,
+  removeProject,
+  trimTaskLastTurn,
+  searchHistory,
+} from './handlers-projects'
 import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
 import { listLocalAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
@@ -41,6 +51,8 @@ const registry: Record<string, Handler> = {
   fetchModels,
   // Projects & tasks
   listProjects,
+  saveCwd,
+  touchProject,
   getTaskView,
   deleteTask,
   renameTask,

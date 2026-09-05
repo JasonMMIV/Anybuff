@@ -7480,3 +7480,84 @@ select option {
     gap: 8px;
   }
 }
+
+/* ─── Engine-down recovery overlay (Android WS-dead recovery) ──────────── */
+
+.engine-down-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.7);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+:root[data-theme='light'] .engine-down-overlay {
+  background: rgba(240, 244, 250, 0.7);
+}
+
+.engine-down-card {
+  width: min(400px, 86vw);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  box-shadow: 0 20px 60px var(--shadow);
+}
+
+.engine-down-card h2 {
+  font-size: 17px;
+  margin: 0;
+}
+
+.engine-down-card .hint {
+  margin: 0;
+}
+
+/* On-device engine diagnostics ring buffer (Settings → Engine). */
+.engine-log-box {
+  width: 100%;
+  max-height: 420px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.engine-down-card .engine-down-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  max-width: 280px;
+}
+
+.engine-down-card .engine-down-secondary {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.engine-down-card .engine-down-secondary:hover {
+  color: var(--text-0);
+  border-color: var(--text-2);
+}

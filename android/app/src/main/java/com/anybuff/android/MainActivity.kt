@@ -16,6 +16,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import com.anybuff.android.bridge.NativeBridge
 import com.anybuff.android.crypto.KeyVault
+import com.anybuff.android.engine.EngineLog
 import com.anybuff.android.engine.EngineService
 import com.anybuff.android.engine.SandboxManager
 
@@ -38,6 +39,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var bridge: NativeBridge
     private lateinit var vault: KeyVault
     private var booted = false
+    /** True once the appassets page finished loading (pending-folder push gate). */
+    private val pageReady = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         bridge.onFolderPicked(uri)
@@ -54,6 +57,16 @@ class MainActivity : ComponentActivity() {
         vault = KeyVault()
         webView = WebView(this)
         setContentView(webView)
+
+        // Crash-loop guard landed (see onRenderProcessGone): the fresh WebView
+        // is healthy, but re-loading the app right now would just crash again
+        // (the memory pressure is still there). Show the error page instead of
+        // re-booting the engine (which is already running). Retry re-boots.
+        if (showCrashLoopError) {
+            showCrashLoopError = false
+            showBootError("The app UI crashed repeatedly (likely memory pressure). Free some memory and retry.")
+            return
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -73,10 +86,44 @@ class MainActivity : ComponentActivity() {
                 request: WebResourceRequest,
             ): android.webkit.WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
 
-            // Render-process crash recovery (R5): recreate the WebView.
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                if (url?.startsWith(APPASSETS_ORIGIN) == true) pageReady.set(false)
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                if (url?.startsWith(APPASSETS_ORIGIN) == true) {
+                    pageReady.set(true)
+                    // A folder picked in SAF while this page was being (re)created
+                    // may have been staged after the load started — deliver it
+                    // now that the page can run JS.
+                    bridge.flushPendingFolder()
+                }
+            }
+            // Render-process crash recovery (R5): recreate the WebView. The
+            // renderer is usually killed by system memory pressure (the proot
+            // Node host + long conversations push the device), so recovery must
+            // be robust: detach BEFORE destroy (destroy while still attached is
+            // an IllegalStateException on some WebView versions → app crash
+            // instead of recovery), and stop after 3 crashes in 30s — an endless
+            // destroy/recreate loop would leave a permanently white screen. On
+            // the crash-loop path we still recreate() (a dead WebView cannot
+            // host ANY page, not even the error page) and let the fresh
+            // activity's onCreate show the error UI instead of re-booting.
             override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - firstRenderCrashAt > CRASH_GUARD_WINDOW_MS) {
+                    firstRenderCrashAt = now
+                    rendererCrashes = 0
+                }
+                rendererCrashes++
                 runOnUiThread {
+                    (webView.parent as? ViewGroup)?.removeView(webView)
                     webView.destroy()
+                    if (rendererCrashes >= MAX_RENDERER_RECREATES) {
+                        rendererCrashes = 0
+                        firstRenderCrashAt = 0
+                        showCrashLoopError = true
+                    }
                     recreate()
                 }
                 return true
@@ -90,6 +137,8 @@ class MainActivity : ComponentActivity() {
             pickFilesLauncher = pickFiles,
             vault = vault,
             appVersion = BuildConfig.VERSION_NAME,
+            onRestartEngine = { restartEngine() },
+            pageReady = pageReady,
         )
         bridge.register()
 
@@ -113,6 +162,10 @@ class MainActivity : ComponentActivity() {
     /** Inject the WS/native globals then (re)load the app. Only once. */
     private fun injectAndLoad(wsUrl: String) {
         runOnUiThread {
+            // A background auto-reboot can finish after the activity was
+            // destroyed (system killed the app while rebooting) — loadUrl on a
+            // destroyed WebView throws; skip and let the next creation boot.
+            if (isFinishing || isDestroyed) return@runOnUiThread
             if (booted) return@runOnUiThread
             booted = true
             WebViewCompat.addDocumentStartJavaScript(
@@ -122,6 +175,24 @@ class MainActivity : ComponentActivity() {
             )
             webView.loadUrl(APPASSETS_ORIGIN + "/assets/www/index.html")
         }
+    }
+
+    /**
+     * WS-dead recovery: the renderer detected the host socket closed (engine
+     * process died / was killed) and the user tapped "Restart Engine". Tear
+     * down the sandbox, clear the boot latch and boot again — the fresh host
+     * publishes a NEW port+token, which injectAndLoad re-injects on reload.
+     */
+    fun restartEngine() {
+        EngineLog.append(this, "engine restart requested (renderer overlay)")
+        // booted flips on the UI thread; the stop itself can block several
+        // seconds (process waitFor + tree kill) — keep it off the UI thread
+        // or every restart stutters/ANRs the activity.
+        runOnUiThread { booted = false }
+        Thread {
+            SandboxManager.get(this).stop()
+            runOnUiThread { bootEngine() }
+        }.start()
     }
 
     private fun showBootError(error: String) {
@@ -144,7 +215,13 @@ class MainActivity : ComponentActivity() {
     private inner class BootErrorJs(private val onRetry: () -> Unit) {
         @android.webkit.JavascriptInterface
         fun retry() {
-            runOnUiThread { onRetry() }
+            // The error page can appear after a successful boot (crash-loop
+            // guard); clear the latch so injectAndLoad re-injects + reloads
+            // instead of no-op'ing on the already-true booted flag.
+            runOnUiThread {
+                booted = false
+                onRetry()
+            }
         }
     }
 
@@ -179,5 +256,16 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val APPASSETS_ORIGIN = "https://appassets.androidplatform.net"
+        const val MAX_RENDERER_RECREATES = 3
+        const val CRASH_GUARD_WINDOW_MS = 30_000L
+
+        /** Process-wide: set when the crash-loop guard trips, read + cleared
+         * by the next activity's onCreate so it shows the error page. */
+        @Volatile
+        var showCrashLoopError = false
     }
+
+    /** Renderer crash-loop guard state (see onRenderProcessGone). */
+    private var rendererCrashes = 0
+    private var firstRenderCrashAt = 0L
 }
