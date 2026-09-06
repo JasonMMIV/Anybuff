@@ -61,6 +61,15 @@ describe('provider presets (B1a capability metadata)', () => {
     })
   })
 
+  test('opencode-go: glm-5.3-flash confirmed at 1M/131k (§11 #3 close-out, plan-mode model)', () => {
+    // Three independent sources agree: z.ai docs (1M ctx / 128k max output),
+    // models.dev TOML (1,000,000/131,072), upstream base-chat table (1M).
+    expect(resolvePresetCapabilities('opencode-go', 'glm-5.3-flash').context).toEqual({
+      windowTokens: 1_000_000,
+      outputTokens: 131_072,
+    })
+  })
+
   test('openai: gpt-5.2-chat-latest is the 128k floor and gpt-5.5 uses limit.input (922k)', () => {
     expect(resolvePresetCapabilities('openai', 'gpt-5.2-chat-latest').context).toEqual({
       windowTokens: 128_000,
@@ -99,14 +108,47 @@ describe('provider presets (B1a capability metadata)', () => {
     }
   })
 
-  test('bedrock: claude family covered; unverified nova/llama members stay uncovered (1M fallback)', () => {
+  test('bedrock: claude family covered; nova/llama members removed (§11 #2 close-out)', () => {
     expect(
       resolvePresetCapabilities('bedrock', 'apac.anthropic.claude-opus-4-8').context,
     ).toEqual({ windowTokens: 1_000_000, outputTokens: 128_000 })
-    expect(
-      resolvePresetCapabilities('bedrock', 'us.amazon.nova-premier-v1:0').context
-        ?.windowTokens,
-    ).toBeUndefined()
+    const preset = ANYBUFF_PROVIDER_PRESETS['bedrock']
+    const models = (
+      (preset.config.providers as Record<string, any>)['bedrock'] as {
+        models: readonly string[]
+      }
+    ).models
+    for (const removed of [
+      'us.amazon.nova-premier-v1:0',
+      'us.amazon.nova-pro-v1:0',
+      'us.meta.llama3-3-70b-instruct-v1:0',
+    ]) {
+      expect(models).not.toContain(removed)
+    }
+  })
+
+  test('opencode-go: Hunyuan / LongCat B1c additions resolve (hy3 input-window rule)', () => {
+    // hy3 has both limit.input (192k) and limit.context (256k) in models.dev;
+    // fill rule takes limit.input ?? limit.context → 192k (§3.3 v2).
+    expect(resolvePresetCapabilities('opencode-go', 'hy3').context).toEqual({
+      windowTokens: 192_000,
+      outputTokens: 128_000,
+    })
+    expect(resolvePresetCapabilities('opencode-go', 'hy4-preview').context).toEqual({
+      windowTokens: 1_024_000,
+      outputTokens: 64_000,
+    })
+    expect(resolvePresetCapabilities('opencode-go', 'longcat-2.0').context).toEqual({
+      windowTokens: 1_000_000,
+      outputTokens: 131_072,
+    })
+  })
+
+  test('opencode-go: deepseek-v4-flash pinned at the models.dev value (§11 #2 定案)', () => {
+    expect(resolvePresetCapabilities('opencode-go', 'deepseek-v4-flash').context).toEqual({
+      windowTokens: 1_000_000,
+      outputTokens: 384_000,
+    })
   })
 
   test('ollama: deliberately unfilled — local num_ctx varies, A2 learning is the source', () => {

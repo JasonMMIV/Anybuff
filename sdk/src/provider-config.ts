@@ -1809,10 +1809,17 @@ const OPENCODE_GO_MODEL_CAPABILITIES = {
   // MiniMax
   'minimax-m3': { context: { windowTokens: 1_048_576, outputTokens: 512_000 } },
   'minimax-m2.7': { context: { windowTokens: 204_800, outputTokens: 131_072 } },
-  // DeepSeek (v4-flash conservative: repo-measured 1,048,575 — plan §11 #2)
+  // DeepSeek (plan §11 #2 定案 2026-09-07: models.dev = 1,000,000/384,000;
+  // 上游 repo 註解曾實測 1,048,575 可過,採 models.dev 保守值 + A2 錯誤訊息學習為修正層)
   'deepseek-v4-pro': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
   'deepseek-v4-flash': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
   'deepseek-v4-flash-vision-exp': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
+  // Tencent Hunyuan / Meituan LongCat (B1c 追加 2026-09-07; models.dev)
+  // hy3 的 models.dev limit 同時有 input=192,000 與 context=256,000 — 填值規則
+  // 取 limit.input ?? limit.context → 192,000 (§3.3 v2, OpenAI-family 同規則)。
+  'hy3': { context: { windowTokens: 192_000, outputTokens: 128_000 } },
+  'hy4-preview': { context: { windowTokens: 1_024_000, outputTokens: 64_000 } },
+  'longcat-2.0': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
   // OpenCode Go-hosted GPT / Grok
   'gpt-5.6-luna': { context: { windowTokens: 922_000, outputTokens: 128_000 } },
   'grok-4.6': { context: { windowTokens: 500_000, outputTokens: 500_000 } },
@@ -1842,6 +1849,10 @@ const OPENCODE_GO_MODELS = [
   // MiniMax
   'minimax-m3',
   'minimax-m2.7',
+  // Hunyuan / LongCat (B1c 追加)
+  'hy3',
+  'hy4-preview',
+  'longcat-2.0',
   // DeepSeek
   'deepseek-v4-pro',
   'deepseek-v4-flash',
@@ -2061,15 +2072,12 @@ export const ANYBUFF_PROVIDER_PRESETS = {
             'apac.anthropic.claude-sonnet-4-5-20250929-v1:0',
             'apac.anthropic.claude-haiku-4-5-20251001-v1:0',
             'apac.anthropic.claude-sonnet-4-20250514-v1:0',
-            'us.amazon.nova-premier-v1:0',
-            'us.amazon.nova-pro-v1:0',
-            'us.meta.llama3-3-70b-instruct-v1:0',
           ],
           // Claude-family values: models.dev lab files mapped by native
           // limits (the Bedrock gateway may cap lower — A2 error-message
           // learning is the correction layer). nova-premier / nova-pro /
-          // llama3-3-70b values are unverified (plan §11 #2) and intentionally
-          // omitted: they fall to the 1M unknown-window fallback until then.
+          // llama3-3-70b were removed 2026-09-07 (plan §11 #2 close-out:
+          // extremely niche models — see plan §11).
           modelCapabilities: {
             'apac.anthropic.claude-opus-4-8': {
               context: { windowTokens: 1_000_000, outputTokens: 128_000 },
