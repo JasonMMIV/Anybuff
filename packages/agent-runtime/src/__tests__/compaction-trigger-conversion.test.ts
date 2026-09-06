@@ -92,7 +92,12 @@ const runLoop = async (params: {
   contextWindow: number
   outputTokens?: number
   history: Message[]
-}): Promise<{ history: Message[]; runtimeImpl: any }> => {
+}): Promise<{
+  history: Message[]
+  runtimeImpl: any
+  /** The loop's own context-meter reading (used: max) from the step end. */
+  contextMeter: { used: number; max: number } | null
+}> => {
   const {
     agentTemplate: _,
     localAgentTemplates: __,
@@ -110,6 +115,7 @@ const runLoop = async (params: {
     return promptSuccess('mock-message-id')
   }
 
+  let contextMeter: { used: number; max: number } | null = null
   const sessionState = getInitialSessionState(mockFileContext)
   const result = await loopAgentSteps({
     ...runtimeImpl,
@@ -132,10 +138,14 @@ const runLoop = async (params: {
     userId: TEST_USER_ID,
     clientSessionId: 'test-session',
     ancestorRunIds: [],
-    onResponseChunk: () => {},
+    onResponseChunk: (chunk: any) => {
+      if (chunk && typeof chunk === 'object' && chunk.type === 'context_window') {
+        contextMeter = { used: chunk.used, max: chunk.max }
+      }
+    },
     signal: new AbortController().signal,
   } as any)
-  return { history: result.agentState.messageHistory, runtimeImpl }
+  return { history: result.agentState.messageHistory, runtimeImpl, contextMeter }
 }
 
 const textOf = (history: Message[]): string =>
@@ -158,51 +168,51 @@ describe('B2: compaction trigger conversion in loopAgentSteps', () => {
   })
 
   it('compacts at min(0.7·W, W−reserve), not at the raw window', async () => {
-    const contextWindow = 1_000
-    // reserve = min(max(0.12·W, 0), lo-clamp min(8k, 0.5·W)) → floored at 0.5·W
-    // = 500; trigger = min(0.7·W, W − 500) = min(700, 500) = 500.
+    // The harness carries ~750 tokens of fixed overhead (system prompt,
+    // tool schemas, live prompt). With a 5k window the reserve's 8k floor
+    // clamps to 0.5·W = 2_500, so trigger = min(3_500, 2_500) = 2_500 — a
+    // (trigger, W) band still exists for the filler to cross.
+    const contextWindow = 5_000
     const trigger = toCompactionTriggerTokens(contextWindow)
-    expect(trigger).toBe(500)
+    expect(trigger).toBe(2_500)
 
-    // Grow the history until its measured size crosses the trigger, then
-    // confirm the loop compacted. The loop adds its own live prompt on top.
+    // Grow the history until the loop's own context meter crosses the
+    // trigger. The meter is the exact number the compaction decision sees.
     let history: Message[] = []
-    let measured = 0
-    while (measured <= trigger) {
+    let meter: { used: number; max: number } | null = null
+    for (;;) {
+      const run = await runLoop({ contextWindow, history })
+      lastRuntimeImpl = run.runtimeImpl
+      meter = run.contextMeter
+      expect(meter).not.toBeNull()
+      if (meter!.used > trigger) {
+        expect(textOf(run.history)).toContain('<conversation_summary>')
+        // Sanity: the same history fits inside the raw window — pre-B2 this
+        // run would NOT have compacted, because maxContextLength was W.
+        expect(meter!.used).toBeLessThan(contextWindow)
+        return
+      }
       history = [...history, ...fillerPair(history.length / 2)]
-      measured = measuredTokens(history)
     }
-
-    // Sanity: the history fits inside the raw window but exceeds the trigger
-    // — pre-B2 this same history would NOT have compacted.
-    expect(measured).toBeGreaterThan(trigger)
-    expect(measured).toBeLessThan(contextWindow)
-
-    const { history: compacted, runtimeImpl } = await runLoop({
-      contextWindow,
-      history,
-    })
-    lastRuntimeImpl = runtimeImpl
-    expect(textOf(compacted)).toContain('<conversation_summary>')
   })
 
   it('leaves the history alone below the trigger even close to the window', async () => {
-    const contextWindow = 1_000
+    // Same window as above: trigger = 2_500, so a history reading in the
+    // (trigger, W) band would have compacted pre-B2 (W=5k) but must not now.
+    const contextWindow = 5_000
     const trigger = toCompactionTriggerTokens(contextWindow)
-    expect(trigger).toBe(500)
+    expect(trigger).toBe(2_500)
 
-    // Two filler pairs: measured well under the trigger, and under the raw
-    // window too.
+    // Two filler pairs: the loop's meter reads below the trigger, and below
+    // the raw window too.
     const history = [...fillerPair(0), ...fillerPair(1)]
-    const measured = measuredTokens(history)
-    expect(measured).toBeLessThan(trigger)
-    expect(measured).toBeLessThan(contextWindow)
-
-    const { history: untouched, runtimeImpl } = await runLoop({
+    const { history: untouched, runtimeImpl, contextMeter } = await runLoop({
       contextWindow,
       history,
     })
     lastRuntimeImpl = runtimeImpl
+    expect(contextMeter).not.toBeNull()
+    expect(contextMeter!.used).toBeLessThan(trigger)
     expect(textOf(untouched)).not.toContain('<conversation_summary>')
   })
 

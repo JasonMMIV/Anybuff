@@ -27,6 +27,11 @@ export interface ProviderConfig {
   models: string[]
   enableThinking?: boolean
   customBody?: Record<string, unknown> | string
+  /** Per-model capability metadata (windowTokens/outputTokens) learned from
+   *  overflow errors (A2) or lazy catalog hydration (P1 B1d). Written into
+   *  the generated anybuff.json so the SDK reads it; never set by hand here —
+   *  explicit anybuff.json entries still win at resolution time. */
+  modelCapabilities?: Record<string, { context?: { windowTokens?: number; outputTokens?: number } }>
 }
 
 import type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
@@ -532,6 +537,66 @@ export function getProviderApiKeyOverrides(): Record<string, string> {
   return overrides
 }
 
+/**
+ * Persist a learned/hydrated context window for a provider model (P1 B1d).
+ * Accepts either a bare model id or a routable `${providerId}/${model}`
+ * string; the routable form wins when it names a known provider. Only fills
+ * gaps — an explicit capability recorded here before (or a model with no
+ * matching provider entry) is left untouched. Best-effort: never throws.
+ */
+export function recordProviderModelCapability(params: {
+  providerId?: string
+  model: string
+  windowTokens?: number
+  outputTokens?: number
+}): void {
+  try {
+    const { providerId: explicitProviderId, model, windowTokens, outputTokens } = params
+    if (
+      (windowTokens === undefined || !Number.isFinite(windowTokens) || windowTokens <= 0) &&
+      (outputTokens === undefined || !Number.isFinite(outputTokens) || outputTokens <= 0)
+    ) {
+      return
+    }
+    const s = loadSettings()
+    // Resolve provider: explicit id first, then the routable prefix, then any
+    // provider whose model list contains the bare model id.
+    const bareModel = model.includes('/') ? model.split('/').pop()! : model
+    const provider =
+      (explicitProviderId ? s.providers.find((p) => p.id === explicitProviderId) : undefined) ??
+      (model.includes('/')
+        ? s.providers.find((p) => p.id === model.split('/')[0])
+        : undefined) ??
+      s.providers.find((p) => p.models.includes(bareModel))
+    if (!provider) return
+    const modelId = provider.models.includes(bareModel)
+      ? bareModel
+      : model.includes('/')
+        ? model.slice(model.indexOf('/') + 1)
+        : model
+
+    provider.modelCapabilities ??= {}
+    const existing = provider.modelCapabilities[modelId]
+    // Same write-back rule as A2: never override an explicit entry.
+    if (existing?.context?.windowTokens !== undefined && windowTokens !== undefined) return
+    provider.modelCapabilities[modelId] = {
+      ...existing,
+      context: {
+        ...existing?.context,
+        ...(windowTokens !== undefined && Number.isFinite(windowTokens) && windowTokens > 0
+          ? { windowTokens }
+          : {}),
+        ...(outputTokens !== undefined && Number.isFinite(outputTokens) && outputTokens > 0
+          ? { outputTokens }
+          : {}),
+      },
+    }
+    saveSettings(s)
+  } catch {
+    // Best-effort persistence — never break a run over bookkeeping.
+  }
+}
+
 export function hasAnyApiKey(): boolean {
   if (Object.keys(hostKeyOverrides()).length > 0) return true
   const s = loadSettings()
@@ -602,6 +667,18 @@ export function writeProviderConfigFile(): string {
   }
   if (s.reasoningEffort && s.reasoningEffort !== 'default') {
     config.defaultReasoningEffort = s.reasoningEffort
+  }
+  // P1 B1d: emit learned capability metadata so the SDK resolves hydrated
+  // windows synchronously without refetching catalogs.
+  for (const p of s.providers) {
+    if (!p.baseURL || !p.modelCapabilities) continue
+    const caps = Object.fromEntries(
+      Object.entries(p.modelCapabilities).filter(([, v]) => v && typeof v === 'object')
+    )
+    const target = providers[p.id]
+    if (Object.keys(caps).length > 0 && target && typeof target === 'object') {
+      ;(target as Record<string, unknown>).modelCapabilities = caps
+    }
   }
   // Per-agent model routing: agents[agentId] = model (string), agentReasoningEfforts[agentId] = effort
   const agentRouting = s.agentRouting ?? {}

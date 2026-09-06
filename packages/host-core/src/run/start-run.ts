@@ -2,12 +2,13 @@ import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } f
 import {
   UNKNOWN_MODEL_CONTEXT_FALLBACK,
   compactMessagesForResume,
+  hydrateModelCapabilities,
   resolveEffectiveContextWindow,
   resolveModelContextOutputTokens,
   toCompactionTriggerTokens
 } from '@codebuff/sdk'
 import { isSensitiveFile } from '../files/file-filter'
-import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from '../settings/settings'
+import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig, recordProviderModelCapability } from '../settings/settings'
 import type { AgentRoute } from '../settings/settings'
 import type { Message as MainAgentHistoryMessage } from '@codebuff/common/types/messages/codebuff-message'
 import { applyMcpServersToAgents, getEnabledMcpServers } from '../mcp/mcp-settings'
@@ -756,6 +757,36 @@ export function buildRunContextParams(agentId: string): { maxContextLength: numb
   }
 }
 
+/**
+ * P1 B1d: hydrate an unknown routed model's capabilities (gateway /models →
+ * models.dev) in the background and persist the result into settings so the
+ * generated anybuff.json carries it on the next run. Best-effort and one-shot
+ * per (provider, model); failures silently keep the 1M fallback.
+ */
+export function hydrateUnknownModelCaps(settings: {
+  activeModel?: string
+  agentRouting?: Record<string, AgentRoute>
+}, agentId: string): void {
+  const model = resolveRoutedModelForRun(settings, agentId)
+  if (!model || !model.includes('/')) return
+  const providerId = model.split('/')[0]
+  // Already know the window (declared, learned, or hydrated) — nothing to do.
+  if (resolveEffectiveContextWindow(model) !== undefined) return
+  void hydrateModelCapabilities({ providerId, model })
+    .then((caps) => {
+      if (!caps) return
+      recordProviderModelCapability({
+        providerId,
+        model,
+        windowTokens: caps.windowTokens,
+        outputTokens: caps.outputTokens,
+      })
+    })
+    .catch(() => {
+      // Best-effort — a hydration failure must never surface as a run error.
+    })
+}
+
 export type OverflowResumePlan =
   | { action: 'run' }
   | { action: 'compact'; k: number; maxTokens: number }
@@ -827,6 +858,10 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   try {
     // Apply provider settings (API key + config path) before each run
     applySettingsToEnv()
+
+    // P1 B1d: fill unknown model windows from the catalogs in the background
+    // (persisted for the next run; the current one keeps the 1M fallback).
+    hydrateUnknownModelCaps(loadSettings(), agentId)
 
     // Load custom agents (.agents/). A broken agent file must never block the whole
     // run — fall back to the bundled definitions and report the load failure.

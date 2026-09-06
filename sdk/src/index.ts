@@ -126,6 +126,13 @@ export {
   resolveModelContextOutputTokens,
 } from './impl/model-provider'
 
+// Lazy catalog hydration for unknown models (AnyBuff P1 B1d)
+export {
+  clearModelCatalogHydrationForTest,
+  hydrateModelCapabilities,
+} from './impl/model-catalog-hydration'
+export type { HydratedCapabilities } from './impl/model-catalog-hydration'
+
 // Provider content-policy classification (failover-eligible errors)
 export {
   PROVIDER_CONTENT_POLICY_ERROR_CODE,

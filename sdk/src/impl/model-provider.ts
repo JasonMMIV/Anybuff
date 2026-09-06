@@ -28,6 +28,11 @@ import {
   resolveModelCapabilities,
 } from '../provider-config'
 import { resolveModelsToTry } from './failover'
+import {
+  getHydratedCapabilities,
+  hydrateModelCapabilities,
+  type HydratedCapabilities,
+} from './model-catalog-hydration'
 import { getSystemProcessEnv } from '../env'
 
 import type {
@@ -751,6 +756,47 @@ export function resolveEffectiveContextWindow(
   )[0]
 }
 
+// ============================================================================
+// Lazy catalog hydration (AnyBuff P1 B1d)
+// ============================================================================
+
+/**
+ * Fire-and-forget hydration for a candidate that has no declared capability.
+ * The resolve functions are synchronous, so the network lookup runs in the
+ * background: the first request for an unknown model still uses the 1M
+ * fallback, but the learned value is available synchronously from the second
+ * lookup on (same session, next run, etc.). One-shot per (provider, model)
+ * is enforced inside the hydration module, and failures degrade silently.
+ */
+function maybeHydrateCapabilities(params: {
+  configured: ResolvedProviderModel
+  candidateModel: string
+}): void {
+  const { configured, candidateModel } = params
+  void hydrateModelCapabilities({
+    providerId: configured.providerId,
+    providerBaseURL: configured.provider.baseURL,
+    model: candidateModel,
+  }).catch(() => {
+    // Hydration must never introduce a new failure mode (plan §5 B1d #5).
+  })
+}
+
+/**
+ * Synchronous lookup of caps learned by a previous hydration round for a
+ * candidate with no declared capability. Present only after the background
+ * hydrateModelCapabilities has completed for this pair.
+ */
+function getHydratedCapsForCandidate(params: {
+  providerId: string
+  candidateModel: string
+}): HydratedCapabilities | undefined {
+  return getHydratedCapabilities({
+    providerId: params.providerId,
+    model: params.candidateModel,
+  })
+}
+
 /**
  * Resolve model capacity without constructing a provider client or touching
  * credentials. Used before the first LLM request so pruning and context-window
@@ -794,7 +840,15 @@ export function resolveModelContextWindow(params: {
       const learned = learnedContextWindows.get(
         learnedWindowKey(configured.providerId, candidateModel),
       )
-      return learned !== undefined ? [learned] : []
+      if (learned !== undefined) return [learned]
+      // B1d: caps hydrated earlier this process from the gateway/models.dev
+      // catalogs fill the remaining gap (and schedule hydration for next time).
+      maybeHydrateCapabilities({ configured, candidateModel })
+      const hydrated = getHydratedCapsForCandidate({
+        providerId: configured.providerId,
+        candidateModel,
+      })
+      return hydrated?.windowTokens !== undefined ? [hydrated.windowTokens] : []
     },
   )
   return windows[0]
@@ -841,7 +895,13 @@ export function resolveModelContextOutputTokens(params: {
       ) {
         return [outputTokens]
       }
-      return []
+      // B1d: hydrated caps may carry the output cap too.
+      maybeHydrateCapabilities({ configured, candidateModel })
+      const hydrated = getHydratedCapsForCandidate({
+        providerId: configured.providerId,
+        candidateModel,
+      })
+      return hydrated?.outputTokens !== undefined ? [hydrated.outputTokens] : []
     },
   )
   return outputs[0]
@@ -883,7 +943,17 @@ export function resolveModelContextWindows(params: {
             learnedWindowKey(configured.providerId, candidateModel),
           )
         : undefined
-      return learned !== undefined ? [learned] : []
+      if (learned !== undefined) return [learned]
+      // B1d: hydrated caps fill the remaining gap (and schedule hydration).
+      if (configured) {
+        maybeHydrateCapabilities({ configured, candidateModel })
+        const hydrated = getHydratedCapsForCandidate({
+          providerId: configured.providerId,
+          candidateModel,
+        })
+        if (hydrated?.windowTokens !== undefined) return [hydrated.windowTokens]
+      }
+      return []
     },
   )
   return {
