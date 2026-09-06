@@ -639,10 +639,125 @@ function resolveVisionModelIfNeeded(params: {
   }
 }
 
+// ============================================================================
+// Learned context-window overlay (AnyBuff P0 A2 step 4)
+// ============================================================================
+
+/**
+ * In-memory per-process record of context windows LEARNED from live provider
+ * overflow 400s (the provider rejected a request and disclosed its real
+ * limit). NOT persisted to anybuff.json: host-core regenerates anybuff.json
+ * from settings before every run, so an sdk-side file write would be wiped;
+ * durable write-back belongs with P1's capability machinery.
+ */
+const learnedContextWindows = new Map<string, number>()
+
+function learnedWindowKey(providerId: string, model: string): string {
+  return `${providerId}::${model}`
+}
+
+/**
+ * Record a context window learned from an overflow error for `(providerId,
+ * model)`. An explicit user-declared `windowTokens` capability always wins —
+ * the overlay only fills gaps, it never overrides config. Guards the same
+ * plausible range as `parseLearnedContextWindow` (4k–32M).
+ */
+export function recordLearnedModelContextWindow(
+  model: string,
+  tokens: number,
+): void {
+  if (!Number.isFinite(tokens) || tokens < 4_000 || tokens >= 32_000_000) {
+    return
+  }
+  const loadedConfig = loadProviderConfigSync()
+  let configured: ResolvedProviderModel | undefined
+  try {
+    configured = resolveConfiguredProviderModel({
+      model,
+      loadedConfig,
+      apiKeyOverrides: injectedApiKeyOverrides,
+    })
+  } catch {
+    // Unresolvable model routing — nothing sensible to key the overlay by.
+    return
+  }
+  if (!configured) return
+
+  const explicit = resolveModelCapabilities({
+    providerId: configured.providerId,
+    model,
+    loadedConfig,
+  })?.context?.windowTokens
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
+    console.info(
+      `${COMPAT_LOG_PREFIX} learned-window-overlay: ${configured.providerId}/${model} — not applied (explicit windowTokens=${explicit} in config)`,
+    )
+    return
+  }
+
+  const key = learnedWindowKey(configured.providerId, model)
+  if (learnedContextWindows.get(key) === tokens) return
+  learnedContextWindows.set(key, tokens)
+  console.info(
+    `${COMPAT_LOG_PREFIX} learned-window-overlay: ${configured.providerId}/${model} — learned windowTokens=${tokens}`,
+  )
+}
+
+/** Look up a learned window for a routable model string (no routing applied). */
+function getLearnedWindowForCandidate(params: {
+  loadedConfig: LoadedProviderConfig
+  candidateModel: string
+}): number | undefined {
+  const { loadedConfig, candidateModel } = params
+  let configured: ResolvedProviderModel | undefined
+  try {
+    configured = resolveConfiguredProviderModel({
+      model: candidateModel,
+      loadedConfig,
+      apiKeyOverrides: injectedApiKeyOverrides,
+    })
+  } catch {
+    return undefined
+  }
+  if (!configured) return undefined
+  return learnedContextWindows.get(
+    learnedWindowKey(configured.providerId, candidateModel),
+  )
+}
+
+/**
+ * Public helper (AnyBuff P0 A4): the effective context window for a routable
+ * model string — declared capabilities first, learned-from-overflow overlays
+ * second. Returns undefined when neither source knows.
+ */
+export function resolveEffectiveContextWindow(
+  model: string,
+): number | undefined {
+  const declared = resolveModelContextWindow({ model })
+  if (declared !== undefined) return declared
+  const loadedConfig = loadProviderConfigSync()
+  const effectiveModel = resolveConfiguredAgentModelConfig({
+    model,
+    loadedConfig,
+  }).model
+  return resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
+    (candidateModel) => {
+      const learned = getLearnedWindowForCandidate({
+        loadedConfig,
+        candidateModel,
+      })
+      return learned !== undefined ? [learned] : []
+    },
+  )[0]
+}
+
 /**
  * Resolve model capacity without constructing a provider client or touching
  * credentials. Used before the first LLM request so pruning and context-window
  * telemetry share the same BYOK capability source as the request path.
+ *
+ * Declared capabilities win; a window learned from a live overflow error
+ * (P0 A2) fills in when the model has no declared windowTokens.
  */
 export function resolveModelContextWindow(params: {
   agentId?: string
@@ -673,11 +788,13 @@ export function resolveModelContextWindow(params: {
         model: candidateModel,
         loadedConfig,
       })?.context?.windowTokens
-      return typeof windowTokens === 'number' &&
-        Number.isFinite(windowTokens) &&
-        windowTokens > 0
-        ? [windowTokens]
-        : []
+      if (typeof windowTokens === 'number' && Number.isFinite(windowTokens) && windowTokens > 0) {
+        return [windowTokens]
+      }
+      const learned = learnedContextWindows.get(
+        learnedWindowKey(configured.providerId, candidateModel),
+      )
+      return learned !== undefined ? [learned] : []
     },
   )
   return windows[0]
@@ -712,7 +829,14 @@ export function resolveModelContextWindows(params: {
             loadedConfig,
           })?.context?.windowTokens
         : undefined
-      return typeof value === 'number' && value > 0 ? [value] : []
+      if (typeof value === 'number' && value > 0) return [value]
+      // Learned-from-overflow overlay fills gaps (P0 A2).
+      const learned = configured
+        ? learnedContextWindows.get(
+            learnedWindowKey(configured.providerId, candidateModel),
+          )
+        : undefined
+      return learned !== undefined ? [learned] : []
     },
   )
   return {

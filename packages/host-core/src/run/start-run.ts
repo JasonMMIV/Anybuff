@@ -1,6 +1,14 @@
 import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } from '@codebuff/sdk'
+import {
+  UNKNOWN_MODEL_CONTEXT_FALLBACK,
+  compactMessagesForResume,
+  resolveEffectiveContextWindow,
+  toCompactionTriggerTokens
+} from '@codebuff/sdk'
 import { isSensitiveFile } from '../files/file-filter'
 import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig } from '../settings/settings'
+import type { AgentRoute } from '../settings/settings'
+import type { Message as MainAgentHistoryMessage } from '@codebuff/common/types/messages/codebuff-message'
 import { applyMcpServersToAgents, getEnabledMcpServers } from '../mcp/mcp-settings'
 import { bundledAgents } from '../agents/bundled-agents'
 import { loadProjectLocalAgents, type LocalAgentsResult } from '../agents/local-agents'
@@ -696,6 +704,78 @@ const AGENT_ID_FOR_MODE: Record<'default' | 'plan' | 'chat', string> = {
   chat: 'base-chat'
 }
 
+/* ─── Context-overflow resume guard (AnyBuff context-management P0 A4) ─── */
+
+/**
+ * Max consecutive context-overflow resumes per task. Overflow is NEVER in
+ * AUTO_RETRY_REASONS: each resume first compacts the resumable history
+ * (trigger × 0.5^(k−1)), and after this many halvings the model simply cannot
+ * hold the conversation — give up with explicit guidance instead of looping.
+ */
+const CONTEXT_OVERFLOW_RESUME_MAX_K = 3
+
+/**
+ * In-memory consecutive context-overflow resume counter per task. Resets on
+ * any fresh user turn (non-resume start) via resetOverflowResumeCount, and on
+ * any successful run (cleared in the success return path).
+ */
+const overflowResumeCounts = new Map<string, number>()
+
+/** Clear a task's overflow-resume counter (fresh turn / successful run). */
+export function resetOverflowResumeCount(taskId: string): void {
+  overflowResumeCounts.delete(taskId)
+}
+
+/** The model string a resume attempt should size its compaction target for.
+ * Structural pick keeps this decoupled from the settings module's internal
+ * PersistedSettings shape (loadSettings()'s return satisfies it). */
+function resolveRoutedModelForRun(
+  settings: { activeModel?: string; agentRouting?: Record<string, AgentRoute> },
+  agentId: string,
+): string | undefined {
+  return settings.agentRouting?.[agentId]?.model ?? settings.activeModel ?? undefined
+}
+
+export type OverflowResumePlan =
+  | { action: 'run' }
+  | { action: 'compact'; k: number; maxTokens: number }
+  | { action: 'give-up'; message: string }
+
+/**
+ * Pure, testable overflow-resume decision (AnyBuff P0 A4). Given the previous
+ * failure's classified reason, the resumable history and the effective context
+ * window, choose one of:
+ * - `run`: not an overflow resume — unchanged behavior;
+ * - `compact`: increment k and compact toward trigger(W) × 0.5^(k−1);
+ * - `give-up`: k already exceeded the cap — surface the explicit message.
+ */
+export function planOverflowResume(params: {
+  resumeReason: string | undefined
+  previousRunMessageHistory: unknown
+  effectiveWindowTokens: number | undefined
+  previousK: number
+}): OverflowResumePlan {
+  const isOverflow = params.resumeReason === 'context-overflow'
+  const hasHistory = Array.isArray(params.previousRunMessageHistory) && params.previousRunMessageHistory.length > 0
+  if (!isOverflow || !hasHistory) return { action: 'run' }
+
+  const k = params.previousK + 1
+  if (k > CONTEXT_OVERFLOW_RESUME_MAX_K) {
+    return {
+      action: 'give-up',
+      message:
+        'Context window exceeded this model’s limit even after compression. Switch to a model with a larger context window, or declare its windowTokens in anybuff.json.'
+    }
+  }
+
+  const window = params.effectiveWindowTokens ?? UNKNOWN_MODEL_CONTEXT_FALLBACK
+  const trigger = toCompactionTriggerTokens(window)
+  // Halve each consecutive attempt so the loop converges instead of ping-ponging
+  // at the same budget; floor at 1000 so a tiny window never underflows.
+  const maxTokens = Math.max(1_000, Math.floor(trigger * Math.pow(0.5, k - 1)))
+  return { action: 'compact', k, maxTokens }
+}
+
 /**
  * Run the agent for a conversation. The run is owned by the main process and
  * keyed by taskId; all context resolution (previousRun) happens here, so the
@@ -744,21 +824,104 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
     while (true) {
       attempt++
 
+      // Fresh user turn (not a resume): the overflow-resume k-counter is
+      // turn-scoped — a new prompt must start from a clean loop budget.
+      if (attempt === 1 && opts.resume !== true) {
+        resetOverflowResumeCount(taskId)
+      }
+
       // Resolve conversation context fresh on every attempt. Attempt 1 follows
       // the caller's intent; automatic retries behave exactly like a manual
       // Resume (memory → disk runstate → checkpoint splice), so a mid-turn
       // crash during any attempt still recovers.
       let previousRun: unknown | undefined
       let resumeFromCheckpoint = false
+      let resumeReason: string | undefined
       if (attempt > 1 || opts.resume === true) {
         const resumable = buildResumableState(taskId)
         previousRun = resumable?.previousRun ?? undefined
         resumeFromCheckpoint = resumable?.source === 'checkpoint'
+        // Overflow detection mirrors getSessionSnapshot: classify the previous
+        // run's error output text with the SAME shared matcher classifyFailure
+        // uses (P0 A4).
+        resumeReason = resumable
+          ? classifyFailure(resumable.errorMessage ?? '')
+          : undefined
         if (attempt > 1) sendEvent({ type: 'run_status', status: 'running', taskId })
       } else {
         // Plain continuation: the last completed turn's state only — never a
         // mid-turn checkpoint (its pending prompt would duplicate the turn).
         previousRun = entry.runState ?? loadTaskRunState(taskId) ?? undefined
+      }
+
+      // AnyBuff P0 A4: an overflow resume is NOT an auto-retry. Compact the
+      // resumable history toward a halving target before re-running once; stop
+      // with explicit guidance after the k-cap so the loop can never spin.
+      if (previousRun !== undefined && resumeReason === 'context-overflow') {
+        const historyContainer = previousRun as {
+          sessionState?: {
+            mainAgentState?: { messageHistory?: unknown; contextTokenCount?: number } & Record<string, unknown>
+          } & Record<string, unknown>
+        }
+        const messageHistory = historyContainer?.sessionState?.mainAgentState?.messageHistory
+        const plan = planOverflowResume({
+          resumeReason,
+          previousRunMessageHistory: messageHistory,
+          effectiveWindowTokens: resolveEffectiveContextWindow(
+            resolveRoutedModelForRun(currentSettings, agentId) ?? '',
+          ),
+          previousK: overflowResumeCounts.get(taskId) ?? 0,
+        })
+        if (plan.action === 'give-up') {
+          // Deliberately do NOT reset the k-counter here: the anti-loop guard
+          // must survive a stubborn manual Resume (only a successful run or a
+          // fresh user turn clears it) so a give-up → resume → give-up click
+          // loop can never re-open the halving sequence at the full trigger.
+          finishRun(taskId, previousRun, {
+            interrupted: true,
+            errorMessage: plan.message,
+          })
+          sendEvent({ type: 'error', message: plan.message, taskId })
+          sendEvent({ type: 'run_status', status: 'interrupted', taskId })
+          return {
+            ok: true,
+            taskId,
+            interrupted: true,
+            reason: 'context-overflow',
+            errorMessage: plan.message
+          }
+        }
+        if (plan.action === 'compact') {
+          overflowResumeCounts.set(taskId, plan.k)
+          const res = compactMessagesForResume({
+            messages: messageHistory as MainAgentHistoryMessage[],
+            maxTokens: plan.maxTokens
+          })
+          if (res.compacted) {
+            // Feed the SDK a shallow-cloned previousRun — never mutate the
+            // persisted object in place (its disk copy stays untouched; the
+            // normal run machinery persists the compacted state).
+            const mainAgentState = historyContainer.sessionState?.mainAgentState as
+              | { messageHistory?: unknown; contextTokenCount?: number } & Record<string, unknown>
+              | undefined
+            previousRun = {
+              ...previousRun,
+              sessionState: {
+                ...historyContainer.sessionState,
+                mainAgentState: {
+                  ...mainAgentState,
+                  messageHistory: res.messages,
+                  contextTokenCount: res.estimatedTokens
+                }
+              }
+            }
+            sendEvent({
+              type: 'context_compaction',
+              action: 'overflow_resume',
+              taskId
+            })
+          }
+        }
       }
 
       client = new CodebuffClient({
@@ -868,6 +1031,9 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
 
       const failure = classifyInterrupted(runState)
       if (!failure) {
+        // Any successful run clears the task's overflow-resume counter (P0 A4):
+        // the k-cap is scoped to consecutive overflow failures only.
+        resetOverflowResumeCount(taskId)
         finishRun(taskId, runState, { interrupted: false })
         sendEvent({ type: 'run_status', status: 'idle', taskId })
         return { ok: true, taskId, interrupted: false }

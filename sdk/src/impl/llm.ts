@@ -9,6 +9,7 @@ import {
 } from '@codebuff/common/util/error'
 import {
   getErrorStatusCode,
+  isContextOverflowError,
   isRetryableStatusCode,
   normalizeProviderContentPolicyError,
 } from '../error-utils'
@@ -36,6 +37,7 @@ import {
 } from './failover'
 import { getModelForRequest } from './model-provider'
 import type { ModelPricing } from './model-provider'
+import { decideContextOverflowTrim } from './context-overflow-trim'
 import {
   classifyStreamEndRecovery,
   classifyThrownStreamRecovery,
@@ -54,6 +56,7 @@ import type {
   PromptAiSdkStructuredInput,
   PromptAiSdkStructuredOutput,
 } from '@codebuff/common/types/contracts/llm'
+import type { Message } from '@codebuff/common/types/messages/codebuff-message'
 import type { ParamsOf } from '@codebuff/common/types/function-params'
 import type { ProviderMetadata } from '@codebuff/common/types/messages/provider-metadata'
 import type { JSONValue } from '@codebuff/common/types/json'
@@ -162,28 +165,69 @@ const sleep = (ms: number) =>
  * Shared two-tier failure policy (PLAN.md §9.1):
  * - inner retries: transient network errors and retryable HTTP statuses,
  *   bounded by MAX_RETRIES_PER_MESSAGE with jittered exponential backoff;
- * - outer failover: auth (401/403), terminal 5xx after retries, and
- *   content-policy blocks switch to the next configured failoverModels entry.
+ * - outer failover: auth (401/403), terminal 5xx after retries, content-policy
+ *   blocks and context-overflow 400s (P0 A3) switch to the next configured
+ *   failoverModels entry;
+ * - overflow trim-retry (P0 A2): a context-overflow 400 first gets ONE
+ *   in-place trim + same-model re-run before any failover classification.
  * Errors that are neither retry- nor failover-eligible (e.g. plain 400s)
  * throw immediately.
  */
 async function runGenerationWithFailover<T>(params: {
   signal: AbortSignal
   model?: string
+  /** Original request messages — input to the overflow trim decision (P0 A2). */
+  messages?: Message[]
   logger: {
     warn: (obj: unknown, msg: string) => void
     error: (obj: unknown, msg: string) => void
+    info?: (obj: unknown, msg: string) => void
   }
-}, run: (args: { requestedModel?: string; verbatim: boolean }) => Promise<T>): Promise<T> {
+}, run: (args: {
+  requestedModel?: string
+  verbatim: boolean
+  /** Trimmed request messages for the overflow retry (P0 A2). */
+  messagesOverride?: Message[]
+}) => Promise<T>): Promise<T> {
   const modelsToTry = resolveModelsToTry(params.model, loadProviderConfigSync())
   for (let m = 0; m < modelsToTry.length; m++) {
     let retries = 0
+    let attemptMessages: Message[] | undefined
+    let didTrimRetry = false
     while (true) {
       try {
-        return await run({ requestedModel: modelsToTry[m], verbatim: m > 0 })
+        return await run({
+          requestedModel: modelsToTry[m],
+          verbatim: m > 0,
+          messagesOverride: attemptMessages,
+        })
       } catch (error) {
         if (params.signal.aborted) throw error
         const statusCode = getErrorStatusCode(error)
+        // P0 A2: one in-place trim + same-model retry before any other
+        // classification (only while nothing has been yielded — the generate
+        // path cannot yield partials, so no flags needed here).
+        if (isContextOverflowError(error) && !didTrimRetry) {
+          const decision = decideContextOverflowTrim({
+            error,
+            messages: attemptMessages ?? params.messages ?? [],
+            model: modelsToTry[m],
+            alreadyTrimmed: false,
+            logger: {
+              info: (obj: unknown, msg?: string) =>
+                (params.logger.info ?? params.logger.warn)(obj, msg ?? ''),
+              warn: (obj: unknown, msg?: string) => params.logger.warn(obj, msg ?? ''),
+              debug: () => undefined,
+              error: () => undefined,
+            },
+          })
+          if (decision.trim) {
+            didTrimRetry = true
+            attemptMessages = decision.messages
+            continue
+          }
+          // no-window / irreducible: fall through to failover classification.
+        }
         const failoverEligible = isFailoverEligibleError(error)
         const retryEligible =
           (statusCode !== undefined && isRetryableStatusCode(statusCode)) ||
@@ -331,6 +375,10 @@ export async function* promptAiSdkStream(
 
   for (let m = 0; m < modelsToTry.length; m++) {
     let retries = 0
+    // P0 A2: per-model-attempt trim state. `attemptMessages` holds the
+    // (possibly trimmed) request for the current model; reset per model.
+    let attemptMessages: Message[] | undefined
+    let didTrimRetry = false
     while (true) {
       const flags: StreamAttemptFlags = {
         yieldedContent: false,
@@ -344,6 +392,7 @@ export async function* promptAiSdkStream(
           modelsToTry[m],
           m > 0,
           flags,
+          attemptMessages,
         )
         return result
       } catch (error) {
@@ -351,6 +400,24 @@ export async function* promptAiSdkStream(
           throw error
         }
         const statusCode = getErrorStatusCode(error)
+        // P0 A2: context-overflow 400 → one in-place trim + same-model retry
+        // before failover classification. Only valid while nothing has been
+        // yielded (guaranteed by the guard above).
+        if (isContextOverflowError(error) && !didTrimRetry) {
+          const decision = decideContextOverflowTrim({
+            error,
+            messages: attemptMessages ?? params.messages,
+            model: modelsToTry[m],
+            alreadyTrimmed: false,
+            logger,
+          })
+          if (decision.trim) {
+            didTrimRetry = true
+            attemptMessages = decision.messages
+            continue
+          }
+          // no-window / irreducible: fall through to failover classification.
+        }
         const failoverEligible = isFailoverEligibleError(error)
         const retryEligible =
           (statusCode !== undefined && isRetryableStatusCode(statusCode)) ||
@@ -404,6 +471,8 @@ async function* streamOnce(
   requestedModel: string | undefined,
   verbatim: boolean,
   flags: StreamAttemptFlags,
+  /** Trimmed request messages for the overflow retry (P0 A2). */
+  messagesOverride?: Message[],
 ): ReturnType<PromptAiSdkStreamFn> {
   const { providerOptions: _ignoredOriginal, ...streamParams } = params
 
@@ -426,6 +495,7 @@ async function* streamOnce(
   // cache_control metadata; strip unless the provider opts into caching.
   const effectiveParams = {
     ...params,
+    ...(messagesOverride !== undefined ? { messages: messagesOverride } : {}),
     includeCacheControl:
       compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
   }
@@ -922,7 +992,9 @@ export async function promptAiSdk(
     return promptAborted('User cancelled input')
   }
 
-  return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
+  return runGenerationWithFailover(
+    { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
+    async ({ requestedModel, verbatim, messagesOverride }) => {
     const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
@@ -931,6 +1003,7 @@ export async function promptAiSdk(
     })
     const effectiveParams = {
       ...params,
+      ...(messagesOverride !== undefined ? { messages: messagesOverride } : {}),
       includeCacheControl:
         compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
     }
@@ -992,7 +1065,8 @@ export async function promptAiSdk(
     }
 
     return promptSuccess(content)
-  })
+    },
+  )
 }
 
 export async function promptAiSdkStructured<T>(
@@ -1011,7 +1085,9 @@ export async function promptAiSdkStructured<T>(
     return promptAborted('User cancelled input')
   }
 
-  return runGenerationWithFailover({ signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, logger }, async ({ requestedModel, verbatim }) => {
+  return runGenerationWithFailover(
+    { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
+    async ({ requestedModel, verbatim, messagesOverride }) => {
     const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
@@ -1020,6 +1096,7 @@ export async function promptAiSdkStructured<T>(
     })
     const effectiveParams = {
       ...params,
+      ...(messagesOverride !== undefined ? { messages: messagesOverride } : {}),
       includeCacheControl:
         compatibility?.stripCacheControl === true ? false : params.includeCacheControl,
     }
@@ -1081,5 +1158,6 @@ export async function promptAiSdkStructured<T>(
     }
 
     return promptSuccess(content)
-  })
+    },
+  )
 }

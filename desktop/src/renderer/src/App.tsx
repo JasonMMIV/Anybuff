@@ -90,6 +90,8 @@ function resumeBannerText(reason: string | undefined): string {
       return 'The run timed out — your progress and conversation are preserved.'
     case 'network':
       return 'A network error interrupted the run — your progress and conversation are preserved.'
+    case 'context-overflow':
+      return 'The conversation exceeded this model’s context limit — history was compressed and the run can be resumed. If it keeps happening, switch models or declare windowTokens in anybuff.json.'
     default:
       return 'This run was interrupted — your progress and conversation are preserved.'
   }

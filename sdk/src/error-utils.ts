@@ -83,6 +83,120 @@ export function isProviderContentPolicyError(
   )
 }
 
+// ============================================================================
+// Context-overflow classification (AnyBuff context-management P0 A1)
+// ============================================================================
+
+/**
+ * Conservative context-overflow markers (plan §4 A1). Case-insensitive; kept
+ * as exported patterns so the sdk barrel can expose the single source of
+ * truth that host-core's string-only `classifyFailure` reuses.
+ */
+export const CONTEXT_OVERFLOW_PATTERNS: RegExp[] = [
+  /context_length_exceeded/i,
+  /maximum context length/i,
+  /prompt is too long|input is too long|too many (input )?tokens/i,
+  /reduce[^\n]*the length|exceeds (the )?(context|maximum)/i,
+]
+
+/**
+ * Pure text matcher (no status-code gate) — shared by the error classifier
+ * below and host-core's `classifyFailure`, which only sees the message text.
+ */
+export function isContextOverflowMessage(text: string): boolean {
+  if (!text) return false
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+/**
+ * Join the message-bearing fields of an unknown error into one text blob the
+ * overflow matcher (and the window parser) can scan.
+ */
+export function overflowErrorText(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  }
+  const value = error as {
+    message?: unknown
+    responseBody?: unknown
+    data?: unknown
+  }
+  return [value.message, value.responseBody, value.data]
+    .filter((part): part is string => typeof part === 'string')
+    .join('\n')
+}
+
+/**
+ * True when the error is an HTTP 400 whose message/body carries a
+ * context-overflow marker (AnyBuff P0 A1). Overflow is its own failure class:
+ * it is not retryable (same request would fail identically) and only becomes
+ * failover-eligible when trimming the request cannot fix it.
+ */
+export function isContextOverflowError(error: unknown): boolean {
+  if (getErrorStatusCode(error) !== 400) return false
+  return isContextOverflowMessage(overflowErrorText(error))
+}
+
+/**
+ * Best-effort floor/ceiling guards for a learned context window parsed from
+ * an overflow message. Real model windows live in the 4k–32M band; anything
+ * outside it is noise (timestamps, request ids, pricing figures).
+ */
+const LEARNED_WINDOW_MIN_TOKENS = 4_000
+const LEARNED_WINDOW_MAX_TOKENS = 32_000_000
+/** A parsed window can only be trusted up to 20% above the local estimate —
+ *  tokenizer variance never reaches that high. */
+const LEARNED_WINDOW_ESTIMATE_TOLERANCE = 1.2
+
+/**
+ * Parse the provider's real context-window token count out of an overflow
+ * message (plan §4 A2 step 1). Providers word these wildly differently
+ * (`maximum context length is 128000 tokens`, `prompt is too long: 123456
+ * tokens > 100000 maximum`, …), so we scan for integers near context-related
+ * keywords and deliberately take the SMALLER plausible side: the window is
+ * the number the request must fit under, and request-token counts (the larger
+ * number in "X > Y" phrasings) must never be mistaken for it.
+ *
+ * Returns undefined when nothing in-range can be trusted.
+ */
+export function parseLearnedContextWindow(
+  message: string,
+  requestLocalTokenEstimate: number,
+): number | undefined {
+  if (!message || requestLocalTokenEstimate <= 0) return undefined
+  const lower = message.toLowerCase()
+
+  const candidates: number[] = []
+  // Numeric runs of at least 4 digits (optionally comma-separated) — shorter
+  // numbers are overwhelmingly ids/versions, not token counts.
+  const numberPattern = /(\d[\d,]{3,})/g
+  let match: RegExpExecArray | null
+  while ((match = numberPattern.exec(lower)) !== null) {
+    const raw = match[1].replace(/,/g, '')
+    const value = Number(raw)
+    if (!Number.isFinite(value)) continue
+    // Only trust integers near context-related keywords (window of ±60
+    // chars) — ids, versions and pricing figures must never leak in.
+    const start = Math.max(0, match.index - 60)
+    const end = Math.min(lower.length, match.index + raw.length + 60)
+    const context = lower.slice(start, end)
+    if (!/(context|maximum|limit|tokens?|length|window)/.test(context)) {
+      continue
+    }
+    candidates.push(value)
+  }
+
+  // Prefer the smaller plausible side per the "X > Y maximum" phrasing, where
+  // Y (the window) is the ceiling the request must fit under.
+  const plausible = candidates.filter(
+    (value) =>
+      value >= LEARNED_WINDOW_MIN_TOKENS &&
+      value < LEARNED_WINDOW_MAX_TOKENS &&
+      value <= requestLocalTokenEstimate * LEARNED_WINDOW_ESTIMATE_TOLERANCE,
+  )
+  return plausible.length > 0 ? Math.min(...plausible) : undefined
+}
+
 /**
  * Detect explicit provider moderation/policy wording without classifying every
  * client-side 400 as a content block. This is intentionally conservative.

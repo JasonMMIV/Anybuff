@@ -9,6 +9,7 @@ import {
   saveTaskRunState,
   saveTaskTranscript
 } from '../settings/settings'
+import { isContextOverflowMessage } from '@codebuff/sdk'
 
 /**
  * Main-process session store — the single source of truth for conversations.
@@ -436,6 +437,11 @@ export function buildResumableState(taskId: string): { previousRun: unknown; sou
 /** Classify a failure message into a short reason key (mirrors the renderer). */
 export function classifyFailure(rawMessage: string): string {
   const lower = rawMessage.toLowerCase()
+  // Overflow 400s get their own class (AnyBuff P0 A4): the host resume path
+  // compacts the history before retrying, and the k-cap below guards that loop.
+  // The shared sdk matcher keeps this classification in lockstep with the sdk's
+  // request-layer trim decision (same regex list, single source of truth).
+  if (isContextOverflowMessage(lower)) return 'context-overflow'
   if (/abort|aborted|cancelled|canceled/.test(lower) && !/quota|rate/.test(lower)) return 'stopped'
   if (/quota|rate limit|rate_limit|429/.test(lower)) return 'rate-limit'
   if (/invalid api key|unauthorized|401|403|authentication|auth/i.test(lower)) return 'auth'

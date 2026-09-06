@@ -10,10 +10,13 @@
 
 import {
   getErrorStatusCode,
+  isContextOverflowError,
   isProviderContentPolicyError,
 } from '../error-utils'
+import { countTokensMessages } from '@codebuff/agent-runtime/util/token-counter'
 
 import type { LoadedProviderConfig } from '../provider-config'
+import type { Message } from '@codebuff/common/types/messages/codebuff-message'
 
 /**
  * HTTP status codes that should trigger failover to the next configured
@@ -73,10 +76,39 @@ export function resolveModelsToTry(
  * errors carrying a failover-eligible HTTP status code
  * (401/403/500/502/503/504). Other non-HTTP errors (network blips, aborts,
  * etc.) are handled by the inner retry loop's transient-error path.
+ *
+ * Context-overflow 400s are the fourth class (AnyBuff P0 A3): when a model
+ * cannot fit a request, the next configured backup model (often with a larger
+ * window) is the correct escape hatch. The llm.ts request layer first gets
+ * one in-place trim+retry on the SAME model (P0 A2); failover only fires when
+ * that cannot save the request.
  */
 export function isFailoverEligibleError(error: unknown): boolean {
   if (isProviderContentPolicyError(error)) return true
+  if (isContextOverflowError(error)) return true
   const statusCode = getErrorStatusCode(error)
   if (statusCode === undefined) return false
   return FAILOVER_ELIGIBLE_STATUS_CODES.has(statusCode)
+}
+
+/**
+ * True when mechanically trimming `messages` could plausibly reach
+ * `targetTokens` (AnyBuff P0 A3): the keep-during-truncation core must already
+ * fit, and there must be removable tokens to drop. Prevents pointless
+ * trim-retries when system+irreducible history alone exceeds the window — the
+ * host's overflow-resume path (P0 A4) then owns the loop instead.
+ */
+export function canTrimAtRequestLayer(params: {
+  messages: Message[]
+  targetTokens: number
+  /** Optional precomputed keep-during-truncation total (skips recount). */
+  keepTokens?: number
+}): boolean {
+  const { messages, targetTokens } = params
+  if (!Array.isArray(messages) || messages.length === 0) return false
+  const keepTokens =
+    params.keepTokens ??
+    countTokensMessages(messages.filter((m) => m.keepDuringTruncation))
+  if (keepTokens >= targetTokens) return false
+  return countTokensMessages(messages) > targetTokens
 }

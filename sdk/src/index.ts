@@ -88,6 +88,43 @@ export {
 } from './error-utils'
 export type { HttpError } from './error-utils'
 
+// Context-overflow classification (AnyBuff context-management P0 A1)
+export {
+  CONTEXT_OVERFLOW_PATTERNS,
+  isContextOverflowError,
+  isContextOverflowMessage,
+  overflowErrorText,
+  parseLearnedContextWindow,
+} from './error-utils'
+
+// Context-window budget helpers (AnyBuff P0 A0, shared via common)
+export {
+  UNKNOWN_MODEL_CONTEXT_FALLBACK,
+  CONTEXT_RESERVE_MIN_TOKENS,
+  reserveTokens,
+  toCompactionTriggerTokens,
+} from '@codebuff/common/util/context-trim'
+
+// Failover + overflow request-layer trim decisions (AnyBuff P0 A2/A3)
+export {
+  isFailoverEligibleError,
+  canTrimAtRequestLayer,
+} from './impl/failover'
+export {
+  decideContextOverflowTrim,
+} from './impl/context-overflow-trim'
+export type { ContextOverflowTrimDecision } from './impl/context-overflow-trim'
+export {
+  compactMessagesForResume,
+} from './impl/resume-compaction'
+export type { ResumeCompactionResult } from './impl/resume-compaction'
+
+// Learned context-window overlay (AnyBuff P0 A2 step 4)
+export {
+  recordLearnedModelContextWindow,
+  resolveEffectiveContextWindow,
+} from './impl/model-provider'
+
 // Provider content-policy classification (failover-eligible errors)
 export {
   PROVIDER_CONTENT_POLICY_ERROR_CODE,
