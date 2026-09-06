@@ -60,6 +60,34 @@ const DEFAULT_ASSISTANT_TOOL_BUDGET = 20_000
 /** Token budget for user content in the conversation summary */
 const DEFAULT_USER_BUDGET = 50_000
 
+/**
+ * Anchor window the fixed budgets were sized for (AnyBuff P1.5 C1).
+ *
+ * The 20k/50k budgets were tuned when every served model baked a 400k
+ * trigger; with real per-model windows (B1/B2/B3) the budgets should follow
+ * the same number the trigger is derived from, so a 1M-window model gets a
+ * proportionally larger memory and a 200k model a smaller one. Clamps keep
+ * both ends sane: small windows still leave room for a real summary, big
+ * ones cannot balloon unboundedly.
+ */
+const BUDGET_SCALE_ANCHOR_TOKENS = 400_000
+
+/** Newest assistant entries exempt from the 1,300-token per-entry cap (C2). */
+const HEAD_RECENT_EXEMPT_COUNT = 5
+
+/** Per-entry cap for the newest assistant entries (C2). */
+const HEAD_RECENT_ASSISTANT_LIMIT = 6_000
+
+/**
+ * Verbatim tail: default budget (C4) and the maximum number of
+ * tool-call/result pairs it may carry regardless of budget.
+ */
+const DEFAULT_TAIL_BUDGET = 10_000
+const TAIL_MAX_PAIRS = 8
+
+/** Hard cap on the rendered knowledge block (C3), in estimated tokens. */
+const KNOWLEDGE_BLOCK_TOKEN_CAP = 2_000
+
 /** Header used in conversation summaries */
 const SUMMARY_HEADER =
   'This is a summary of the conversation so far. The original messages have been condensed to save context space.'
@@ -108,6 +136,41 @@ export const DEFAULT_CACHE_EXPIRY_MIN_TOKENS =
 
 /** Separator between entries inside the rendered historical memory. */
 const ENTRY_SEPARATOR = '\n\n---\n\n'
+
+/** Clamps `value` into `[min, max]`. */
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+/**
+ * P1.5 C1: how far the fixed budgets should stretch for this run's window.
+ *
+ * `maxContextLength` is the compaction trigger the caller already computed
+ * from the model's window (B2/B3), so scaling against the 400k anchor keeps
+ * the budgets proportional to the model — a 1M-window model lands at scale
+ * ≈ 1.75, the baked-400k behavior is exactly scale 1, and the clamps bound
+ * the ratio to [0.5, 3].
+ */
+export function budgetScaleFor(maxContextLength: number): number {
+  return clamp(maxContextLength / BUDGET_SCALE_ANCHOR_TOKENS, 0.5, 3)
+}
+
+/** C1-derived budgets, honoring explicit params overrides. */
+export function resolveBudgetsFor(params: {
+  maxContextLength: number
+  assistantToolBudget?: number
+  userBudget?: number
+  tailBudget?: number
+}): { assistantToolBudget: number; userBudget: number; tailBudget: number; scale: number } {
+  const scale = budgetScaleFor(params.maxContextLength)
+  return {
+    scale,
+    assistantToolBudget:
+      params.assistantToolBudget ?? clamp(20_000 * scale, 10_000, 60_000),
+    userBudget: params.userBudget ?? clamp(50_000 * scale, 25_000, 150_000),
+    tailBudget: params.tailBudget ?? clamp(10_000 * scale, 5_000, 30_000),
+  }
+}
 
 /** Matches the context-pruner's `trigger_reason` values so Axiom can union them. */
 export type CompactionTrigger =
@@ -456,9 +519,35 @@ function parseSummaryIntoEntries(summaryText: string): SummaryEntry[] {
  * Condenses each message into a role-tagged entry. Tool calls become one-line
  * descriptions, tool results are dropped except for errors and edit outcomes,
  * and long text is truncated head-and-tail.
+ *
+ * P1.5 C2: the newest HEAD_RECENT_EXEMPT_COUNT assistant messages (counted
+ * newest-first, ignoring tool-only messages which rarely carry prose) are
+ * exempt from the 1,300-token per-entry cap and may keep up to
+ * HEAD_RECENT_ASSISTANT_LIMIT tokens instead. The middle of an argument is
+ * exactly what the old cap destroyed, and these are the messages the tail
+ * (C4) does not reach. Positional, not semantic — see the plan's §6 C2.
  */
 function summarizeMessagesIntoEntries(messages: Message[]): SummaryEntry[] {
   const entries: SummaryEntry[] = []
+
+  // Pre-compute how many prose-bearing assistant messages qualify for the
+  // recent exemption by counting backwards over the whole slice.
+  let recentQuota = HEAD_RECENT_EXEMPT_COUNT
+  const recentLimit = new Map<Message, number>()
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'assistant') continue
+    const hasText =
+      Array.isArray(message.content) &&
+      (message.content as Array<Record<string, unknown>>).some(
+        (part) => part.type === 'text' && typeof part.text === 'string',
+      )
+    if (!hasText) continue
+    if (recentQuota > 0) {
+      recentLimit.set(message, HEAD_RECENT_ASSISTANT_LIMIT)
+      recentQuota--
+    }
+  }
 
   for (const message of messages) {
     if (message.role === 'user') {
@@ -474,6 +563,7 @@ function summarizeMessagesIntoEntries(messages: Message[]): SummaryEntry[] {
       const imageNote = hasImages ? ' [image(s) were attached]' : ''
       entries.push({ role: 'user', parts: [`[USER]${imageNote}\n${text}`] })
     } else if (message.role === 'assistant') {
+      const textLimit = recentLimit.get(message) ?? ASSISTANT_MESSAGE_LIMIT
       const textParts: string[] = []
       const toolSummaries: string[] = []
 
@@ -497,7 +587,7 @@ function summarizeMessagesIntoEntries(messages: Message[]): SummaryEntry[] {
       if (textParts.length > 0) {
         const combinedText = truncateLongText(
           textParts.join('\n'),
-          ASSISTANT_MESSAGE_LIMIT * CHARS_PER_TOKEN,
+          textLimit * CHARS_PER_TOKEN,
         )
         parts.push(`Progress note:\n${combinedText}`)
       }
@@ -715,9 +805,328 @@ function renderSummaryText(entries: SummaryEntry[]): string {
   return entries.flatMap((entry) => entry.parts).join(ENTRY_SEPARATOR)
 }
 
-/** Wraps the historical memory in the message the model actually sees. */
+/**
+ * P1.5 C4: walks the history newest-first and collects a verbatim tail —
+ * whole tool-call/result pairs (plus any plain messages interleaved between
+ * them) — stopping at `tailBudget` estimated tokens or `TAIL_MAX_PAIRS` pairs.
+ *
+ * The cut must be structurally legal: the boundary always lands on the start
+ * of an assistant tool-call message (or the oldest collected plain message),
+ * never mid-pair, so the retained slice reads as a normal conversation. The
+ * summary is cut where the tail begins so nothing appears twice.
+ */
+function splitTail(params: {
+  /** The history that is a candidate for tail inclusion (mid-turn: all real history; otherwise minus the live prompt). */
+  messages: Message[]
+  tailBudget: number
+}): { tail: Message[]; rest: Message[]; tailTokens: number; pairCount: number } {
+  const { messages, tailBudget } = params
+  // Exclusive start of the tail: everything from `boundary` onward is kept
+  // verbatim. Walk newest-first collecting tool-call/result pairs (plus the
+  // plain messages interleaved between them) until the budget or TAIL_MAX_PAIRS
+  // stops the walk, then trim any dangling tool results at the boundary — a
+  // tail that opens on a result whose call stayed in the head would be
+  // structurally illegal (providers require results to follow their call).
+  let boundary = messages.length
+  let pairs = 0
+  let tokens = 0
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    // The live prompt is never tail material: mid-turn it is summarized into
+    // the head, and non-mid-turn it is re-appended whole below. Either way,
+    // letting the walk cross it would duplicate it.
+    if (message.tags?.includes('USER_PROMPT')) break
+    if (
+      message.role === 'assistant' &&
+      Array.isArray(message.content) &&
+      (message.content as Array<Record<string, unknown>>).some(
+        (part) => part.type === 'tool-call',
+      )
+    ) {
+      if (pairs >= TAIL_MAX_PAIRS) break
+      pairs++
+    }
+    const cost = countTokensOfMessage(message)
+    if (tokens + cost > tailBudget) break
+    tokens += cost
+    boundary = i
+  }
+
+  // Drop dangling tool results at the start of the tail.
+  while (
+    boundary < messages.length &&
+    messages[boundary].role === 'tool'
+  ) {
+    boundary++
+  }
+
+  const tail = messages.slice(boundary)
+  // A tail with no tool-call pair is pure prose the head would carry better —
+  // keep the history intact instead of duplicating it verbatim.
+  const tailHasPair = tail.some(
+    (message) =>
+      message.role === 'assistant' &&
+      Array.isArray(message.content) &&
+      (message.content as Array<Record<string, unknown>>).some(
+        (part) => part.type === 'tool-call',
+      ),
+  )
+  if (!tailHasPair) {
+    return { tail: [], rest: messages, tailTokens: 0, pairCount: 0 }
+  }
+
+  return {
+    tail,
+    rest: messages.slice(0, boundary),
+    tailTokens: tail.reduce((sum, m) => sum + countTokensOfMessage(m), 0),
+    pairCount: tail.filter(
+      (message) =>
+        message.role === 'assistant' &&
+        Array.isArray(message.content) &&
+        (message.content as Array<Record<string, unknown>>).some(
+          (part) => part.type === 'tool-call',
+        ),
+    ).length,
+  }
+}
+
+/** Rough per-message token estimate consistent with CHARS_PER_TOKEN. */
+function countTokensOfMessage(message: Message): number {
+  let chars = 0
+  const content = message.content as unknown
+  if (typeof content === 'string') {
+    chars = content.length
+  } else if (Array.isArray(content)) {
+    for (const part of content as Array<Record<string, unknown>>) {
+      if (part.type === 'text' && typeof part.text === 'string') {
+        chars += part.text.length
+      } else if (part.type === 'tool-call') {
+        try {
+          chars += JSON.stringify(part.input ?? {}).length
+        } catch {
+          chars += 0
+        }
+      } else if (part.type === 'json') {
+        try {
+          chars += JSON.stringify(part.value ?? {}).length
+        } catch {
+          chars += 0
+        }
+      }
+    }
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN)
+}
+
+// =============================================================================
+// P1.5 C3: pinned knowledge block
+// =============================================================================
+
+const KNOWLEDGE_GOAL_CHAR_CAP = 2_400
+const KNOWLEDGE_LIST_CAP = 25
+const KNOWLEDGE_NEXT_CHAR_CAP = 1_400
+const KNOWLEDGE_BLOCK_HEADER = '<knowledge_memory>'
+
+/** Short replies that carry no goal signal (parity with live-prompt heuristics). */
+const GOAL_NOISE_RE =
+  /^(ok|okay|done|continue|go on|go ahead|thanks|thank you|yes|no|sure|proceed|keep going|繼續|好|完成|嗯)[.!…。]*\s*$/i
+
+/** Tool calls that inspected something (paths go into Files Inspected). */
+const INSPECT_TOOLS = new Set([
+  'read_files',
+  'read_subtree',
+  'code_search',
+  'glob',
+  'list_directory',
+  'find_files',
+])
+/** Tool calls that changed something (paths go into Edits Made). */
+const EDIT_TOOLS = new Set([
+  'write_file',
+  'str_replace',
+  'propose_write_file',
+  'propose_str_replace',
+])
+
+function pathFromToolInput(toolName: string, input: Record<string, unknown>): string[] {
+  void toolName
+  const raw = input.paths ?? input.path
+  if (typeof raw === 'string') return [raw]
+  if (Array.isArray(raw)) {
+    return raw
+      .map((entry) =>
+        typeof entry === 'string'
+          ? entry
+          : ((entry as { path?: string } | undefined)?.path ?? ''),
+      )
+      .filter((p): p is string => p.length > 0)
+  }
+  return []
+}
+
+/**
+ * Deterministic Goal/Files/Edits/Next block, pinned verbatim ahead of the
+ * historical memory. Everything comes from structured message data — no
+ * heuristics beyond the short-reply noise filter, per the plan's
+ * anti-overengineering list (§7): no Decisions regex, no edit receipts.
+ */
+function buildKnowledgeBlock(params: {
+  messages: Message[]
+  previousBlock: string | null
+}): string {
+  const { messages, previousBlock } = params
+
+  // Latest real USER_PROMPT text, unless it is a short filler reply.
+  let goal: string | null = null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'user') continue
+    if (message.tags?.includes('USER_PROMPT') === false) continue
+    const text = getTextContent(message).trim()
+    if (!text || GOAL_NOISE_RE.test(text.replace(/<[^>]+>/g, '').trim())) continue
+    goal = text
+    break
+  }
+
+  const inspected: string[] = []
+  const edited: string[] = []
+  let nextAction: string | null = null
+
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
+    for (const part of message.content as Array<Record<string, unknown>>) {
+      if (part.type !== 'tool-call') continue
+      const toolName = part.toolName as string
+      const input = (part.input as Record<string, unknown>) || {}
+      if (INSPECT_TOOLS.has(toolName)) {
+        for (const p of pathFromToolInput(toolName, input)) {
+          if (!inspected.includes(p)) inspected.push(p)
+        }
+      }
+      if (EDIT_TOOLS.has(toolName)) {
+        for (const p of pathFromToolInput(toolName, input)) {
+          if (!edited.includes(p)) edited.push(p)
+        }
+      }
+      if (toolName === 'write_todos' && nextAction === null) {
+        const todos = input.todos as
+          | Array<{ task: string; completed: boolean }>
+          | undefined
+        const open = todos?.find((t) => !t.completed)
+        if (open) nextAction = open.task
+      }
+    }
+  }
+
+  if (nextAction === null) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'assistant') continue
+      const text = getTextContent(messages[i]).trim()
+      if (text) {
+        nextAction = text.slice(-KNOWLEDGE_NEXT_CHAR_CAP)
+        break
+      }
+    }
+  }
+
+  // Carry forward entries from the previous block (entry-list rebuild, not
+  // whole-block append): the previous block's lists are re-parsed and
+  // unioned, current entries first.
+  const previousLists = parseKnowledgeLists(previousBlock)
+  const mergeWithCap = (current: string[], previous: string[]) => {
+    const merged = [...current]
+    for (const p of previous) {
+      if (merged.length >= KNOWLEDGE_LIST_CAP) break
+      if (!merged.includes(p)) merged.push(p)
+    }
+    return merged
+  }
+  const files = mergeWithCap(inspected, previousLists.inspected)
+  const edits = mergeWithCap(edited, previousLists.edited)
+  if (goal === null) goal = previousLists.goal
+  if (nextAction === null) nextAction = previousLists.nextAction
+
+  const lines: string[] = []
+  if (goal) {
+    lines.push(
+      `Goal: ${goal.length > KNOWLEDGE_GOAL_CHAR_CAP ? goal.slice(0, KNOWLEDGE_GOAL_CHAR_CAP) + '…' : goal}`,
+    )
+  }
+  if (files.length > 0) {
+    lines.push(`Files Inspected:\n${files.map((p) => `- ${p}`).join('\n')}`)
+  }
+  if (edits.length > 0) {
+    lines.push(`Edits Made:\n${edits.map((p) => `- ${p}`).join('\n')}`)
+  }
+  if (nextAction) {
+    lines.push(
+      `Next Action: ${
+        nextAction.length > KNOWLEDGE_NEXT_CHAR_CAP
+          ? nextAction.slice(0, KNOWLEDGE_NEXT_CHAR_CAP) + '…'
+          : nextAction
+      }`,
+    )
+  }
+  if (lines.length === 0) return ''
+
+  let block = `${KNOWLEDGE_BLOCK_HEADER}\n${lines.join('\n\n')}\n</knowledge_memory>`
+  // Whole-block token cap: drop trailing sections until it fits.
+  while (
+    lines.length > 1 &&
+    Math.ceil(block.length / CHARS_PER_TOKEN) > KNOWLEDGE_BLOCK_TOKEN_CAP
+  ) {
+    lines.pop()
+    block = `${KNOWLEDGE_BLOCK_HEADER}\n${lines.join('\n\n')}\n</knowledge_memory>`
+  }
+  if (Math.ceil(block.length / CHARS_PER_TOKEN) > KNOWLEDGE_BLOCK_TOKEN_CAP) {
+    return ''
+  }
+  return block
+}
+
+/** Re-parses a previous knowledge block so its entries survive compaction. */
+function parseKnowledgeLists(block: string | null): {
+  goal: string | null
+  inspected: string[]
+  edited: string[]
+  nextAction: string | null
+} {
+  if (!block) return { goal: null, inspected: [], edited: [], nextAction: null }
+  const match = block.match(
+    /<knowledge_memory>([\s\S]*?)<\/knowledge_memory>/,
+  )
+  if (!match) return { goal: null, inspected: [], edited: [], nextAction: null }
+  const body = match[1]
+  const goalMatch = body.match(/^Goal: ([\s\S]*?)(?=\n\n|\nFiles Inspected:|$)/m)
+  const nextMatch = body.match(/^Next Action: ([\s\S]*)$/m)
+  const list = (header: string) => {
+    const section = body.match(
+      new RegExp(`^${header}:\\n([\\s\\S]*?)(?=\\n\\n|\\n[A-Z][a-z]* [A-Z]|$)`, 'm'),
+    )
+    if (!section) return []
+    return section[1]
+      .split('\n')
+      .map((line) => line.replace(/^- /, '').trim())
+      .filter((line) => line.length > 0)
+  }
+  return {
+    goal: goalMatch ? goalMatch[1].trim() : null,
+    inspected: list('Files Inspected'),
+    edited: list('Edits Made'),
+    nextAction: nextMatch ? nextMatch[1].trim() : null,
+  }
+}
+
+/**
+ * Wraps the historical memory in the message the model actually sees.
+ * P1.5 C3: a pinned `<knowledge_memory>` block sits inside the envelope,
+ * ahead of the historical memory, so the newest Goal/Files/Edits/Next facts
+ * are exempt from the head budgets.
+ */
 function buildSummaryMessage(
   summaryText: string,
+  knowledgeBlock: string,
   imageParts: Array<ImagePart | FilePart>,
   sentAt: number,
 ): Message {
@@ -726,7 +1135,7 @@ function buildSummaryMessage(
     text: `<conversation_summary>
 ${SUMMARY_HEADER}
 
-<historical_memory>
+${knowledgeBlock ? `${knowledgeBlock}\n\n` : ''}<historical_memory>
 ${summaryText}
 </historical_memory>
 </conversation_summary>
@@ -738,6 +1147,15 @@ ${SUMMARY_DISCLAIMER}`,
     content: [textPart, ...imageParts],
     sentAt,
   }
+}
+
+/** Pulls a previous knowledge block back out of a summary message. */
+function extractKnowledgeBlock(message: Message): string | null {
+  const text = getTextContent(message)
+  const match = text.match(
+    /<knowledge_memory>([\s\S]*?)<\/knowledge_memory>/,
+  )
+  return match ? match[0] : null
 }
 
 export type CompactionResult = {
@@ -752,6 +1170,16 @@ export type CompactionResult = {
     mid_turn: boolean
     user_budget: number
     assistant_tool_budget: number
+    /** P1.5 C5: which layer supplied the scale anchor. */
+    trigger_source: 'baked' | 'params' | 'window'
+    /** P1.5 C5: C1 scale actually applied. */
+    budget_scale: number
+    tail_budget: number
+    /** P1.5 C5: estimated tokens carried by the verbatim tail (0 when none). */
+    tail_tokens: number
+    tail_pair_count: number
+    /** P1.5 C5: estimated tokens of the pinned knowledge block (0 when empty). */
+    knowledge_block_tokens: number
     previous_summary_entry_count: number
     user_entry_count: number
     dropped_user_entry_count: number
@@ -764,21 +1192,35 @@ export type CompactionResult = {
 }
 
 /**
- * Rewrites `messages` into `[summary, instructionsPrompt?, livePromptOrContinuation]`.
+ * Rewrites `messages` into
+ * `[summary(+knowledge block), instructionsPrompt?, ...verbatim tail, livePromptOrContinuation]`.
  * Pure and synchronous — no model call.
  */
 export function compactMessages(params: {
   messages: Message[]
   assistantToolBudget?: number
   userBudget?: number
+  /** C4: explicit verbatim-tail budget; defaults to the C1-scaled clamp. */
+  tailBudget?: number
+  /** C1 scale anchor (the compaction trigger the caller derived from the window). */
+  maxContextLength?: number
   now?: number
 }): CompactionResult {
   const {
     messages,
-    assistantToolBudget = DEFAULT_ASSISTANT_TOOL_BUDGET,
-    userBudget = DEFAULT_USER_BUDGET,
     now = Date.now(),
+    maxContextLength = BUDGET_SCALE_ANCHOR_TOKENS,
   } = params
+  // C1: scale budgets off the caller's window-derived trigger, honoring
+  // explicit overrides. Defaulting the anchor to 400k reproduces the
+  // pre-P1.5 budgets bit-for-bit at scale 1.
+  const { assistantToolBudget, userBudget, tailBudget, scale } =
+    resolveBudgetsFor({
+      maxContextLength,
+      assistantToolBudget: params.assistantToolBudget,
+      userBudget: params.userBudget,
+      tailBudget: params.tailBudget,
+    })
 
   // The live instructions prompt is scaffolding, not history: hold onto it and
   // re-append it after the summary so the agent keeps its standing orders.
@@ -801,10 +1243,20 @@ export function compactMessages(params: {
     livePrompt !== null &&
     messages.slice(livePromptIndex + 1).some(isRealHistory)
 
-  const messagesToSummarize = messages.filter(
+  const realHistory = messages.filter(
     (message, index) =>
       isRealHistory(message) && (isMidTurn || index !== livePromptIndex),
   )
+
+  // C4: split the verbatim tail off first; the head only summarizes what the
+  // tail does not carry. The live prompt is never tail material — it is
+  // re-appended whole below.
+  const { tail, rest, tailTokens, pairCount } = splitTail({
+    messages: realHistory,
+    tailBudget,
+  })
+
+  const messagesToSummarize = rest
 
   const previousSummaryEntries = parseSummaryIntoEntries(
     previousSummary ? extractSummaryContent(previousSummary) : '',
@@ -820,15 +1272,29 @@ export function compactMessages(params: {
   const summaryText = renderSummaryText(includedEntries)
 
   // Images cannot survive as text, so carry the most recent set forward.
-  const imageParts = lastUserImageParts(messagesToSummarize)
+  const imageParts = lastUserImageParts(rest)
+
+  // C3: pinned knowledge block inside the summary envelope, ahead of the
+  // historical memory. Scans the full real history (the tail carries the
+  // same facts, but the block must survive the next compaction, when the
+  // tail itself will be gone) and is seeded from the previous block so
+  // entries survive repeated compactions.
+  const knowledgeBlock = buildKnowledgeBlock({
+    messages: realHistory,
+    previousBlock: previousSummary ? extractKnowledgeBlock(previousSummary) : null,
+  })
 
   const finalMessages: Message[] = [
-    buildSummaryMessage(summaryText, imageParts, now),
+    buildSummaryMessage(summaryText, knowledgeBlock, imageParts, now),
   ]
   if (instructionsPromptMessage) {
     // Refresh sentAt so downstream cache-expiry checks see a live timestamp.
     finalMessages.push({ ...instructionsPromptMessage, sentAt: now })
   }
+  // C4: verbatim tail between the summary (and instructions) and the live
+  // prompt. Messages here are re-used as-is — reasoning content, tool-call
+  // inputs and results all survive byte-for-byte.
+  finalMessages.push(...tail)
   finalMessages.push(
     isMidTurn || !livePrompt
       ? {
@@ -854,6 +1320,14 @@ export function compactMessages(params: {
       mid_turn: isMidTurn,
       user_budget: userBudget,
       assistant_tool_budget: assistantToolBudget,
+      trigger_source: 'baked',
+      budget_scale: scale,
+      tail_budget: tailBudget,
+      tail_tokens: tailTokens,
+      tail_pair_count: pairCount,
+      knowledge_block_tokens: Math.ceil(
+        knowledgeBlock.length / CHARS_PER_TOKEN,
+      ),
       previous_summary_entry_count: previousSummaryEntries.length,
       user_entry_count: userEntries,
       dropped_user_entry_count: userEntries - includedUserEntries,
@@ -986,7 +1460,9 @@ export function maybeCompactHistory(params: {
     })
   if (!trigger) return null
 
-  const result = compactMessages({ messages })
+  // C1: the window-derived trigger doubles as the budget scale anchor, so
+  // the head budgets follow the model's real window.
+  const result = compactMessages({ messages, maxContextLength })
   try {
     params.onCompaction?.(trigger)
   } catch {
@@ -1008,7 +1484,10 @@ export function maybeCompactHistory(params: {
           ? {}
           : { cache_expiry_min_tokens: cacheExpiryMinTokens }),
         message_count: messages.length,
+        // Spread first: stats carries trigger_source (C5) and this caller
+        // always resolves the window itself.
         ...result.stats,
+        trigger_source: 'window',
       },
       'Context compaction completed',
     )

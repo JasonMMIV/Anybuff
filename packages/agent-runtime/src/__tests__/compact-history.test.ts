@@ -78,15 +78,20 @@ describe('compactMessages', () => {
 
   it('keeps the concrete details of the work: files, edits, commands', () => {
     const summary = textOf(
-      compact([
-        user('fix the bug', ['USER_PROMPT']),
-        assistantToolCall('read_files', {
-          paths: [{ path: 'src/server.ts', offset: 0, limit: 200 }],
-        }),
-        assistantToolCall('str_replace', { path: 'src/server.ts' }),
-        assistantToolCall('run_terminal_command', { command: 'bun test' }),
-        toolResult('run_terminal_command', { exitCode: 1 }),
-      ])[0],
+      compactMessages({
+        messages: [
+          user('fix the bug', ['USER_PROMPT']),
+          assistantToolCall('read_files', {
+            paths: [{ path: 'src/server.ts', offset: 0, limit: 200 }],
+          }),
+          assistantToolCall('str_replace', { path: 'src/server.ts' }),
+          assistantToolCall('run_terminal_command', { command: 'bun test' }),
+          toolResult('run_terminal_command', { exitCode: 1 }),
+        ],
+        // Tail off: this test locks the summarizer's one-line descriptions;
+        // with the tail on, the whole exchange moves there verbatim.
+        tailBudget: 0,
+      }).messages[0],
     )
 
     expect(summary).toContain('inspected files: src/server.ts')
@@ -547,5 +552,257 @@ describe('maybeCompactHistory', () => {
         logger: brokenLogger,
       }),
     ).not.toThrow()
+  })
+
+  it('reports P1.5 telemetry: trigger_source window and scaled budgets', () => {
+    const logs: Array<Record<string, any>> = []
+    const logger = {
+      debug: () => {},
+      info: (data: Record<string, any>) => logs.push(data),
+      warn: () => {},
+      error: () => {},
+    } as any
+
+    maybeCompactHistory({
+      messages: idleTurn(600),
+      contextTokenCount: 1_000_000,
+      // 1M window → trigger 700k → scale 1.75
+      maxContextLength: 700_000,
+      cacheExpiryMs: null,
+      logger,
+    })
+
+    expect(logs[0].trigger_source).toBe('window')
+    expect(logs[0].budget_scale).toBeCloseTo(1.75)
+    expect(logs[0].assistant_tool_budget).toBe(35_000)
+    expect(logs[0].user_budget).toBe(87_500)
+    expect(logs[0].tail_budget).toBe(17_500)
+    expect(logs[0]).toHaveProperty('tail_tokens')
+    expect(logs[0]).toHaveProperty('tail_pair_count')
+    expect(logs[0]).toHaveProperty('knowledge_block_tokens')
+  })
+})
+
+describe('P1.5 tail window (C4)', () => {
+  const atc = assistantToolCall
+  const tr = toolResult
+
+  it('keeps the newest tool exchange verbatim and drops it from the summary', () => {
+    const history = [
+      user('old request', ['USER_PROMPT']),
+      assistant('working on it'),
+      atc('read_files', { paths: ['old.ts'] }),
+      atc('run_terminal_command', { command: 'bun test' }),
+      tr('run_terminal_command', { exitCode: 1 }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    const summary = textOf(result.messages[0])
+    const tail = result.messages.slice(1, -1) // between summary and live/continuation
+
+    // The live exchange is verbatim in the final messages...
+    expect(tail.some((m) => m.role === 'tool' && (m as any).toolName === 'run_terminal_command')).toBe(true)
+    expect(tail.some((m) => m.role === 'assistant')).toBe(true)
+    // ...and not duplicated in the summary.
+    expect(summary).not.toContain('ran command: bun test')
+    expect(summary).not.toContain('Command failed with exit code: 1')
+    expect(result.stats.tail_pair_count).toBe(2)
+    expect(result.stats.tail_tokens).toBeGreaterThan(0)
+  })
+
+  it('trims a dangling tool result at the tail boundary', () => {
+    const history = [
+      user('request', ['USER_PROMPT']),
+      atc('str_replace', { path: 'a.ts' }),
+      tr('str_replace', { message: 'ok' }),
+      assistant('done with the edit'),
+    ]
+
+    const result = compactMessages({ messages: history, tailBudget: 1 })
+    const tail = result.messages.slice(1, -1)
+
+    // The lone trailing prose message cannot form a pair — no tail at all.
+    expect(tail).toHaveLength(0)
+    expect(result.stats.tail_pair_count).toBe(0)
+  })
+
+  it('respects tailBudget: 0 disables the tail entirely', () => {
+    const history = [
+      user('request', ['USER_PROMPT']),
+      atc('read_files', { paths: ['a.ts'] }),
+      tr('read_files', { content: 'body' }),
+    ]
+
+    const result = compactMessages({ messages: history, tailBudget: 0 })
+    const summary = textOf(result.messages[0])
+
+    expect(result.stats.tail_pair_count).toBe(0)
+    expect(summary).toContain('inspected files: a.ts')
+  })
+
+  it('keeps interleaved plain messages with their surrounding pairs', () => {
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistant('starting'),
+      atc('read_files', { paths: ['a.ts'] }),
+      tr('read_files', { content: 'body' }),
+      assistant('now editing'),
+      atc('str_replace', { path: 'a.ts' }),
+      tr('str_replace', { message: 'ok' }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    // [summary, live prompt, ...tail] — mid-turn puts the prompt into the
+    // summary and appends the continuation, so slice by role.
+    const tailStart = result.messages.findIndex(
+      (m, i) => i > 0 && m.role === 'assistant',
+    )
+    const tail = result.messages.slice(tailStart, -1)
+
+    expect(tail.map((m) => m.role)).toEqual([
+      'assistant',
+      'assistant',
+      'tool',
+      'assistant',
+      'assistant',
+      'tool',
+    ])
+    expect(textOf(tail[0])).toContain('starting')
+    expect(textOf(tail[3])).toContain('now editing')
+  })
+})
+
+describe('P1.5 knowledge block (C3)', () => {
+  it('pins Goal / Files / Edits / Next ahead of the historical memory', () => {
+    const history: Message[] = [
+      user('build the export feature', ['USER_PROMPT']),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'read_files', input: { paths: ['src/a.ts'] } },
+          { type: 'tool-call', toolCallId: 'c2', toolName: 'str_replace', input: { path: 'src/b.ts' } },
+        ],
+        sentAt: 1,
+      },
+      toolResult('str_replace', { message: 'ok' }),
+      assistant('final note'),
+      user('ok', ['USER_PROMPT']),
+    ]
+
+    const result = compactMessages({ messages: history, tailBudget: 0 })
+    const summary = textOf(result.messages[0])
+
+    expect(summary).toContain('<knowledge_memory>')
+    expect(summary).toContain('Goal: build the export feature')
+    expect(summary).toContain('- src/a.ts')
+    expect(summary).toContain('Edits Made:')
+    expect(summary).toContain('- src/b.ts')
+    expect(summary).toContain('Next Action: final note')
+    // The noise reply is not taken as the goal.
+    expect(summary).not.toContain('Goal: ok')
+  })
+
+  it('carries entries from the previous block across compaction cycles', () => {
+    const first = compactMessages({
+      messages: [
+        user('first request', ['USER_PROMPT']),
+        assistantToolCall('read_files', { paths: ['one.ts'] }),
+        toolResult('read_files', { content: 'x' }),
+      ],
+      tailBudget: 0,
+    })
+
+    const second = compactMessages({
+      messages: [
+        ...first.messages.slice(0, -1), // summary + continuation
+        assistantToolCall('read_files', { paths: ['two.ts'] }),
+        toolResult('read_files', { content: 'y' }),
+        user('second request', ['USER_PROMPT']),
+      ],
+      tailBudget: 0,
+    })
+    const summary = textOf(second.messages[0])
+
+    expect(summary).toContain('- one.ts')
+    expect(summary).toContain('- two.ts')
+  })
+})
+
+describe('P1.5 C2 recent assistant exemption', () => {
+  it('keeps the newest assistant prose under the relaxed cap', () => {
+    // 8k chars = ~2.7k tokens: under the 6k exempt cap, over the 1.3k base
+    // cap. It is the newest prose assistant, so it survives un-truncated.
+    const longText = 'B'.repeat(8000)
+    const result = compactMessages({
+      messages: [user('request', ['USER_PROMPT']), assistant(longText)],
+      tailBudget: 0,
+    })
+    const summary = textOf(result.messages[0])
+
+    expect(summary).toContain('BBBBBBBBBB')
+    expect(summary).not.toContain('[...truncated')
+  })
+
+  it('still truncates older assistant prose at 1.3k tokens', () => {
+    // 8k chars ≈ 2.7k tokens, over the 1.3k base cap. Five later prose
+    // assistants exhaust the exemption before reaching it. The 80/20 split
+    // keeps the prefix, so assert on a middle marker instead of the text.
+    const longText =
+      'B'.repeat(4000) + '_LONG_MIDDLE_MARKER_' + 'B'.repeat(3900)
+    const result = compactMessages({
+      messages: [
+        user('request', ['USER_PROMPT']),
+        assistant(longText),
+        ...Array.from({ length: 5 }, (_, i) => assistant(`later ${i}`)),
+      ],
+      tailBudget: 0,
+    })
+    const summary = textOf(result.messages[0])
+
+    expect(summary).not.toContain('_LONG_MIDDLE_MARKER_')
+    expect(summary).toContain('[...truncated')
+  })
+})
+
+describe('P1.5 C1 budget scaling', () => {
+  it('scales budgets with maxContextLength and honors overrides', () => {
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistant('answer'),
+    ]
+
+    const scaled = compactMessages({ messages: history, maxContextLength: 700_000, tailBudget: 0 })
+    expect(scaled.stats.budget_scale).toBeCloseTo(1.75)
+    expect(scaled.stats.assistant_tool_budget).toBe(35_000)
+    expect(scaled.stats.user_budget).toBe(87_500)
+
+    // Explicit overrides always win (existing semantics).
+    const overridden = compactMessages({
+      messages: history,
+      maxContextLength: 700_000,
+      assistantToolBudget: 11_000,
+      userBudget: 26_000,
+      tailBudget: 5_000,
+    })
+    expect(overridden.stats.assistant_tool_budget).toBe(11_000)
+    expect(overridden.stats.user_budget).toBe(26_000)
+    expect(overridden.stats.tail_budget).toBe(5_000)
+
+    // Small windows clamp at scale 0.5.
+    const small = compactMessages({ messages: history, maxContextLength: 100_000, tailBudget: 0 })
+    expect(small.stats.budget_scale).toBe(0.5)
+    expect(small.stats.assistant_tool_budget).toBe(10_000)
+    expect(small.stats.user_budget).toBe(25_000)
+  })
+
+  it('reproduces the pre-P1.5 budgets at the 400k anchor', () => {
+    const history = [user('request', ['USER_PROMPT']), assistant('answer')]
+    const result = compactMessages({ messages: history })
+
+    expect(result.stats.budget_scale).toBe(1)
+    expect(result.stats.assistant_tool_budget).toBe(20_000)
+    expect(result.stats.user_budget).toBe(50_000)
+    expect(result.stats.tail_budget).toBe(10_000)
+    expect(result.stats.trigger_source).toBe('baked')
   })
 })

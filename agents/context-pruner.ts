@@ -34,6 +34,9 @@ const definition: AgentDefinition = {
         cacheExpiryMs: {
           type: 'number',
         },
+        tailBudget: {
+          type: 'number',
+        },
       },
       required: [],
     },
@@ -80,6 +83,53 @@ const definition: AgentDefinition = {
     /** Token budget for user content in the conversation summary */
     const USER_BUDGET = 50_000
 
+    // P1.5 constants (mirror packages/agent-runtime/src/compact-history.ts —
+    // the parity test locks the two copies together):
+
+    /** Anchor window the fixed budgets were sized for (C1). */
+    const BUDGET_SCALE_ANCHOR_TOKENS = 400_000
+
+    /** Newest assistant entries exempt from the 1,300-token per-entry cap (C2). */
+    const HEAD_RECENT_EXEMPT_COUNT = 5
+
+    /** Per-entry cap for the newest assistant entries (C2). */
+    const HEAD_RECENT_ASSISTANT_LIMIT = 6_000
+
+    /**
+     * Verbatim tail (C4): default budget and the maximum number of
+     * tool-call/result pairs it may carry regardless of budget.
+     */
+    const DEFAULT_TAIL_BUDGET = 10_000
+    const TAIL_MAX_PAIRS = 8
+
+    /** Hard cap on the rendered knowledge block (C3), in estimated tokens. */
+    const KNOWLEDGE_BLOCK_TOKEN_CAP = 2_000
+    const KNOWLEDGE_GOAL_CHAR_CAP = 2_400
+    const KNOWLEDGE_LIST_CAP = 25
+    const KNOWLEDGE_NEXT_CHAR_CAP = 1_400
+    const KNOWLEDGE_BLOCK_HEADER = '<knowledge_memory>'
+
+    /** Short replies that carry no goal signal (C3). */
+    const GOAL_NOISE_RE =
+      /^(ok|okay|done|continue|go on|go ahead|thanks|thank you|yes|no|sure|proceed|keep going|繼續|好|完成|嗯)[.!…。]*\s*$/i
+
+    /** Tool calls that inspected something (paths go into Files Inspected). */
+    const INSPECT_TOOLS = [
+      'read_files',
+      'read_subtree',
+      'code_search',
+      'glob',
+      'list_directory',
+      'find_files',
+    ]
+    /** Tool calls that changed something (paths go into Edits Made). */
+    const EDIT_TOOLS = [
+      'write_file',
+      'str_replace',
+      'propose_write_file',
+      'propose_str_replace',
+    ]
+
     /** Fudge factor for token count threshold to trigger pruning earlier */
     const TOKEN_COUNT_FUDGE_FACTOR = 1_000
 
@@ -99,6 +149,308 @@ const definition: AgentDefinition = {
     // =============================================================================
     // Helper Functions (must be inside handleSteps since it's serialized to a string)
     // =============================================================================
+
+    /** Clamps `value` into `[min, max]`. */
+    function clamp(value: number, min: number, max: number): number {
+      return Math.min(max, Math.max(min, value))
+    }
+
+    /**
+     * P1.5 C1: how far the fixed budgets should stretch for this run's window.
+     * `maxContextLength` is the compaction trigger the caller derived from the
+     * model's window, so budgets stay proportional to the model. Clamps bound
+     * the ratio to [0.5, 3].
+     */
+    function budgetScaleFor(maxContextLength: number): number {
+      return clamp(maxContextLength / BUDGET_SCALE_ANCHOR_TOKENS, 0.5, 3)
+    }
+
+    /** C1-derived budgets, honoring explicit params overrides. */
+    function resolveBudgetsFor(p: {
+      maxContextLength: number
+      assistantToolBudget?: number
+      userBudget?: number
+      tailBudget?: number
+    }): {
+      assistantToolBudget: number
+      userBudget: number
+      tailBudget: number
+      scale: number
+    } {
+      const scale = budgetScaleFor(p.maxContextLength)
+      return {
+        scale,
+        assistantToolBudget:
+          p.assistantToolBudget ?? clamp(20_000 * scale, 10_000, 60_000),
+        userBudget: p.userBudget ?? clamp(50_000 * scale, 25_000, 150_000),
+        tailBudget: p.tailBudget ?? clamp(10_000 * scale, 5_000, 30_000),
+      }
+    }
+
+    /** Rough per-message token estimate consistent with CHARS_PER_TOKEN. */
+    function countTokensOfMessage(message: Message): number {
+      let chars = 0
+      const content = message.content as unknown
+      if (typeof content === 'string') {
+        chars = content.length
+      } else if (Array.isArray(content)) {
+        for (const part of content as Array<Record<string, unknown>>) {
+          if (part.type === 'text' && typeof part.text === 'string') {
+            chars += (part.text as string).length
+          } else if (part.type === 'tool-call') {
+            try {
+              chars += JSON.stringify(part.input ?? {}).length
+            } catch {
+              chars += 0
+            }
+          } else if (part.type === 'json') {
+            try {
+              chars += JSON.stringify(part.value ?? {}).length
+            } catch {
+              chars += 0
+            }
+          }
+        }
+      }
+      return Math.ceil(chars / CHARS_PER_TOKEN)
+    }
+
+    /**
+     * P1.5 C4: walks the history newest-first and collects a verbatim tail —
+     * whole tool-call/result pairs plus interleaved plain messages — stopping
+     * at `tailBudget` estimated tokens or TAIL_MAX_PAIRS pairs. Dangling tool
+     * results at the boundary are trimmed (a tail may not open on a result
+     * whose call stayed in the head), and a tail without any tool pair is
+     * discarded: pure prose belongs in the head.
+     */
+    function splitTail(p: {
+      messages: Message[]
+      tailBudget: number
+    }): { tail: Message[]; rest: Message[]; tailTokens: number; pairCount: number } {
+      const { messages, tailBudget } = p
+      // Exclusive start of the tail: everything from `boundary` onward is
+      // kept verbatim.
+      let boundary = messages.length
+      let pairs = 0
+      let tokens = 0
+
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        // The live prompt is never tail material: mid-turn it is summarized
+        // into the head, and non-mid-turn it is re-appended whole below.
+        // Either way, letting the walk cross it would duplicate it.
+        if (message.tags?.includes('USER_PROMPT')) break
+        if (
+          message.role === 'assistant' &&
+          Array.isArray(message.content) &&
+          (message.content as Array<Record<string, unknown>>).some(
+            (part) => part.type === 'tool-call',
+          )
+        ) {
+          if (pairs >= TAIL_MAX_PAIRS) break
+          pairs++
+        }
+        const cost = countTokensOfMessage(message)
+        if (tokens + cost > tailBudget) break
+        tokens += cost
+        boundary = i
+      }
+
+      // Drop dangling tool results at the start of the tail.
+      while (boundary < messages.length && messages[boundary].role === 'tool') {
+        boundary++
+      }
+
+      const tail = messages.slice(boundary)
+      const hasToolCall = (message: Message) =>
+        message.role === 'assistant' &&
+        Array.isArray(message.content) &&
+        (message.content as Array<Record<string, unknown>>).some(
+          (part) => part.type === 'tool-call',
+        )
+      if (!tail.some(hasToolCall)) {
+        return { tail: [], rest: messages, tailTokens: 0, pairCount: 0 }
+      }
+
+      return {
+        tail,
+        rest: messages.slice(0, boundary),
+        tailTokens: tail.reduce((sum, m) => sum + countTokensOfMessage(m), 0),
+        pairCount: tail.filter(hasToolCall).length,
+      }
+    }
+
+    function pathFromToolInput(toolName: string, input: Record<string, unknown>): string[] {
+      void toolName
+      const raw = input.paths ?? input.path
+      if (typeof raw === 'string') return [raw]
+      if (Array.isArray(raw)) {
+        return raw
+          .map((entry) =>
+            typeof entry === 'string'
+              ? entry
+              : ((entry as { path?: string } | undefined)?.path ?? ''),
+          )
+          .filter((p): p is string => p.length > 0)
+      }
+      return []
+    }
+
+    /** Re-parses a previous knowledge block so its entries survive compaction. */
+    function parseKnowledgeLists(block: string | null): {
+      goal: string | null
+      inspected: string[]
+      edited: string[]
+      nextAction: string | null
+    } {
+      if (!block) return { goal: null, inspected: [], edited: [], nextAction: null }
+      const match = block.match(
+        /<knowledge_memory>([\s\S]*?)<\/knowledge_memory>/,
+      )
+      if (!match) return { goal: null, inspected: [], edited: [], nextAction: null }
+      const body = match[1]
+      const goalMatch = body.match(/^Goal: ([\s\S]*?)(?=\n\n|\nFiles Inspected:|$)/m)
+      const nextMatch = body.match(/^Next Action: ([\s\S]*)$/m)
+      const list = (header: string) => {
+        const section = body.match(
+          new RegExp(`^${header}:\\n([\\s\\S]*?)(?=\\n\\n|\\n[A-Z][a-z]* [A-Z]|$)`, 'm'),
+        )
+        if (!section) return []
+        return section[1]
+          .split('\n')
+          .map((line) => line.replace(/^- /, '').trim())
+          .filter((line) => line.length > 0)
+      }
+      return {
+        goal: goalMatch ? goalMatch[1].trim() : null,
+        inspected: list('Files Inspected'),
+        edited: list('Edits Made'),
+        nextAction: nextMatch ? nextMatch[1].trim() : null,
+      }
+    }
+
+    /**
+     * Deterministic Goal/Files/Edits/Next block (P1.5 C3), pinned verbatim
+     * ahead of the historical memory. Everything comes from structured
+     * message data — no Decisions regex, no edit receipts (§7).
+     */
+    function buildKnowledgeBlock(p: {
+      messages: Message[]
+      previousBlock: string | null
+    }): string {
+      const { messages, previousBlock } = p
+
+      // Latest real USER_PROMPT text, unless it is a short filler reply.
+      let goal: string | null = null
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (message.role !== 'user') continue
+        if (message.tags?.includes('USER_PROMPT') === false) continue
+        const text = getTextContent(message).trim()
+        if (
+          !text ||
+          GOAL_NOISE_RE.test(text.replace(/<[^>]+>/g, '').trim())
+        ) {
+          continue
+        }
+        goal = text
+        break
+      }
+
+      const inspected: string[] = []
+      const edited: string[] = []
+      let nextAction: string | null = null
+
+      for (const message of messages) {
+        if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
+        for (const part of message.content as Array<Record<string, unknown>>) {
+          if (part.type !== 'tool-call') continue
+          const toolName = part.toolName as string
+          const input = (part.input as Record<string, unknown>) || {}
+          if (INSPECT_TOOLS.includes(toolName)) {
+            for (const p of pathFromToolInput(toolName, input)) {
+              if (!inspected.includes(p)) inspected.push(p)
+            }
+          }
+          if (EDIT_TOOLS.includes(toolName)) {
+            for (const p of pathFromToolInput(toolName, input)) {
+              if (!edited.includes(p)) edited.push(p)
+            }
+          }
+          if (toolName === 'write_todos' && nextAction === null) {
+            const todos = input.todos as
+              | Array<{ task: string; completed: boolean }>
+              | undefined
+            const open = todos?.find((t) => !t.completed)
+            if (open) nextAction = open.task
+          }
+        }
+      }
+
+      if (nextAction === null) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role !== 'assistant') continue
+          const text = getTextContent(messages[i]).trim()
+          if (text) {
+            nextAction = text.slice(-KNOWLEDGE_NEXT_CHAR_CAP)
+            break
+          }
+        }
+      }
+
+      // Carry forward entries from the previous block (entry-list rebuild,
+      // not whole-block append), current entries first.
+      const previousLists = parseKnowledgeLists(previousBlock)
+      const mergeWithCap = (current: string[], previous: string[]) => {
+        const merged = [...current]
+        for (const p of previous) {
+          if (merged.length >= KNOWLEDGE_LIST_CAP) break
+          if (!merged.includes(p)) merged.push(p)
+        }
+        return merged
+      }
+      const files = mergeWithCap(inspected, previousLists.inspected)
+      const edits = mergeWithCap(edited, previousLists.edited)
+      if (goal === null) goal = previousLists.goal
+      if (nextAction === null) nextAction = previousLists.nextAction
+
+      const lines: string[] = []
+      if (goal) {
+        lines.push(
+          `Goal: ${goal.length > KNOWLEDGE_GOAL_CHAR_CAP ? goal.slice(0, KNOWLEDGE_GOAL_CHAR_CAP) + '…' : goal}`,
+        )
+      }
+      if (files.length > 0) {
+        lines.push(`Files Inspected:\n${files.map((p) => `- ${p}`).join('\n')}`)
+      }
+      if (edits.length > 0) {
+        lines.push(`Edits Made:\n${edits.map((p) => `- ${p}`).join('\n')}`)
+      }
+      if (nextAction) {
+        lines.push(
+          `Next Action: ${
+            nextAction.length > KNOWLEDGE_NEXT_CHAR_CAP
+              ? nextAction.slice(0, KNOWLEDGE_NEXT_CHAR_CAP) + '…'
+              : nextAction
+          }`,
+        )
+      }
+      if (lines.length === 0) return ''
+
+      let block = `${KNOWLEDGE_BLOCK_HEADER}\n${lines.join('\n\n')}\n</knowledge_memory>`
+      // Whole-block token cap: drop trailing sections until it fits.
+      while (
+        lines.length > 1 &&
+        Math.ceil(block.length / CHARS_PER_TOKEN) > KNOWLEDGE_BLOCK_TOKEN_CAP
+      ) {
+        lines.pop()
+        block = `${KNOWLEDGE_BLOCK_HEADER}\n${lines.join('\n\n')}\n</knowledge_memory>`
+      }
+      if (Math.ceil(block.length / CHARS_PER_TOKEN) > KNOWLEDGE_BLOCK_TOKEN_CAP) {
+        return ''
+      }
+      return block
+    }
 
     /**
      * Truncates long text with 80% from the beginning and 20% from the end.
@@ -431,13 +783,21 @@ const definition: AgentDefinition = {
     }
 
     // === SUMMARIZATION STRATEGY ===
-    // 1. Summarize ALL messages (apply transformations: truncation, tool summaries, etc.)
+    // 0. Split the verbatim tail (P1.5 C4) off before summarizing: the head
+    //    only summarizes what the tail does not carry verbatim.
+    // 1. Summarize remaining messages (apply transformations: truncation, tool
+    //    summaries, etc.)
     // 2. Walk backwards through summarized parts to apply token budgets
     // 3. Older summarized parts beyond the budgets are dropped
 
-    const assistantToolBudget: number =
-      params?.assistantToolBudget ?? ASSISTANT_TOOL_BUDGET
-    const userBudget: number = params?.userBudget ?? USER_BUDGET
+    const budgets = resolveBudgetsFor({
+      maxContextLength,
+      assistantToolBudget: params?.assistantToolBudget,
+      userBudget: params?.userBudget,
+      tailBudget: params?.tailBudget,
+    })
+    const assistantToolBudget: number = budgets.assistantToolBudget
+    const userBudget: number = budgets.userBudget
 
     function shouldExcludeMessage(message: Message): boolean {
       if (message.tags?.includes('INSTRUCTIONS_PROMPT')) return true
@@ -449,6 +809,15 @@ const definition: AgentDefinition = {
     function isConversationSummary(message: Message): boolean {
       if (message.role !== 'user') return false
       return getTextContent(message).includes('<conversation_summary>')
+    }
+
+    /** Pulls a previous knowledge block back out of a summary message (C3). */
+    function extractKnowledgeBlock(message: Message): string | null {
+      const text = getTextContent(message)
+      const match = text.match(
+        /<knowledge_memory>([\s\S]*?)<\/knowledge_memory>/,
+      )
+      return match ? match[0] : null
     }
 
     function extractSummaryContent(message: Message): string {
@@ -499,9 +868,11 @@ const definition: AgentDefinition = {
 
     // Extract previous summary content from all messages
     let previousSummaryContent = ''
+    let previousSummary: Message | null = null
     for (const message of currentMessages) {
       if (isConversationSummary(message)) {
         previousSummaryContent = extractSummaryContent(message)
+        previousSummary = message
       }
     }
 
@@ -526,8 +897,9 @@ const definition: AgentDefinition = {
             !shouldExcludeMessage(message) && !isConversationSummary(message),
         )
 
-    // Filter out excluded, conversation summary, and live-prompt messages for summarization
-    const messagesToSummarize = currentMessages
+    // Filter out excluded, conversation summary, and live-prompt messages,
+    // then split the verbatim tail (C4) off the head to be summarized.
+    const realHistory = currentMessages
       .filter(
         (_message, index) =>
           isMidTurnPrune || index !== latestLiveUserPromptIndex,
@@ -536,6 +908,8 @@ const definition: AgentDefinition = {
         (message) =>
           !shouldExcludeMessage(message) && !isConversationSummary(message),
       )
+    const { tail, rest: messagesToSummarize, tailTokens, pairCount: tailPairCount } =
+      splitTail({ messages: realHistory, tailBudget: budgets.tailBudget })
 
     // Find the last user message with images to preserve in the final output
     let lastUserImageParts: Array<Record<string, unknown>> = []
@@ -561,6 +935,26 @@ const definition: AgentDefinition = {
     const summarizedEntries: SummaryEntry[] = []
     let liveUserPromptEntry: SummaryEntry | undefined
 
+    // P1.5 C2: newest prose-bearing assistant messages get the relaxed cap.
+    // Pre-computed here (same walk as summarizeMessagesIntoEntries in
+    // compact-history.ts, which the parity test locks to this file).
+    let recentQuota = HEAD_RECENT_EXEMPT_COUNT
+    const recentAssistantLimits = new Map<Message, number>()
+    for (let i = messagesToSummarize.length - 1; i >= 0; i--) {
+      const message = messagesToSummarize[i]
+      if (message.role !== 'assistant') continue
+      const hasText =
+        Array.isArray(message.content) &&
+        (message.content as Array<Record<string, unknown>>).some(
+          (part) => part.type === 'text' && typeof part.text === 'string',
+        )
+      if (!hasText) continue
+      if (recentQuota > 0) {
+        recentAssistantLimits.set(message, HEAD_RECENT_ASSISTANT_LIMIT)
+        recentQuota--
+      }
+    }
+
     for (const message of messagesToSummarize) {
       if (message.role === 'user') {
         let text = getTextContent(message).trim()
@@ -584,6 +978,10 @@ const definition: AgentDefinition = {
           summarizedEntries.push(entry)
         }
       } else if (message.role === 'assistant') {
+        // P1.5 C2: the newest few prose-bearing assistant messages keep a
+        // relaxed per-entry cap (positional exemption, not semantic).
+        const textLimit =
+          recentAssistantLimits.get(message) ?? ASSISTANT_MESSAGE_LIMIT
         const textParts: string[] = []
         const toolSummaries: string[] = []
 
@@ -609,7 +1007,7 @@ const definition: AgentDefinition = {
           let combinedText = textParts.join('\n')
           combinedText = truncateLongText(
             combinedText,
-            ASSISTANT_MESSAGE_LIMIT * CHARS_PER_TOKEN,
+            textLimit * CHARS_PER_TOKEN,
           )
           parts.push(`Progress note:\n${combinedText}`)
         }
@@ -828,6 +1226,17 @@ const definition: AgentDefinition = {
 
     const summaryText = summaryParts.join('\n\n---\n\n')
 
+    // P1.5 C3: pinned knowledge block. Scans the full real history (the tail
+    // carries the same facts today, but the block must survive the next
+    // compaction, when the tail itself will be gone) and is seeded from the
+    // previous block.
+    const knowledgeBlock = buildKnowledgeBlock({
+      messages: realHistory,
+      previousBlock: previousSummary
+        ? extractKnowledgeBlock(previousSummary)
+        : null,
+    })
+
     // Create the summarized message with fresh sentAt timestamp
     // Include any images from the last user message that had images
     const now = Date.now()
@@ -836,7 +1245,7 @@ const definition: AgentDefinition = {
       text: `<conversation_summary>
 ${SUMMARY_HEADER}
 
-<historical_memory>
+${knowledgeBlock ? `${knowledgeBlock}\n\n` : ''}<historical_memory>
 ${summaryText}
 </historical_memory>
 </conversation_summary>
@@ -875,6 +1284,10 @@ ${SUMMARY_DISCLAIMER}`,
       // Update sentAt to current time so future cache miss checks use fresh timestamps
       finalMessages.push({ ...instructionsPromptMessage, sentAt: now })
     }
+    // P1.5 C4: verbatim tail between the summary (and instructions prompt)
+    // and the live prompt. Messages are re-used as-is — reasoning content,
+    // tool-call inputs and results all survive byte-for-byte.
+    finalMessages.push(...tail)
     if (isMidTurnPrune) {
       finalMessages.push(continuationMessage)
     } else if (latestLiveUserPromptMessage) {
@@ -925,6 +1338,15 @@ ${SUMMARY_DISCLAIMER}`,
           assistant_tool_entry_count: assistantToolEntryCount,
           dropped_assistant_tool_entry_count:
             assistantToolEntryCount - includedAssistantToolEntryCount,
+          // P1.5 C5 telemetry.
+          trigger_source: params?.maxContextLength !== undefined ? 'params' : 'baked',
+          budget_scale: budgets.scale,
+          tail_budget: budgets.tailBudget,
+          tail_tokens: tailTokens,
+          tail_pair_count: tailPairCount,
+          knowledge_block_tokens: Math.ceil(
+            knowledgeBlock.length / CHARS_PER_TOKEN,
+          ),
           mid_turn: isMidTurnPrune,
           live_user_prompt_found: latestLiveUserPromptMessage !== null,
           live_user_prompt_text_preserved: liveUserPromptTextPreserved,

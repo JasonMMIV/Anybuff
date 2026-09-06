@@ -342,19 +342,25 @@ describe('context-pruner parity', () => {
 
       // Identical memory blob...
       expect(normalize([fromRuntime[0]])).toEqual(normalize([fromPruner[0]]))
-      // ...but the runtime refuses to end the history on it.
-      expect(fromRuntime).toHaveLength(fromPruner.length + 1)
+      // ...but the runtime refuses to end the history on it: it appends the
+      // continuation prompt (the verbatim tail shared by both outputs may
+      // itself end on a user message, so count by role, not by index).
+      const runtimeTail = fromRuntime.slice(fromPruner.length - 1)
+      expect(runtimeTail[runtimeTail.length - 1].role).toBe('user')
       expect(
-        (fromRuntime[fromRuntime.length - 1].content as any[])[0].text,
+        (runtimeTail[runtimeTail.length - 1].content as any[])[0].text,
       ).toContain('Continue the existing assistant turn')
     })
   }
 
   it('actually renders every tool branch, so the comparison is not vacuous', () => {
     // Agreeing that everything was dropped would also pass the parity check.
+    // Tail suppressed (tailBudget 0) so the summary is what carries the
+    // one-line tool descriptions this test asserts on.
     const memory = textOfFirst(
       compactMessages({
         messages: FIXTURES['every tool the summarizer knows about'],
+        tailBudget: 0,
       }).messages,
     )
 
