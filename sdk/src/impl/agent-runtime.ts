@@ -14,7 +14,10 @@ import {
   localStartAgentRun,
 } from './local-database'
 import { promptAiSdk, promptAiSdkStream, promptAiSdkStructured } from './llm'
-import { resolveModelContextWindow } from './model-provider'
+import {
+  resolveModelContextOutputTokens,
+  resolveModelContextWindow,
+} from './model-provider'
 
 import type {
   AgentRuntimeDeps,
@@ -128,6 +131,9 @@ export function getAgentRuntimeImpl(
 
     // Context window: provider-config aware (falls back to hardcoded budget)
     resolveContextWindow: (agentId, model) => resolveModelContextWindow({ agentId, model }),
+    // Output cap: feeds the compaction trigger's output reserve (P1 B2)
+    resolveContextOutputTokens: (agentId, model) =>
+      resolveModelContextOutputTokens({ agentId, model }),
 
     // Client callbacks (in-process; historically WebSocket seams)
     handleStepsLogChunk,

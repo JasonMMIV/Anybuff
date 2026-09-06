@@ -3,6 +3,7 @@ import {
   UNKNOWN_MODEL_CONTEXT_FALLBACK,
   compactMessagesForResume,
   resolveEffectiveContextWindow,
+  resolveModelContextOutputTokens,
   toCompactionTriggerTokens
 } from '@codebuff/sdk'
 import { isSensitiveFile } from '../files/file-filter'
@@ -736,6 +737,25 @@ function resolveRoutedModelForRun(
   return settings.agentRouting?.[agentId]?.model ?? settings.activeModel ?? undefined
 }
 
+/**
+ * Root params for the run (AnyBuff P1 B3): `maxContextLength` carries the
+ * §3.3 compaction trigger — min(0.7·W, W − reserve(W, out)) — so base2's
+ * pruner budgets scale to the model's real window instead of the baked 400k.
+ * Falls back to the baked trigger of the 1M unknown-window fallback, mirroring
+ * the runtime's own compactContext path (B2).
+ */
+export function buildRunContextParams(agentId: string): { maxContextLength: number } {
+  const window =
+    resolveEffectiveContextWindow(resolveRoutedModelForRun(loadSettings(), agentId) ?? '') ??
+    UNKNOWN_MODEL_CONTEXT_FALLBACK
+  return {
+    maxContextLength: toCompactionTriggerTokens(
+      window,
+      resolveModelContextOutputTokens({ agentId }),
+    ),
+  }
+}
+
 export type OverflowResumePlan =
   | { action: 'run' }
   | { action: 'compact'; k: number; maxTokens: number }
@@ -1005,6 +1025,9 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // with this turn's user prompt, pass an empty prompt so the runtime
         // does not append a duplicate USER_PROMPT message.
         prompt: resumeFromCheckpoint ? '' : prompt,
+        // AnyBuff P1 B3: forward the window-derived compaction trigger so
+        // base2's baked 400k pruner budgets scale with the real model window.
+        params: buildRunContextParams(agentId),
         previousRun: previousRun as RunState | undefined,
         signal: currentAbort.signal,
         // ADR-12: decrypted provider keys travel through the SDK injection

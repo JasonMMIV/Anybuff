@@ -800,6 +800,53 @@ export function resolveModelContextWindow(params: {
   return windows[0]
 }
 
+/**
+ * Resolve the model's declared max output tokens (AnyBuff P1 B2). Mirrors
+ * resolveModelContextWindow's candidate walk but reads context.outputTokens,
+ * which feeds the output reserve in toCompactionTriggerTokens.
+ */
+export function resolveModelContextOutputTokens(params: {
+  agentId?: string
+  model?: string
+}): number | undefined {
+  const loadedConfig = loadProviderConfigSync()
+  const effectiveModel = resolveConfiguredAgentModelConfig({
+    agentId: params.agentId,
+    model: params.model,
+    loadedConfig,
+  }).model
+  const outputs = resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
+    (candidateModel) => {
+      let configured: ResolvedProviderModel | undefined
+      try {
+        configured = resolveConfiguredProviderModel({
+          model: candidateModel,
+          loadedConfig,
+          apiKeyOverrides: injectedApiKeyOverrides,
+        })
+      } catch {
+        // Unresolvable candidate (missing key etc.) contributes no output cap.
+        return []
+      }
+      if (!configured) return []
+      const outputTokens = resolveModelCapabilities({
+        providerId: configured.providerId,
+        model: candidateModel,
+        loadedConfig,
+      })?.context?.outputTokens
+      if (
+        typeof outputTokens === 'number' &&
+        Number.isFinite(outputTokens) &&
+        outputTokens > 0
+      ) {
+        return [outputTokens]
+      }
+      return []
+    },
+  )
+  return outputs[0]
+}
+
 export function resolveModelContextWindows(params: {
   agentId?: string
   model?: string

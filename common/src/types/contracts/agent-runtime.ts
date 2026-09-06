@@ -80,10 +80,17 @@ export type AgentRuntimeDeps = {
   /**
    * Resolve the actual context window for a given agent/model from the
    * provider config. When provided, the context meter and pruner use the
-   * real window instead of the hardcoded 250k/400k per-model budget.
-   * Fallback: contextPrunerBudgetForModel(agentTemplate.model).
+   * real window instead of the 1M unknown-model fallback.
+   * Fallback: UNKNOWN_MODEL_CONTEXT_FALLBACK (plan §3.3 v3).
    */
   resolveContextWindow?: (agentId?: string, model?: string) => number | undefined
+  /**
+   * Resolve the model's declared max output tokens (plan §3.3 context.outputTokens).
+   * Feeds the output reserve in toCompactionTriggerTokens so small-output models
+   * trigger compaction closer to their window. Optional — undefined means only
+   * the flat 12% reserve applies.
+   */
+  resolveContextOutputTokens?: (agentId?: string, model?: string) => number | undefined
 }
 
 /** Per-run dependencies */

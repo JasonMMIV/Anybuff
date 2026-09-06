@@ -123,6 +123,7 @@ export type { ResumeCompactionResult } from './impl/resume-compaction'
 export {
   recordLearnedModelContextWindow,
   resolveEffectiveContextWindow,
+  resolveModelContextOutputTokens,
 } from './impl/model-provider'
 
 // Provider content-policy classification (failover-eligible errors)

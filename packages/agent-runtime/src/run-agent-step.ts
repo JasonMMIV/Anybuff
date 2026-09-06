@@ -1,4 +1,7 @@
-import { contextPrunerBudgetForModel } from '@codebuff/common/constants/model-config'
+import {
+  toCompactionTriggerTokens,
+  UNKNOWN_MODEL_CONTEXT_FALLBACK,
+} from '@codebuff/common/util/context-trim'
 import {
   supportsAssistantPrefill,
   supportsCacheControl,
@@ -253,10 +256,11 @@ export const runAgentStep = async (
   } = params
   let agentState = params.agentState
 
-  // Resolve the actual context window: provider-config value > hardcoded per-model budget.
+  // Resolve the actual context window: provider-config value > 1M unknown-model
+  // fallback (plan §3.3 v3). The baked 250k/400k budgets remain base2-only.
   const maxContextTokens =
     resolveContextWindow?.(params.agentId, agentTemplate.model) ??
-    contextPrunerBudgetForModel(agentTemplate.model)
+    UNKNOWN_MODEL_CONTEXT_FALLBACK
 
   const { agentContext } = agentState
 
@@ -654,8 +658,9 @@ export const runAgentStep = async (
   )
 
   // Context meter for host UIs (fork-parity 'context_window' event):
-  // locally-estimated tokens against the same per-model budget the pruner
-  // uses. Emitted at end of each step so hosts can render usage rings.
+  // locally-estimated tokens against the model's declared context window
+  // (1M fallback when unknown). Emitted at end of each step so hosts can
+  // render usage rings; compaction itself fires earlier, at the §3.3 trigger.
   onResponseChunk({
     type: 'context_window',
     used: agentState.contextTokenCount,
@@ -814,12 +819,24 @@ export async function loopAgentSteps(
     clientEnv,
     ciEnv,
     resolveContextWindow: resolveContextWindowFromParams,
+    resolveContextOutputTokens: resolveContextOutputTokensFromParams,
   } = params
 
   // Resolve the actual context window for the loop scope (used by compaction).
   const loopMaxContextTokens =
     resolveContextWindowFromParams?.(params.agentId, agentTemplate.model) ??
-    contextPrunerBudgetForModel(agentTemplate.model)
+    UNKNOWN_MODEL_CONTEXT_FALLBACK
+  const loopOutputTokens = resolveContextOutputTokensFromParams?.(
+    params.agentId,
+    agentTemplate.model,
+  )
+  // B2: compaction fires at the §3.3 trigger — min(0.7·W, W − reserve(W, out)) —
+  // not at the raw window. Feeding the raw window left no headroom, so the
+  // first signal of an oversized request was the provider's overflow error.
+  const compactionTriggerTokens = toCompactionTriggerTokens(
+    loopMaxContextTokens,
+    loopOutputTokens,
+  )
 
   if (signal.aborted) {
     return {
@@ -1085,8 +1102,8 @@ export async function loopAgentSteps(
 
       // Mechanical compaction: no model call, so it costs nothing but the
       // prompt-cache break that rewriting the history forces anyway. The
-      // budget is sized to the model in use (see contextPrunerBudgetForModel),
-      // which is the same budget base2 hands the context-pruner agent.
+      // threshold is the window-derived trigger (see compactionTriggerTokens),
+      // the same value base2's pruner receives via root params (plan B3).
       //
       // Fires once per turn at most: compaction stamps every surviving message
       // with a fresh sentAt and drops the assistant messages that preceded the
@@ -1100,14 +1117,14 @@ export async function loopAgentSteps(
             : {}),
           messages: currentAgentState.messageHistory,
           contextTokenCount: currentAgentState.contextTokenCount,
-          maxContextLength: loopMaxContextTokens,
+          maxContextLength: compactionTriggerTokens,
           logger,
           runId,
           onCompaction: (trigger) => {
             if (initialAgentState.parentId) return
             params.onCompaction?.({
               trigger,
-              thresholdTokens: loopMaxContextTokens,
+              thresholdTokens: compactionTriggerTokens,
             })
           },
         })

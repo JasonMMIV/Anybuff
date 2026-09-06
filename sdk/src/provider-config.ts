@@ -96,11 +96,11 @@ const providerCompatibilitySchema = z
     stripCacheControl: z.boolean().default(true),
     /** Send text-only user content as a plain string instead of [{ type: "text" }]. */
     stringifyTextContent: z.boolean().default(true),
-    /** If false, Openbuff omits tool definitions for this provider. */
+    /** If false, AnyBuff omits tool definitions for this provider. */
     supportsTools: z.boolean().default(true),
-    /** If false, Openbuff downgrades `tool_choice: "required"` to provider default tool choice. */
+    /** If false, AnyBuff downgrades `tool_choice: "required"` to provider default tool choice. */
     supportsRequiredToolChoice: z.boolean().default(true),
-    /** If false, Openbuff enforces stop sequences locally without sending `stop` to the provider. */
+    /** If false, AnyBuff enforces stop sequences locally without sending `stop` to the provider. */
     supportsStopSequences: z.boolean().default(false),
     /** If true, Openbuff omits non-provider request metadata for this provider. */
     stripProviderMetadata: z.boolean().default(true),
@@ -1781,20 +1781,92 @@ export type AnybuffProviderPreset = {
   envHelp?: string
 }
 
+// Capability values: models.dev (MIT), verified 2026-09-05
+// (AnyBuff 上下文管理改善計畫.md §5 B1a/B1c). Fill rule: windowTokens =
+// limit.input ?? limit.context (§3.3 v2) — OpenAI-family “input” is the real
+// prompt ceiling; outputTokens = limit.output feeds the output reserve.
+const OPENCODE_GO_MODEL_CAPABILITIES = {
+  // GLM
+  'glm-5.3': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
+  'glm-5.3-flash': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
+  'glm-5.2': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
+  'glm-5.1': { context: { windowTokens: 200_000, outputTokens: 131_072 } },
+  // Kimi (k2.7-code is the 2026-06 coding-specialized older gen — still 262k)
+  'kimi-k3': { context: { windowTokens: 1_048_576, outputTokens: 131_072 } },
+  'kimi-k2.6': { context: { windowTokens: 262_144, outputTokens: 262_144 } },
+  'kimi-k2.7-code': { context: { windowTokens: 262_144, outputTokens: 262_144 } },
+  // MiMo
+  'mimo-v2.5-pro': { context: { windowTokens: 1_048_576, outputTokens: 131_072 } },
+  'mimo-v2.5': { context: { windowTokens: 1_048_576, outputTokens: 131_072 } },
+  'mimo-v2-pro': { context: { windowTokens: 1_048_576, outputTokens: 131_072 } },
+  // Qwen
+  'qwen3.8-max': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
+  'qwen3.8-flash': { context: { windowTokens: 1_000_000, outputTokens: 131_072 } },
+  'qwen3.7-max': { context: { windowTokens: 1_000_000, outputTokens: 65_536 } },
+  'qwen3.7-plus': { context: { windowTokens: 1_000_000, outputTokens: 64_000 } },
+  'qwen3.6-plus': { context: { windowTokens: 1_000_000, outputTokens: 65_536 } },
+  'qwen3.5-plus': { context: { windowTokens: 1_000_000, outputTokens: 65_536 } },
+  // MiniMax
+  'minimax-m3': { context: { windowTokens: 1_048_576, outputTokens: 512_000 } },
+  'minimax-m2.7': { context: { windowTokens: 204_800, outputTokens: 131_072 } },
+  // DeepSeek (v4-flash conservative: repo-measured 1,048,575 — plan §11 #2)
+  'deepseek-v4-pro': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
+  'deepseek-v4-flash': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
+  'deepseek-v4-flash-vision-exp': { context: { windowTokens: 1_000_000, outputTokens: 384_000 } },
+  // OpenCode Go-hosted GPT / Grok
+  'gpt-5.6-luna': { context: { windowTokens: 922_000, outputTokens: 128_000 } },
+  'grok-4.6': { context: { windowTokens: 500_000, outputTokens: 500_000 } },
+} satisfies Record<string, ModelCapabilitiesInput>
+
 const OPENCODE_GO_MODELS = [
+  // GLM
+  'glm-5.3',
+  'glm-5.3-flash',
+  'glm-5.2',
   'glm-5.1',
-  'glm-5',
+  // Kimi
+  'kimi-k3',
   'kimi-k2.6',
-  'kimi-k2.5',
+  'kimi-k2.7-code',
+  // MiMo
   'mimo-v2.5-pro',
   'mimo-v2.5',
+  'mimo-v2-pro',
+  // Qwen
+  'qwen3.8-max',
+  'qwen3.8-flash',
+  'qwen3.7-max',
+  'qwen3.7-plus',
   'qwen3.6-plus',
   'qwen3.5-plus',
+  // MiniMax
+  'minimax-m3',
   'minimax-m2.7',
-  'minimax-m2.5',
+  // DeepSeek
   'deepseek-v4-pro',
   'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp',
+  // OpenCode Go-hosted GPT / Grok
+  'gpt-5.6-luna',
+  'grok-4.6',
 ] as const
+
+const OPENAI_MODEL_CAPABILITIES = {
+  // W = limit.input (the real prompt ceiling); total window in comments.
+  'gpt-5.5': { context: { windowTokens: 922_000, outputTokens: 128_000 } },
+  'gpt-5.4': { context: { windowTokens: 922_000, outputTokens: 128_000 } },
+  'gpt-5.4-mini': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.4-nano': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.2-chat-latest': { context: { windowTokens: 128_000, outputTokens: 16_384 } },
+  'gpt-5.2': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.2-codex': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.1': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.1-codex': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  'gpt-5.1-codex-mini': { context: { windowTokens: 272_000, outputTokens: 128_000 } },
+  // gpt-4.1 family has no input field — W = context.
+  'gpt-4.1': { context: { windowTokens: 1_047_576, outputTokens: 32_768 } },
+  'gpt-4.1-mini': { context: { windowTokens: 1_047_576, outputTokens: 32_768 } },
+} satisfies Record<string, ModelCapabilitiesInput>
 
 const OPENAI_API_MODELS = [
   'gpt-5.5',
@@ -1816,13 +1888,16 @@ export const ANYBUFF_PROVIDER_PRESETS = {
     id: 'opencode-go',
     label: 'OpenCode Go',
     description:
-      'OpenCode Go subscription endpoint with GLM, Kimi, MiMo, Qwen, MiniMax, and DeepSeek coding models.',
+      'OpenCode Go subscription endpoint with GLM, Kimi, MiMo, Qwen, MiniMax, DeepSeek, GPT, and Grok coding models.',
     envHelp: 'export OPENCODE_GO_API_KEY="your_opencode_go_key"',
     config: {
-      defaultModel: 'opencode-go/kimi-k2.6',
+      // B1c (2026-09-05 decision): kimi-k3 (1M) replaces the inherited
+      // kimi-k2.6 (262k) fork-baseline default; plan mode upgrades the
+      // deprecated-window glm-5.1 to glm-5.3 (1M, currently served).
+      defaultModel: 'opencode-go/kimi-k3',
       modes: {
-        default: 'opencode-go/kimi-k2.6',
-        plan: 'opencode-go/glm-5.1',
+        default: 'opencode-go/kimi-k3',
+        plan: 'opencode-go/glm-5.3',
       },
       providers: {
         'opencode-go': {
@@ -1839,6 +1914,7 @@ export const ANYBUFF_PROVIDER_PRESETS = {
             stripProviderMetadata: true,
           },
           models: [...OPENCODE_GO_MODELS],
+          modelCapabilities: OPENCODE_GO_MODEL_CAPABILITIES,
         },
       },
     },
@@ -1862,6 +1938,7 @@ export const ANYBUFF_PROVIDER_PRESETS = {
           apiKeyEnv: 'OPENAI_API_KEY',
           supportsStructuredOutputs: true,
           models: [...OPENAI_API_MODELS],
+          modelCapabilities: OPENAI_MODEL_CAPABILITIES,
         },
       },
     },
@@ -1888,6 +1965,19 @@ export const ANYBUFF_PROVIDER_PRESETS = {
             'anthropic/claude-opus-4.1',
             'openai/gpt-4.1-mini',
           ],
+          // Values: models.dev lab files (native limits, not the OpenRouter
+          // page aggregate convention). B1a.
+          modelCapabilities: {
+            'anthropic/claude-sonnet-4.5': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'anthropic/claude-opus-4.1': {
+              context: { windowTokens: 200_000, outputTokens: 32_000 },
+            },
+            'openai/gpt-4.1-mini': {
+              context: { windowTokens: 1_047_576, outputTokens: 32_768 },
+            },
+          },
         },
       },
     },
@@ -1933,6 +2023,16 @@ export const ANYBUFF_PROVIDER_PRESETS = {
           apiKeyEnv: 'GLM_API_KEY',
           supportsStructuredOutputs: false,
           models: ['glm-4.6', 'glm-4.5-air'],
+          // Both far below the legacy 400k trigger — the exact symptom-②
+          // trap B2's trigger conversion fixes. Values: models.dev. B1a.
+          modelCapabilities: {
+            'glm-4.6': {
+              context: { windowTokens: 204_800, outputTokens: 131_072 },
+            },
+            'glm-4.5-air': {
+              context: { windowTokens: 131_072, outputTokens: 98_304 },
+            },
+          },
         },
       },
     },
@@ -1965,6 +2065,28 @@ export const ANYBUFF_PROVIDER_PRESETS = {
             'us.amazon.nova-pro-v1:0',
             'us.meta.llama3-3-70b-instruct-v1:0',
           ],
+          // Claude-family values: models.dev lab files mapped by native
+          // limits (the Bedrock gateway may cap lower — A2 error-message
+          // learning is the correction layer). nova-premier / nova-pro /
+          // llama3-3-70b values are unverified (plan §11 #2) and intentionally
+          // omitted: they fall to the 1M unknown-window fallback until then.
+          modelCapabilities: {
+            'apac.anthropic.claude-opus-4-8': {
+              context: { windowTokens: 1_000_000, outputTokens: 128_000 },
+            },
+            'apac.anthropic.claude-sonnet-4-6': {
+              context: { windowTokens: 1_000_000, outputTokens: 64_000 },
+            },
+            'apac.anthropic.claude-sonnet-4-5-20250929-v1:0': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'apac.anthropic.claude-haiku-4-5-20251001-v1:0': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'apac.anthropic.claude-sonnet-4-20250514-v1:0': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+          },
         },
       },
     },
@@ -1993,6 +2115,25 @@ export const ANYBUFF_PROVIDER_PRESETS = {
             'claude-opus-4-1',
             'claude-sonnet-4-0',
           ],
+          // Every member is a 200k prompt window — the “whole family below
+          // 400k” preset. Values: models.dev. B1a.
+          modelCapabilities: {
+            'claude-opus-4-5': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'claude-sonnet-4-5': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'claude-haiku-4-5': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+            'claude-opus-4-1': {
+              context: { windowTokens: 200_000, outputTokens: 32_000 },
+            },
+            'claude-sonnet-4-0': {
+              context: { windowTokens: 200_000, outputTokens: 64_000 },
+            },
+          },
         },
       },
     },
@@ -2007,7 +2148,7 @@ export function createProviderPresetConfig(
       presetId as keyof typeof ANYBUFF_PROVIDER_PRESETS
     ]
   if (!preset) {
-    throw new Error(`Unknown Openbuff provider preset '${presetId}'.`)
+    throw new Error(`Unknown AnyBuff provider preset '${presetId}'.`)
   }
   const presetConfig: ProviderConfigFileInput = preset.config
   const defaultModel = presetConfig.defaultModel
@@ -2062,7 +2203,7 @@ export function createProviderPresetConfig(
   const parseResult = providerConfigFileSchema.safeParse(config)
   if (!parseResult.success) {
     throw new Error(
-      `Invalid built-in Openbuff provider preset '${presetId}': ${parseResult.error.message}`,
+      `Invalid built-in AnyBuff provider preset '${presetId}': ${parseResult.error.message}`,
     )
   }
   return parseResult.data
@@ -2401,7 +2542,7 @@ export function writeProviderConfigFile(params: {
   const parseResult = providerConfigFileSchema.safeParse(params.config)
   if (!parseResult.success) {
     throw new Error(
-      `Invalid Openbuff provider config: ${parseResult.error.message}`,
+      `Invalid AnyBuff provider config: ${parseResult.error.message}`,
     )
   }
 
