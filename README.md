@@ -12,14 +12,22 @@ DeepSeek, GLM, OpenRouter …) or fully local ones (Ollama, LM Studio, vLLM) —
 and pay your providers directly.
 
 ```
-┌─────────────────────────── Anybuff Desktop ───────────────────────────┐
-│  Electron + React 19 UI  │  main process embeds @codebuff/sdk         │
-│  chat · diff · agents    │  agent-runtime · tools · BYOK model layer  │
-└──────────────────────┬─────────────────────────────────────────────────┘
-                       │ apiKeyOverrides channel (never process.env)
-              anybuff.json provider routing (modes → agents → default)
-                       │
-        Your providers: OpenAI-compatible / Anthropic-compatible
+┌──────────────── Anybuff Desktop (Electron + React 19) ─────────────────┐
+│       chat · diff · settings · thin main shell (window, updater)       │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │
+┌────────────── Anybuff Android (Kotlin + WebView, arm64) ───────────────┐
+│    WebView renderer · Keystore vault · proot sandbox → Node 22 host    │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │  three shared tiers: renderer · host logic · engine
+                                     ▼
+┌───── host-core + @codebuff/sdk (shared host logic & BYOK runtime) ─────┐
+│    run lifecycle · channels · settings · agent-runtime · BYOK layer    │
+└────────────────────────────────────┬───────────────────────────────────┘
+                                     │  apiKeyOverrides channel (never process.env)
+                                     │  anybuff.json provider routing (modes → agents → default)
+                                     ▼
+                  Your providers: OpenAI-compatible / Anthropic-compatible
 ```
 
 ## Screenshot
@@ -29,16 +37,35 @@ and pay your providers directly.
 The welcome screen: pick a project folder, connect any OpenAI-compatible or
 Anthropic-compatible provider, and start chatting.
 
+## Features
+
+- **Three modes** — Chat (lightweight Q&A), Build (full file access), Plan
+  (planning without writes); `@agent` mentions spawn sub-agents inside the
+  running root.
+- **Safety rails** — sensitive-file filter (never reads `.env`, `*.pem`,
+  `*.key`, `id_rsa`, `kubeconfig`, …), terminal-command approval gate, and a
+  message queue while a run is active.
+- **Web search** — switchable providers: DuckDuckGo (default, keyless),
+  Firecrawl (keyless), Tinyfish (API key); automatic fallback when the active
+  provider is rate-limited.
+- **MCP servers** — manage stdio/http/sse servers in Settings, 3-tier
+  `.agents/mcp.json` scan (project → parent → home), per-server target
+  agents, DPAPI-encrypted inline tokens.
+- **Context management** — proactive compaction plus reactive overflow
+  trim-retry, model failover, and snapshot resume.
+
 ## Quick start
 
-1. Download **`AnyBuff-Setup-<version>.exe`** (currently **v0.1.0-beta.3**)
-   from the
+1. Download **`AnyBuff-Setup-<version>.exe`** (latest published release:
+   **v1.0.0**) from the
    [latest release](https://github.com/JasonMMIV/Anybuff/releases/latest) and
    run it. The installer is unsigned, so SmartScreen shows "Unknown publisher"
-   — click *More info → Run anyway*. (See the welcome screen above.)
-2. Pick a project folder (try `desktop/demo-project`), open Settings,
-   add a provider (baseURL + API key — keys are DPAPI-encrypted via Electron
-   safeStorage), fetch models, select one, and start chatting.
+   — click *More info → Run anyway*. After installation, updates are detected
+   and applied automatically by electron-updater (GitHub Releases provider).
+2. Pick a project folder (try `desktop/demo-project`), open Settings, add a
+   provider (baseURL + API key — keys are DPAPI-encrypted via Electron
+   safeStorage), fetch models, select one, and start chatting. Switch between
+   Chat / Build / Plan modes from the composer.
 
 ## Security
 
@@ -49,38 +76,42 @@ project you open.
 
 ## Repository layout
 
-| Path | Purpose |
-|---|---|
-| `desktop/` | Electron app (main / preload / renderer), ported from a prior prototype and adapted to the workspace SDK |
-| `sdk/` | `@codebuff/sdk` — in-process agent runtime with the Anybuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
-| `packages/agent-runtime` | Upstream step engine (untouched) |
-| `packages/llm-providers` | Vendored AI-SDK v7 openai-compatible provider + grafted interop features |
-| `common/` | Upstream shared types/tools/contracts (+ local-mode constants) |
-| `agents/` | Upstream agent templates; model strings are *routing keys* resolved through anybuff.json |
-| `scripts/generate-desktop-agents.ts` | Regenerates `packages/host-core/src/agents/bundled-agents.ts` from upstream `agents/` with AnyBuff patches baked in (single artifact shared by desktop + Android, ADR-21) |
-| `cli/` | Upstream CLI source kept on disk but OUT of the build graph (v2 candidate) |
-
-## Key behaviors
-
-- **suggest_followups disabled by default** (`ANYBUFF_FOLLOWUPS=1` re-enables).
-- **context-pruner activity hidden** in the desktop UI (still runs; zero LLM).
-- **web_search** is a local DuckDuckGo implementation with SSRF guards — no key, no backend.
-- Provider compat rules are data-driven and strip-only (never suppress reasoning);
-  observability under `[anybuff-compat]`.
-- API keys: DPAPI-encrypted at rest, delivered to the SDK through an injection
-  channel, scrubbed from every child-process environment.
-- Atomic config/checkpoint writes (fsync, rename-replace, never pre-delete).
+| Path                                 | Purpose                                                                                                                                                                     |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `desktop/`                           | Windows Electron app (React 19 renderer; thin main shell for window/dialog/updater/theme, business channels delegated to `packages/host-core` via `host-bridge.ts`)         |
+| `android/`                           | Android (arm64) Kotlin thin shell: WebView renderer + proot sandbox running Node 22 with the same host bundle, Keystore secret vault (Phase B, ADR-21)                      |
+| `packages/host-core`                 | `@codebuff/host-core` — Electron-free host business logic (run lifecycle, `AnyBuff:*` channels/WS, settings, secret-store seam) shared by desktop and Android (ADR-21)      |
+| `sdk/`                               | `@codebuff/sdk` — in-process agent runtime with the Anybuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
+| `packages/agent-runtime`             | Upstream step engine (two registered AnyBuff divergences: ADR-22, ADR-24)                                                                                                   |
+| `packages/llm-providers`             | Vendored AI-SDK v7 openai-compatible provider + grafted interop features                                                                                                    |
+| `packages/code-map`                  | Code indexing and symbol-structure analysis                                                                                                                                 |
+| `common/`                            | Upstream shared types/tools/contracts (+ local-mode constants)                                                                                                              |
+| `agents/`                            | Upstream agent templates; model strings are *routing keys* resolved through anybuff.json                                                                                    |
+| `scripts/generate-desktop-agents.ts` | Regenerates `packages/host-core/src/agents/bundled-agents.ts` from upstream `agents/` with AnyBuff patches baked in (single artifact shared by desktop + Android, ADR-21)   |
+| `cli/`                               | Upstream CLI source kept on disk but OUT of the build graph (historical reference only)                                                                                     |
 
 ## Development
 
 For contributors building from source (end users only need the installer):
 
 ```powershell
-bun run build:sdk        # rebuild SDK after touching sdk/, packages/, common/
-bun --cwd desktop run typecheck
-cd desktop && bun test src/__tests__          # or package-local suites
-bun scripts/smoke-sdk.ts # headless end-to-end BYOK check (needs a real key)
+bun install                     # after workspace/package.json changes
+bun run build:sdk               # rebuild SDK after touching sdk/, packages/, common/
+bun run build:host-core         # rebuild host-core after touching packages/host-core/
+bun run typecheck:host-core
+bun run typecheck:desktop
+bun run test:host-core          # host-core channel/WS contract tests
+bun --cwd desktop test src/__tests__   # desktop renderer/main tests
+bun run smoke:host-core         # headless smoke test (no Electron needed)
+cd sdk && bun test src/impl/__tests__ src/__tests__/followups-policy.test.ts
+bun run smoke:sdk               # headless end-to-end BYOK check (needs a real key)
+bun run dev                     # desktop dev (electron-vite via the dev launcher)
+bun run ci                      # full chain: builds + typechecks + tests
 ```
+
+Releases: attach `exe + .blockmap + latest.yml` to the GitHub Release —
+electron-updater needs all three to detect an update (electron-builder
+produces the latter two).
 
 Upstream sync: internal packages keep their `@codebuff/*` names on purpose so
 `git merge` from CodebuffAI/freebuff stays viable.
