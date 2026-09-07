@@ -702,6 +702,58 @@ describe('P1.5 knowledge block (C3)', () => {
     expect(summary).not.toContain('Goal: ok')
   })
 
+  it('strips the injected params system block from the goal text', () => {
+    // buildUserMessageContent serializes run params as
+    // `<system>Structured run parameters…</system>` appended to the prompt.
+    // The goal must read only what the user actually said.
+    const paramsBlock =
+      '<system>Structured run parameters (metadata — not spoken by the user):\n{\n  "maxContextLength": 700000\n}</system>'
+    const history: Message[] = [
+      user(`fix the login bug\n\n${paramsBlock}`, ['USER_PROMPT']),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'read_files', input: { paths: ['src/login.ts'] } },
+        ],
+        sentAt: 1,
+      },
+    ]
+
+    const result = compactMessages({ messages: history, tailBudget: 0 })
+    const summary = textOf(result.messages[0])
+
+    expect(summary).toContain('Goal: fix the login bug')
+    // Scope to the knowledge block: the historical_memory section is the
+    // verbatim C4 tail and legitimately mirrors the tagged message the model
+    // saw (params included); only the Goal extraction must stay clean.
+    const knowledge = summary.slice(
+      summary.indexOf('<knowledge_memory>'),
+      summary.indexOf('</knowledge_memory>'),
+    )
+    expect(knowledge).not.toContain('maxContextLength')
+    expect(knowledge).not.toContain('Structured run parameters')
+  })
+
+  it('keeps a user-typed literal system tag in the goal text', () => {
+    // Anchored strip: only the exact injected marker block is removed; a
+    // literal <system> in the user's own text must survive.
+    const history: Message[] = [
+      user('explain how <system> prompts work in agents', ['USER_PROMPT']),
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'read_files', input: { paths: ['src/a.ts'] } },
+        ],
+        sentAt: 1,
+      },
+    ]
+
+    const result = compactMessages({ messages: history, tailBudget: 0 })
+    const summary = textOf(result.messages[0])
+
+    expect(summary).toContain('Goal: explain how <system> prompts work in agents')
+  })
+
   it('carries entries from the previous block across compaction cycles', () => {
     const first = compactMessages({
       messages: [

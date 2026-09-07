@@ -87,3 +87,21 @@ module body; an in-bundle shim cannot satisfy common/env validation).
   (`it.skip` blocks in sdk tests carry context).
 - Fork's ChatGPT/Codex OAuth, harness services, PTD tiers were intentionally
   not ported — do not reintroduce without an ADR.
+
+## Registered divergence: tagged run params (ADR-24)
+
+`buildUserMessageContent` (packages/agent-runtime/src/util/messages.ts) — the
+first agent-runtime edit after ADR-22's context-pruner divergence.
+Host run params (e.g. P1 B3 `maxContextLength`) were being serialized verbatim
+into the USER_PROMPT message, where models/subagents read them as user speech.
+AnyBuff now serializes them inside a `<system>Structured run parameters…</system>`
+block so they read as metadata, and both copies of `buildKnowledgeBlock`
+(agents/context-pruner.ts + packages/agent-runtime/src/compact-history.ts, kept
+in lockstep by the parity test) strip exactly that anchored block before picking
+the Goal. Full write-up: maintenance guide ADR-24.
+
+- Upstream `git merge` touching `util/messages.ts` or either `buildKnowledgeBlock`
+  must re-apply these patches by hand (ADR-22/24 merge discipline); if upstream
+  moves params out of the user message, drop the tag + strip.
+- Re-run `bun scripts/generate-desktop-agents.ts` after touching
+  agents/context-pruner.ts (the bundle bakes a copy of it).

@@ -55,9 +55,20 @@ export function buildUserMessageContent(
   }
 
   // Only prompt/params, combine and return as simple text
+  // Params are host/programmatic data (e.g. maxContextLength budgets, or the
+  // input a parent passes a spawned agent). Serialized verbatim they sit in
+  // the user turn and get read as user speech — models treat every word in a
+  // user message as something the user said (subagents inheriting history
+  // have misattributed a params blob to the user). Tagging the block as
+  // <system> keeps it distinguishable from user text while the spawned-agent
+  // params channel still delivers its payload intact.
+  const serializedParams = params && JSON.stringify(params, null, 2)
   const textParts = buildArray([
     promptHasNonWhitespaceText ? prompt : undefined,
-    params && JSON.stringify(params, null, 2),
+    serializedParams &&
+      withSystemTags(
+        `Structured run parameters (metadata — not spoken by the user):\n${serializedParams}`,
+      ),
   ])
   return [
     {

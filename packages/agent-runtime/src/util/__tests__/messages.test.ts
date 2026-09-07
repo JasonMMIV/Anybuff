@@ -142,6 +142,39 @@ describe('buildUserMessageContent', () => {
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('image')
   })
+
+  it('wraps serialized params in a system tag so they are not read as user speech', () => {
+    const result = buildUserMessageContent('Hello world', { maxContextLength: 700000 }, undefined)
+
+    expect(result).toHaveLength(1)
+    const firstPart = result[0]
+    if (!isTextPart(firstPart)) throw new Error('Expected text part')
+    // The params JSON must be present (the spawned-agent params channel
+    // relies on it) but clearly tagged as system metadata, not user text.
+    expect(firstPart.text).toContain('Hello world')
+    expect(firstPart.text).toContain('<system>')
+    expect(firstPart.text).toContain('</system>')
+    expect(firstPart.text).toContain('"maxContextLength": 700000')
+    // The tag opens after the user's own prompt text.
+    const userTextEnd = firstPart.text.indexOf('Hello world') + 'Hello world'.length
+    const tagStart = firstPart.text.indexOf('<system>')
+    expect(tagStart).toBeGreaterThan(userTextEnd)
+    // The JSON itself sits inside the tag.
+    const jsonStart = firstPart.text.indexOf('"maxContextLength"')
+    expect(jsonStart).toBeGreaterThan(tagStart)
+    expect(jsonStart).toBeLessThan(firstPart.text.indexOf('</system>'))
+  })
+
+  it('produces only the params block when there is no prompt', () => {
+    const result = buildUserMessageContent(undefined, { searchQueries: ['foo'] }, undefined)
+
+    expect(result).toHaveLength(1)
+    const firstPart = result[0]
+    if (!isTextPart(firstPart)) throw new Error('Expected text part')
+    expect(firstPart.text.startsWith('<system>')).toBe(true)
+    expect(firstPart.text).toContain('"searchQueries"')
+    expect(firstPart.text.endsWith('</system>')).toBe(true)
+  })
 })
 
 // Mock logger for tests

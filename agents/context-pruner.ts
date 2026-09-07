@@ -341,12 +341,18 @@ const definition: AgentDefinition = {
       const { messages, previousBlock } = p
 
       // Latest real USER_PROMPT text, unless it is a short filler reply.
+      // The injected params block is `<system>Structured run parameters…</system>`
+      // (see util/messages.ts buildUserMessageContent) — never part of the
+      // spoken goal, so strip exactly that block before reading. Anchoring on
+      // the marker prefix keeps a user-typed literal <system> from being eaten.
       let goal: string | null = null
       for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
         if (message.role !== 'user') continue
         if (message.tags?.includes('USER_PROMPT') === false) continue
-        const text = getTextContent(message).trim()
+        const text = getTextContent(message)
+          .replace(/<system>Structured run parameters[\s\S]*?<\/system>/g, '')
+          .trim()
         if (
           !text ||
           GOAL_NOISE_RE.test(text.replace(/<[^>]+>/g, '').trim())
