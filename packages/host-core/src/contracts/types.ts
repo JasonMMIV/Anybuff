@@ -81,6 +81,13 @@ export interface UiEvent {
 /** UI agent mode — selects the bundled root agent. */
 export type UIAgentMode = 'default' | 'plan' | 'chat'
 
+/** #4 multimodal image part (base64, no data: prefix) from the composer. */
+export interface RunImagePart {
+  type: 'image'
+  image: string
+  mediaType: string
+}
+
 /** Payload of AnyBuff:runPrompt. */
 export interface RunPromptPayload {
   cwd: string
@@ -90,6 +97,11 @@ export interface RunPromptPayload {
   taskId?: string
   resume?: boolean
   mode?: UIAgentMode
+  /** #20 @agent mention override — runs this turn with the named root agent
+   *  (must exist in the bundled or project agent definitions). */
+  agentId?: string
+  /** #4 圖片附件/剪貼簿貼圖: base64 image parts sent alongside the prompt. */
+  content?: RunImagePart[]
 }
 
 /** App-level state returned by AnyBuff:getState. */

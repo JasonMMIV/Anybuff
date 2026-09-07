@@ -31,6 +31,8 @@ export const CHANNELS = [
   'abort',
   'approvalResponse',
   'respondAskUser',
+  // #9 Bash mode (!command)
+  'runBashCommand',
   // MCP servers
   'listMcpServers',
   'saveMcpServer',

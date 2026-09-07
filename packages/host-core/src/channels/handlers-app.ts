@@ -12,6 +12,7 @@ import {
   saveProviderApiKey,
   updateProviders,
   updateAgentRouting,
+  updateRunGuardrails,
   saveSearchApiKey,
   setWebSearchProvider,
   type ProviderConfig,
@@ -19,6 +20,7 @@ import {
   type ApprovalMode,
   type AgentRoute,
   type WebSearchProviderId,
+  type RunCostMode,
 } from '../settings/settings'
 import { isRunning } from '../run/start-run'
 import { getRunningTaskId } from '../sessions/session-store'
@@ -34,6 +36,9 @@ export interface SaveSettingsPayload {
   webSearchProvider?: WebSearchProviderId
   searchApiKeys?: Partial<Record<WebSearchProviderId, string>>
   deleteSearchKeys?: WebSearchProviderId[]
+  /** #17 per-run step cap (0 = SDK default) + cost mode flag. */
+  maxAgentSteps?: number
+  costMode?: RunCostMode
 }
 
 /** AnyBuff:getState */
@@ -61,6 +66,9 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
   }
   if (payload.agentRouting) updateAgentRouting(payload.agentRouting)
   if (payload.webSearchProvider) setWebSearchProvider(payload.webSearchProvider)
+  if (payload.maxAgentSteps !== undefined || payload.costMode !== undefined) {
+    updateRunGuardrails(payload.maxAgentSteps ?? 0, payload.costMode ?? 'normal')
+  }
   if (payload.searchApiKeys) {
     for (const [provider, key] of Object.entries(payload.searchApiKeys)) {
       if (key && (provider === 'tinyfish' || provider === 'firecrawl')) {

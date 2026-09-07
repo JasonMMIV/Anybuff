@@ -316,6 +316,49 @@ export function extractThinkTags(rawText: string): { reasoning?: string; text: s
     return { reasoning: reasoning || undefined, text, isThinking: true }
   }
 }
+/**
+ * #11 Plan 區塊特殊呈現: extract <PLAN>…</PLAN> (and legacy <cb_plan>) blocks
+ * from assistant text so they render as a highlighted plan card instead of
+ * drowning in normal markdown. Mirrors the upstream CLI's extractPlanFromBuffer.
+ */
+export function extractPlanBlocks(rawText: string): { text: string; plan?: string } {
+  if (typeof rawText !== 'string') return { text: '' }
+  const openIdx = rawText.search(/<PLAN>|<cb_plan>/)
+  if (openIdx === -1) return { text: rawText }
+  const openMatch = /<PLAN>|<cb_plan>/.exec(rawText.slice(openIdx))
+  if (!openMatch) return { text: rawText }
+  const openTag = openMatch[0]
+  const closeTag = openTag === '<PLAN>' ? '</PLAN>' : '</cb_plan>'
+  const bodyStart = openIdx + openTag.length
+  const closeIdx = rawText.indexOf(closeTag, bodyStart)
+  const plan = (closeIdx === -1 ? rawText.slice(bodyStart) : rawText.slice(bodyStart, closeIdx)).trim()
+  // Strip the tags from the surrounding text either way.
+  const rest =
+    closeIdx === -1
+      ? rawText.slice(0, openIdx)
+      : rawText.slice(0, openIdx) + rawText.slice(closeIdx + closeTag.length)
+  return { text: rest.trim(), plan: plan || undefined }
+}
+
+/** #11: highlighted plan card with a distinct border and title. */
+export const PlanBox = memo(function PlanBox({ plan }: { plan: string }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className={`plan-box${open ? '' : ' collapsed'}`}>
+      <div className="plan-head" onClick={() => setOpen((o) => !o)}>
+        <span className="plan-icon"><ListIcon size={15} /></span>
+        <span className="plan-label">Plan</span>
+        <span className="plan-toggle">{open ? '−' : '+'}</span>
+      </div>
+      {open && (
+        <div className="plan-content">
+          <Markdown text={plan} />
+        </div>
+      )}
+    </div>
+  )
+})
+
 /** Try to extract search results from a tool output string (web_search / researcher tools). */
 function parseWebResults(detail: string): WebResult[] | null {
   const candidates: unknown[] = []
@@ -606,9 +649,12 @@ export const AssistantBubble = memo(function AssistantBubble({
 }) {
   // Regex-extract  thinking blocks once per text — not once per parent render.
   const extracted = useMemo(() => extractThinkTags(text), [text])
+  // #11: pull <PLAN>…</PLAN> out of the remaining text for the plan card.
+  const planExtracted = useMemo(() => extractPlanBlocks(extracted.text), [extracted.text])
   const combinedReasoning = [reasoning?.trim(), extracted.reasoning?.trim()].filter(Boolean).join('\n\n')
-  const mainText = extracted.text
-  const isReasoningOnly = streaming && !mainText.trim() && Boolean(combinedReasoning || extracted.isThinking)
+  const mainText = planExtracted.text
+  const plan = planExtracted.plan
+  const isReasoningOnly = streaming && !mainText.trim() && !plan && Boolean(combinedReasoning || extracted.isThinking)
   // #24 純思考訊息（只有 thinking 卡、無文字氣泡）＝與工具卡同類的過程回饋：
   // 縮緊行距與工具卡一致（chat-scroll gap 6px + 卡片自身邊距），不加　margin-bottom。
   const thoughtOnly = !mainText.trim() && Boolean(combinedReasoning)
@@ -634,9 +680,11 @@ export const AssistantBubble = memo(function AssistantBubble({
             streaming={streaming && (!mainText.trim() || extracted.isThinking)}
           />
         )}
-        {(mainText.trim() || !combinedReasoning) && (
+        {(plan || mainText.trim() || !combinedReasoning) && (
           <div className="assistant-bubble">
-            <Markdown text={mainText} />
+            {/* #11: the plan card comes FIRST so the spec is always prominent. */}
+            {plan && <PlanBox plan={plan} />}
+            {mainText.trim() && <Markdown text={mainText} />}
             {streaming && !isReasoningOnly && <span className="caret" />}
           </div>
         )}

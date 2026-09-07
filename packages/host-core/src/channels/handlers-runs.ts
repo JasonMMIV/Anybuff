@@ -18,6 +18,10 @@ export interface RunPromptPayload {
   taskId?: string
   resume?: boolean
   mode?: 'default' | 'plan' | 'chat'
+  /** #20 @agent mention override (see contracts/types.ts). */
+  agentId?: string
+  /** #4 base64 image parts (see contracts/types.ts RunImagePart). */
+  content?: Array<{ type: 'image'; image: string; mediaType: string }>
 }
 
 /** AnyBuff:runPrompt */
@@ -40,6 +44,8 @@ export async function runPrompt(payload: RunPromptPayload): Promise<unknown> {
     taskId,
     resume: payload.resume === true,
     mode: payload.mode,
+    agentId: payload.agentId,
+    content: payload.content,
   })
 }
 

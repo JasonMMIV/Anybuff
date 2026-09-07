@@ -123,8 +123,15 @@ const api = {
     taskId?: string
     resume?: boolean
     mode?: 'default' | 'plan' | 'chat'
+    /** #20 @agent mention override. */
+    agentId?: string
+    /** #4 base64 image parts (composer paste/attach), see host contracts. */
+    content?: Array<{ type: 'image'; image: string; mediaType: string }>
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),
   abort: () => ipcRenderer.invoke('AnyBuff:abort'),
+  /** #9 Bash mode: run a user-initiated `!command` locally (ADR-12b scrubbed env). */
+  runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
+    ipcRenderer.invoke('AnyBuff:runBashCommand', payload),
   respondAskUser: (payload: unknown) => ipcRenderer.invoke('AnyBuff:respondAskUser', payload),
   respondApproval: (approved: boolean) => ipcRenderer.invoke('AnyBuff:approvalResponse', approved),
   listFiles: (root: string) => ipcRenderer.invoke('AnyBuff:listFiles', root),

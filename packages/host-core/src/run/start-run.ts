@@ -698,6 +698,10 @@ export interface StartRunOptions {
   /** UI agent mode — selects the bundled root agent
    *  ('default' → base2, 'plan' → base2-plan, 'chat' → base-chat). */
   mode?: 'default' | 'plan' | 'chat'
+  /** #20 @agent mention override — explicit root agent id for this turn. */
+  agentId?: string
+  /** #17 multimodal content parts (images pasted/attached in the composer). */
+  content?: Array<{ type: 'image'; image: string; mediaType: string }>
 }
 
 /** UI agent mode → bundled root agent id (mirrors the upstream CLI's AGENT_MODE_TO_ID table). */
@@ -867,7 +871,16 @@ export function planOverflowResume(params: {
  */
 export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   const { cwd, prompt, displayText, taskId } = opts
-  const agentId = AGENT_ID_FOR_MODE[opts.mode ?? 'default']
+  // #20: an explicit @agent mention wins over the UI mode's default root; it
+  // is validated against the merged definitions later in this function, so a
+  // stale/typo'd id surfaces as a normal "Invalid agent ID" error.
+  const agentId = opts.agentId && opts.agentId.trim() ? opts.agentId.trim() : AGENT_ID_FOR_MODE[opts.mode ?? 'default']
+  // #17: normalize image content once — the SDK accepts base64 image parts on
+  // the run; a malformed entry is dropped rather than failing the whole turn.
+  const imageContent = (opts.content ?? []).filter(
+    (p): p is { type: 'image'; image: string; mediaType: string } =>
+      p.type === 'image' && typeof p.image === 'string' && p.image.length > 0 && typeof p.mediaType === 'string'
+  )
 
   if (currentAbort) return { ok: false, taskId, error: 'Another task is already running' }
 
@@ -1103,6 +1116,17 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // with this turn's user prompt, pass an empty prompt so the runtime
         // does not append a duplicate USER_PROMPT message.
         prompt: resumeFromCheckpoint ? '' : prompt,
+        // #4 圖片附件: base64 image parts ride the SDK's multimodal content
+        // channel (never the prompt string) so vision-capable models see them.
+        ...(imageContent.length > 0 ? { content: imageContent } : {}),
+        // #17 保險絲: user-configured per-run step cap (0 → SDK default 200)
+        // and cost-mode flag. maxAgentSteps resets every run by SDK semantics.
+        ...(currentSettings.maxAgentSteps && currentSettings.maxAgentSteps > 0
+          ? { maxAgentSteps: currentSettings.maxAgentSteps }
+          : {}),
+        ...(currentSettings.costMode && currentSettings.costMode !== 'normal'
+          ? { costMode: currentSettings.costMode }
+          : {}),
         // AnyBuff P1 B3: forward the window-derived compaction trigger so
         // base2's baked 400k pruner budgets scale with the real model window.
         params: buildRunContextParams(agentId),

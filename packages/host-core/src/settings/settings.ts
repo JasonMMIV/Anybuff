@@ -18,6 +18,11 @@ export type ProviderType = 'openai-compatible' | 'anthropic-compatible'
 export type ReasoningEffort = 'default' | 'high' | 'medium' | 'low' | 'minimal' | 'none'
 export type ApprovalMode = 'balanced' | 'strict' | 'allow-all'
 
+/** #17 run-options guardrails: max steps per run (loop fuse) and cost mode.
+ *  maxAgentSteps 0 = use the SDK default (200); costMode 'normal' is default. */
+export type RunMaxAgentSteps = number // 0 (default) or 1..100000
+export type RunCostMode = 'normal' | 'max' | 'lite'
+
 export interface ProviderConfig {
   id: string
   label: string
@@ -79,6 +84,10 @@ export interface AppSettings {
   webSearchProvider: WebSearchProviderId
   /** Whether a Tinyfish/Firecrawl search key is stored (DPAPI). */
   webSearchHasKey: Record<WebSearchProviderId, boolean>
+  /** #17 max agent steps per run (0 = SDK default). Drives the loop fuse. */
+  maxAgentSteps: number
+  /** #17 cost mode flag forwarded to the SDK run. */
+  costMode: RunCostMode
 }
 
 const SETTINGS_FILE = 'AnyBuff-app-settings.json'
@@ -94,6 +103,10 @@ interface PersistedSettings {
   agentRouting?: Record<string, AgentRoute>
   /** Active web search provider (default duckduckgo). */
   webSearchProvider?: WebSearchProviderId
+  /** #17 max agent steps per run (0 = SDK default; omitted = legacy). */
+  maxAgentSteps?: number
+  /** #17 SDK cost mode ('normal' | 'max' | 'lite'). */
+  costMode?: RunCostMode
   /** App-managed MCP servers (Settings → MCP Tools). */
   mcpServers?: McpServerRecord[]
   /** App-level overrides for mcp.json-discovered servers, keyed by opaque file id. */
@@ -203,7 +216,9 @@ function defaultSettings(): PersistedSettings {
     reasoningEffort: 'default',
     approvalMode: 'balanced',
     projects: [],
-    webSearchProvider: 'duckduckgo'
+    webSearchProvider: 'duckduckgo',
+    maxAgentSteps: 0,
+    costMode: 'normal'
   }
 }
 
@@ -253,6 +268,15 @@ export function loadSettings(): PersistedSettings {
     // Web search provider (default duckduckgo; validate against the known set)
     if (parsed.webSearchProvider === 'firecrawl' || parsed.webSearchProvider === 'tinyfish' || parsed.webSearchProvider === 'duckduckgo') {
       base.webSearchProvider = parsed.webSearchProvider
+    }
+    // #17 run guardrails (clamped so a corrupt settings file can never send
+    // a runaway or negative step cap into the SDK).
+    if (typeof parsed.maxAgentSteps === 'number' && Number.isFinite(parsed.maxAgentSteps)) {
+      const steps = Math.floor(parsed.maxAgentSteps)
+      base.maxAgentSteps = steps <= 0 ? 0 : Math.min(steps, 100_000)
+    }
+    if (parsed.costMode === 'max' || parsed.costMode === 'lite' || parsed.costMode === 'normal') {
+      base.costMode = parsed.costMode
     }
     if (Array.isArray(parsed.mcpServers)) base.mcpServers = parsed.mcpServers
     if (parsed.mcpOverrides && typeof parsed.mcpOverrides === 'object') base.mcpOverrides = parsed.mcpOverrides
@@ -327,6 +351,8 @@ export function getAppSettings(): AppSettings {
     projects: s.projects ?? [],
     agentRouting: s.agentRouting ?? {},
     webSearchProvider: s.webSearchProvider ?? 'duckduckgo',
+    maxAgentSteps: s.maxAgentSteps ?? 0,
+    costMode: s.costMode ?? 'normal',
     webSearchHasKey: {
       duckduckgo: false,
       firecrawl: getSearchApiKey('firecrawl') !== undefined,
@@ -434,6 +460,15 @@ export function getWebSearchConfig(): {
 export function setWebSearchProvider(provider: WebSearchProviderId): void {
   const s = loadSettings()
   s.webSearchProvider = provider
+  saveSettings(s)
+}
+
+/** #17: persist run guardrails (maxAgentSteps 0 = SDK default). */
+export function updateRunGuardrails(maxAgentSteps: number, costMode: RunCostMode): void {
+  const s = loadSettings()
+  const steps = Math.floor(Number(maxAgentSteps) || 0)
+  s.maxAgentSteps = steps <= 0 ? 0 : Math.min(steps, 100_000)
+  s.costMode = costMode === 'max' || costMode === 'lite' ? costMode : 'normal'
   saveSettings(s)
 }
 

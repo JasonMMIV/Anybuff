@@ -139,6 +139,16 @@ export function SunIcon(props: IconProps) {
   )
 }
 
+export function MonitorIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8m-4-4v4" />
+    </svg>
+  )
+}
+
 export function MoonIcon(props: IconProps) {
   const b = base(props)
   return (

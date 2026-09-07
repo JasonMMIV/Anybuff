@@ -367,8 +367,12 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       taskId?: string
       resume?: boolean
       mode?: 'default' | 'plan' | 'chat'
+      agentId?: string
+      content?: Array<{ type: 'image'; image: string; mediaType: string }>
     }) => call('runPrompt', payload),
     abort: () => call('abort'),
+    runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
+      call('runBashCommand', payload),
     respondAskUser: (payload: unknown) => call('respondAskUser', payload),
     respondApproval: (approved: boolean) => call('approvalResponse', approved),
     listFiles: (root: string) => call('listFiles', root),

@@ -14,6 +14,7 @@ export * from './contracts'
 
 /* Business modules extracted from desktop/src/main (M-A1) */
 export * from './run/start-run'
+export * from './run/bash-command'
 export * from './sessions/session-store'
 export * from './settings/settings'
 export * from './mcp/mcp-settings'

@@ -25,6 +25,7 @@ import {
   searchHistory,
 } from './handlers-projects'
 import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
+import { runBashCommand } from '../run/bash-command'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
 import { listLocalAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
 import { listFiles, listDir, readFile, pathInfo, gitBranch, gitDiff, gitAccept, gitRevert, projectName } from './handlers-files'
@@ -64,6 +65,8 @@ const registry: Record<string, Handler> = {
   abort: abortRunChannel,
   approvalResponse,
   respondAskUser: respondAskUserChannel,
+  // #9 Bash mode (!command)
+  runBashCommand,
   // MCP
   listMcpServers,
   saveMcpServer,

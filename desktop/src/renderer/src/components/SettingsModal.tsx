@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ColorTheme } from '../App'
+import type { ColorTheme, ThemeMode } from '../App'
 import {
   ActivityIcon,
   AppIcon,
@@ -11,6 +11,7 @@ import {
   GitHubIcon,
   InfoIcon,
   LayersIcon,
+  MonitorIcon,
   MoonIcon,
   PaletteIcon,
   PlugIcon,
@@ -327,7 +328,9 @@ interface Props {
   onCreateAgent: () => void
   onSaved?: (s: { hasProvider: boolean }) => void
   theme: 'dark' | 'light'
-  onToggleTheme: () => void
+  /** #18 OS 深淺色自動跟隨：'system' follows the OS; dark/light pin it. */
+  themeMode?: ThemeMode
+  onSelectThemeMode?: (mode: ThemeMode) => void
   colorTheme: ColorTheme
   onSelectColorTheme: (theme: ColorTheme) => void
   initialTab?: SettingsTab
@@ -399,7 +402,8 @@ export default function SettingsModal({
   onCreateAgent,
   onSaved,
   theme,
-  onToggleTheme,
+  themeMode = 'system',
+  onSelectThemeMode,
   colorTheme,
   onSelectColorTheme,
   initialTab,
@@ -2049,14 +2053,30 @@ export default function SettingsModal({
           {activeTab === 'theme' && (
             <div className="settings-tab-content">
               <div className="settings-field-group settings-theme-group">
-                <div className="settings-theme-info">
-                  <label className="settings-field-label">Appearance Mode</label>
-                  <p className="hint">Switch between Dark and Light interface themes.</p>
-                </div>
-                <button className="btn ghost small" onClick={onToggleTheme}>
-                  {theme === 'dark' ? <SunIcon size={14} /> : <MoonIcon size={14} />}
-                  {theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-                </button>
+              <div className="settings-theme-info">
+                <label className="settings-field-label">Appearance Mode</label>
+                <p className="hint">
+                  Follow the operating system, or pin Dark / Light. In "Follow System" the app switches live when Windows changes its color mode.
+                </p>
+              </div>
+              <div className="theme-mode-row">
+                {([
+                  { id: 'system' as ThemeMode, label: 'Follow System', icon: <MonitorIcon size={14} /> },
+                  { id: 'light' as ThemeMode, label: 'Light', icon: <SunIcon size={14} /> },
+                  { id: 'dark' as ThemeMode, label: 'Dark', icon: <MoonIcon size={14} /> }
+                ]).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    className={`theme-mode-btn ${(themeMode ?? 'system') === opt.id ? 'active' : ''}`}
+                    onClick={() => onSelectThemeMode?.(opt.id)}
+                    title={opt.id === 'system' ? 'Match the Windows personalization setting' : `Always use ${opt.label} mode`}
+                  >
+                    {opt.icon}
+                    <span>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
               </div>
 
               <div className="settings-field-group">

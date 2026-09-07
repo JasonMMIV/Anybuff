@@ -5,7 +5,7 @@ import RightPanel, { type RightTab } from './components/RightPanel'
 import SettingsModal from './components/SettingsModal'
 import AgentWizardModal from './components/AgentWizardModal'
 import ErrorBoundary from './components/ErrorBoundary'
-import Composer, { type AgentMode, type Attachment, type SkillInfo } from './components/Composer'
+import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
 import {
@@ -14,6 +14,7 @@ import {
   REVIEW_SCOPE_OPTIONS,
   type ReviewScope
 } from './utils/prompt-builders'
+import { formatBashContext, type BashCommandResult } from './utils/bash-context'
 import { AssistantBubble, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
@@ -282,6 +283,9 @@ function deriveStage(events: UiEvent[], running: boolean): string | null {
 
 export type ColorTheme = 'default' | 'black' | 'vermillion' | 'amber' | 'teal'
 
+/** #18 OS 深淺色自動跟隨：'system' follows the OS; 'dark'/'light' pin it. */
+export type ThemeMode = 'system' | 'dark' | 'light'
+
 export default function App() {
   // Browser preview mode (no Electron preload and no WS host): the UI renders
   // with mock data. Deliberately evaluated INSIDE the component — a module-level
@@ -289,9 +293,20 @@ export default function App() {
   // hoisting evaluates App.tsx first), which sent the Android WebView into demo
   // mode (fake calculator.js attach, mocked state) even though a WS host existed.
   const [isPreview] = useState(() => typeof window.AnyBuff === 'undefined')
+  // #18 OS 深淺色自動跟隨：'system' resolves live through matchMedia; legacy
+  // 'AnyBuff-theme' values ('dark'/'light') migrate to the pinned modes.
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    const saved = localStorage.getItem('AnyBuff-theme-mode')
+    if (saved === 'system' || saved === 'dark' || saved === 'light') return saved
+    const legacy = localStorage.getItem('AnyBuff-theme')
+    return legacy === 'light' ? 'light' : legacy === 'dark' ? 'dark' : 'system'
+  })
+  /** Resolved dark/light actually applied to the DOM. */
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    const saved = localStorage.getItem('AnyBuff-theme')
-    return saved === 'light' ? 'light' : 'dark'
+    const saved = localStorage.getItem('AnyBuff-theme-mode')
+    const mode = saved === 'dark' || saved === 'light' ? saved : 'system'
+    if (mode !== 'system') return mode
+    return typeof window.matchMedia !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   })
   const [colorTheme, setColorTheme] = useState<ColorTheme>(() => {
     const saved = localStorage.getItem('AnyBuff-color-theme') as ColorTheme | null
@@ -358,6 +373,15 @@ export default function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tokenUsage, setTokenUsage] = useState<{ used: number; max: number } | null>(null)
   const [totalCost, setTotalCost] = useState(0)
+  // #17 保險絲: per-run step cap (0 = SDK default) + cost mode — persisted via settings.
+  const [maxAgentSteps, setMaxAgentSteps] = useState(0)
+  const [costMode, setCostMode] = useState<'normal' | 'max' | 'lite'>('normal')
+  // #20 custom agents offered by the @-mention menu (bundled subset + .agents/).
+  const [agentMentions, setAgentMentions] = useState<AgentMentionInfo[]>([])
+  /** #20 an @agent pick selects that agent as the root for the next run. */
+  const [mentionedAgentId, setMentionedAgentId] = useState<string | null>(null)
+  /** #9 bash results accumulated since the last prompt send (become context). */
+  const pendingBashRef = useRef<BashCommandResult[]>([])
 
   const [searchOpen, setSearchOpen] = useState(false)
   // #5 第二批：/review scope picker 與 /interview 模式狀態
@@ -412,6 +436,13 @@ export default function App() {
   const accumulatedFileChangesRef = useRef<FileChange[]>([])
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  // #17: mirrors for stable callbacks without widening dep lists.
+  const maxAgentStepsRef = useRef(maxAgentSteps)
+  maxAgentStepsRef.current = maxAgentSteps
+  const costModeRef = useRef(costMode)
+  costModeRef.current = costMode
+  const mentionedAgentIdRef = useRef(mentionedAgentId)
+  mentionedAgentIdRef.current = mentionedAgentId
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const msgRefs = useRef<(HTMLDivElement | null)[]>([])
   // Stable per-row ref: the index is read from data-index, so the callback
@@ -422,12 +453,29 @@ export default function App() {
     if (el) msgRefs.current[Number(el.dataset.index)] = el
   }, [])
 
-  // Theme switch
+  // #18 Theme mode switch: persist the user choice, resolve 'system' against
+  // the OS preference, and keep following live OS changes while in system mode.
+  useEffect(() => {
+    if (typeof window.matchMedia === 'undefined') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const apply = () => {
+      setTheme((prev) => {
+        const next = themeMode === 'system' ? (mq.matches ? 'dark' : 'light') : themeMode
+        return next === prev ? prev : next
+      })
+    }
+    apply()
+    // Chrome/Chromium ≥ 84 supports addEventListener on MediaQueryList.
+    mq.addEventListener?.('change', apply)
+    return () => mq.removeEventListener?.('change', apply)
+  }, [themeMode])
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
+    localStorage.setItem('AnyBuff-theme-mode', themeMode)
     localStorage.setItem('AnyBuff-theme', theme)
     if (!isPreview) window.AnyBuff.setTheme(theme)
-  }, [theme, isPreview])
+  }, [theme, themeMode, isPreview])
 
   // Color theme switch
   useEffect(() => {
@@ -506,7 +554,8 @@ export default function App() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [projectMenuOpen])
 
-  const toggleTheme = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), [])
+  // #18: 'system' | 'dark' | 'light' — the Settings modal offers all three.
+  const selectThemeMode = useCallback((mode: ThemeMode) => setThemeMode(mode), [])
 
   // Initial state
   useEffect(() => {
@@ -591,6 +640,8 @@ export default function App() {
           approvalMode: string
           hasProvider: boolean
           projects: ProjectRecord[]
+          maxAgentSteps?: number
+          costMode?: 'normal' | 'max' | 'lite'
         }
       }
       setCwd(state.cwd)
@@ -604,6 +655,9 @@ export default function App() {
         approvalMode: state.settings.approvalMode
       })
       setProjects(state.settings.projects ?? [])
+      // #17 restore persisted run guardrails
+      setMaxAgentSteps(typeof state.settings.maxAgentSteps === 'number' ? state.settings.maxAgentSteps : 0)
+      setCostMode(state.settings.costMode ?? 'normal')
     })()
   }, [isPreview])
 
@@ -618,6 +672,26 @@ export default function App() {
     void window.AnyBuff.gitBranch(cwd).then(setBranch)
     void window.AnyBuff.listFiles(cwd).then((t) => setFileCandidates(flattenTree(t as TreeNode[], cwd)))
     void window.AnyBuff.listSkills(cwd).then((s) => setSkills(s as SkillInfo[]))
+    // #20 custom agents for the @-mention menu (project/parent/home scopes).
+    void window.AnyBuff
+      .listLocalAgents(cwd)
+      .then((res) => {
+        const local = (res as { agents?: { id: string; displayName: string; spawnerPrompt?: string }[] }).agents ?? []
+        const localMentions: AgentMentionInfo[] = local.map((a) => ({
+          id: a.id,
+          displayName: a.displayName || a.id,
+          description: a.spawnerPrompt?.slice(0, 80)
+        }))
+        const bundledMentions: AgentMentionInfo[] = [
+          { id: 'researcher-web', displayName: 'Web Researcher' },
+          { id: 'code-reviewer', displayName: 'Code Reviewer' }
+        ]
+        const seen = new Set(localMentions.map((a) => a.id))
+        setAgentMentions([...localMentions, ...bundledMentions.filter((b) => !seen.has(b.id))])
+      })
+      .catch(() => setAgentMentions([]))
+    // A new folder invalidates a previous @agent pick.
+    setMentionedAgentId(null)
   }, [cwd, isPreview])
 
   // Auto-scroll to bottom — paused while the user has scrolled up to read
@@ -646,6 +720,12 @@ export default function App() {
     const onFolderPending = (ev: Event): void => {
       const path = (ev as CustomEvent<string>).detail
       if (typeof path !== 'string' || !path) return
+      // The shell stages EVERY successful SAF copy and may flush it after the
+      // live pickFolder() reply already applied the same path (dual delivery
+      // by design — the staged copy is the self-healing fallback when the live
+      // reply is lost). Deduplicate here: re-applying the folder we are
+      // already in would reset the view and wipe an in-progress conversation.
+      if (path === cwd) return
       applyOpenedFolderRef.current(path)
       // Mirror selectFolder's persistence so a later reload restores the project.
       void window.AnyBuff.saveCwd?.(path)
@@ -654,7 +734,7 @@ export default function App() {
     }
     window.addEventListener('anybuff:folder-pending', onFolderPending)
     return () => window.removeEventListener('anybuff:folder-pending', onFolderPending)
-  }, [isPreview])
+  }, [isPreview, cwd])
 
   // Android shell pushes folder-import progress as DOM events during the SAF
   // copy (a large project can take minutes over DocumentsProvider IPC).
@@ -1144,6 +1224,12 @@ export default function App() {
             lines.push(`\n<file path="${att.path}">\n(preview content)\n</file>`)
             continue
           }
+          // #4 image attachments ride the multimodal content channel (base64),
+          // not the text prompt — recorded here only as a visible marker.
+          if (att.isImage) {
+            lines.push(`\n<image name="${att.name}">\n[attached image — sent to the model as image content]\n</image>`)
+            continue
+          }
           if (att.isDir) {
             const tree = (await window.AnyBuff.listFiles(full)) as TreeNode[]
             const files = flattenTree(tree, full)
@@ -1214,6 +1300,51 @@ export default function App() {
         return
       }
 
+      /* ── #9 Bash mode: `!command` runs locally, output becomes context ── */
+      if (!textOverride && !prebuiltPrompt && text.startsWith('!')) {
+        const command = text.slice(1).trim()
+        if (command) {
+          setPrompt('')
+          // Show the command as a user message immediately.
+          setChatItems((prev) => [...prev, { kind: 'user', text: `$ ${command}`, ts: Date.now() }])
+          autoScrollRef.current = true
+          const result = isPreview
+            ? { ok: true, command, cwd, stdout: `(preview output of ${command})`, stderr: '', exitCode: 0 }
+            : ((await window.AnyBuff.runBashCommand({ command, cwd })) as {
+                ok: boolean
+                command: string
+                cwd: string
+                stdout: string
+                stderr: string
+                exitCode: number
+                errorMessage?: string
+              })
+          // Surface the output in the transcript (like the upstream CLI's
+          // bash tool card) and stash it as context for the NEXT prompt.
+          setChatItems((prev) => [
+            ...prev,
+            {
+              kind: 'tool' as const,
+              tool: {
+                toolName: 'run_terminal_command',
+                status: result.ok ? ('done' as const) : ('error' as const),
+                detail: [
+                  result.stdout ? `stdout:\n${result.stdout}` : '',
+                  result.stderr ? `stderr:\n${result.stderr}` : '',
+                  result.errorMessage ? `error: ${result.errorMessage}` : ''
+                ]
+                  .filter(Boolean)
+                  .join('\n') || `exit code ${result.exitCode}`,
+                toolInput: { command: result.command, cwd: result.cwd, processType: 'SYNC' }
+              }
+            }
+          ])
+          pendingBashRef.current = [...pendingBashRef.current, result]
+          setNotice(`Bash output captured — it will be attached to your next message (${result.exitCode === 0 ? 'exit 0' : `exit ${result.exitCode}`}).`)
+          return
+        }
+      }
+
       /* ── #5 第二批：/review 與 /interview 斜線指令 ── */
       let builtPrompt: string | undefined = prebuiltPrompt
       // Bare /review（或從清單選取）→ 開啟範圍選擇面板。
@@ -1249,9 +1380,17 @@ export default function App() {
       // Bake @file contents etc. in BEFORE queueing so a queued message keeps
       // exactly what was selected when it was written (#2 執行中訊息佇列).
       const bakedBody = await buildFinalPrompt(text)
+      // #9: prepend any captured `!command` outputs as <user_terminal_commands>
+      // context, then clear the stash (they belong to this turn only).
+      const bashContext =
+        pendingBashRef.current.length > 0
+          ? formatBashContext(pendingBashRef.current)
+          : ''
+      pendingBashRef.current = []
+      const bakedWithContext = bashContext ? `${bashContext}${bakedBody}` : bakedBody
       const finalPrompt = interviewWrap
-        ? `${buildInterviewPrompt('')}\n\n${bakedBody}`
-        : (builtPrompt ?? bakedBody)
+        ? `${buildInterviewPrompt('')}\n\n${bakedWithContext}`
+        : (builtPrompt ? `${bashContext}${builtPrompt}` : bakedWithContext)
 
       if (running) {
         if (isPreview) return
@@ -1326,12 +1465,17 @@ export default function App() {
       // The main process owns the run and all conversation context. Passing the
       // existing taskId continues that conversation with full history; omitting
       // it starts (and names) a new one.
+      const imageContent = buildImageContent(attachments)
       const runPromise = window.AnyBuff.runPrompt({
         cwd,
         prompt: finalPrompt,
         displayText: text,
         taskId: currentTaskRef.current ?? undefined,
-        mode: agentMode
+        mode: agentMode,
+        // #20: an @agent mention routes this run to that agent root.
+        ...(mentionedAgentIdRef.current ? { agentId: mentionedAgentIdRef.current } : {}),
+        // #4: pasted/attached images ride the multimodal content channel.
+        ...(imageContent.length > 0 ? { content: imageContent } : {})
       }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string }>
       // The task record is created synchronously at the start of the main-process
       // handler — refresh the sidebar immediately so the conversation shows up
@@ -1632,6 +1776,31 @@ export default function App() {
     }
   }, [])
 
+  // #17 保險絲: persist the per-run step cap / cost mode whenever changed.
+  const persistRunGuardrails = useCallback((steps: number, mode: 'normal' | 'max' | 'lite') => {
+    if (isPreview) return
+    void window.AnyBuff.saveSettings({
+      providers: settingsRef.current.providers,
+      activeModel: settingsRef.current.activeModel,
+      reasoningEffort: settingsRef.current.reasoningEffort,
+      approvalMode: settingsRef.current.approvalMode,
+      apiKeys: {},
+      deleteKeys: [],
+      maxAgentSteps: steps,
+      costMode: mode
+    })
+  }, [isPreview])
+
+  const onMaxAgentStepsChange = useCallback((steps: number) => {
+    setMaxAgentSteps(steps)
+    persistRunGuardrails(steps, costModeRef.current)
+  }, [persistRunGuardrails])
+
+  const onCostModeChange = useCallback((mode: 'normal' | 'max' | 'lite') => {
+    setCostMode(mode)
+    persistRunGuardrails(maxAgentStepsRef.current, mode)
+  }, [persistRunGuardrails])
+
   // Attachments (dialog picker + drag & drop both land here as absolute paths)
   const onAttachFilesPaths = useCallback(async (paths: string[]) => {
     if (isPreview) {
@@ -1683,6 +1852,50 @@ export default function App() {
   const onRemoveAttachment = useCallback((path: string) => {
     setAttachments((prev) => prev.filter((a) => a.path !== path))
   }, [])
+
+  /**
+   * #4 圖片附件／剪貼簿貼圖: composer paste lands here as data URLs. The strip
+   * shows a thumbnail; on send the data URL is split into the base64 part the
+   * SDK's multimodal content channel expects (no file on disk required).
+   */
+  const onPasteImages = useCallback((images: { dataUrl: string; mediaType: string; name: string }[]) => {
+    setAttachments((prev) => {
+      const next = [...prev]
+      for (const img of images) {
+        const key = `clipboard:${img.name}`
+        if (next.some((a) => a.path === key)) continue
+        next.push({
+          path: key,
+          name: img.name,
+          isDir: false,
+          isRelative: false,
+          isImage: true,
+          previewUrl: img.dataUrl
+        })
+      }
+      return next
+    })
+  }, [])
+
+  /** #4: turn image attachments into SDK RunImagePart base64 content. */
+  const buildImageContent = useCallback(
+    (atts: Attachment[]): Array<{ type: 'image'; image: string; mediaType: string }> => {
+      const parts: Array<{ type: 'image'; image: string; mediaType: string }> = []
+      for (const att of atts) {
+        if (!att.isImage || !att.previewUrl) continue
+        const commaIdx = att.previewUrl.indexOf(',')
+        const meta = /^data:([^;]+);/.exec(att.previewUrl.slice(0, commaIdx >= 0 ? commaIdx : 0))
+        const base64 = commaIdx >= 0 ? att.previewUrl.slice(commaIdx + 1) : ''
+        if (base64) {
+          const semiIdx = att.previewUrl.indexOf(';')
+          const fallbackType = semiIdx > 5 ? att.previewUrl.slice(5, semiIdx) : 'image/png'
+          parts.push({ type: 'image', image: base64, mediaType: meta?.[1] ?? fallbackType })
+        }
+      }
+      return parts
+    },
+    []
+  )
 
   // Right panel tab
   const onRightTab = useCallback((tab: RightTab) => {
@@ -2136,7 +2349,8 @@ export default function App() {
             onCreateAgent={openAgentWizard}
             onSaved={onSettingsSaved}
             theme={theme}
-            onToggleTheme={toggleTheme}
+            themeMode={themeMode}
+            onSelectThemeMode={selectThemeMode}
             colorTheme={colorTheme}
             onSelectColorTheme={setColorTheme}
             initialTab={settingsTab}
@@ -2510,6 +2724,7 @@ export default function App() {
                     onAttachFiles={() => void onAttachFiles()}
                     onAttachFilesPath={onAttachFilesPath}
                     onAttachFilesPaths={(paths) => void onAttachFilesPaths(paths)}
+                    onPasteImages={onPasteImages}
                     onRemoveAttachment={onRemoveAttachment}
                     providers={models}
                     activeModel={settings.activeModel}
@@ -2522,6 +2737,12 @@ export default function App() {
                     totalCost={totalCost}
                     fileCandidates={fileCandidates}
                     skills={skills}
+                    agentMentions={agentMentions}
+                    onAgentMentionPick={setMentionedAgentId}
+                    maxAgentSteps={maxAgentSteps}
+                    onMaxAgentStepsChange={onMaxAgentStepsChange}
+                    costMode={costMode}
+                    onCostModeChange={onCostModeChange}
                     focusSignal={focusSignal}
                   />
                 </>
