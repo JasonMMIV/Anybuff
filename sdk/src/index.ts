@@ -121,9 +121,11 @@ export type { ResumeCompactionResult } from './impl/resume-compaction'
 
 // Learned context-window overlay (AnyBuff P0 A2 step 4)
 export {
+  clearLearnedContextWindowsForTest,
   recordLearnedModelContextWindow,
   resolveEffectiveContextWindow,
   resolveModelContextOutputTokens,
+  setLearnedContextWindowSink,
 } from './impl/model-provider'
 
 // Lazy catalog hydration for unknown models (AnyBuff P1 B1d)

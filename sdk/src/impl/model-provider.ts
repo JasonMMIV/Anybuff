@@ -662,6 +662,39 @@ function learnedWindowKey(providerId: string, model: string): string {
 }
 
 /**
+ * Durable write-back seam for the learned-window overlay (P0 A2; wired
+ * 2026-09-07 per plan §4.6 差異 #1 close-out). The host installs a sink so a
+ * window parsed from a real overflow error survives process restarts. The
+ * sink only ever receives NEW overlays — an explicit windowTokens in config
+ * always wins and never reaches it. Null (default) = in-memory only (CLI,
+ * tests).
+ */
+let learnedContextWindowSink:
+  | ((params: {
+      providerId: string
+      model: string
+      windowTokens: number
+    }) => void)
+  | null = null
+
+export function setLearnedContextWindowSink(
+  sink:
+    | ((params: {
+        providerId: string
+        model: string
+        windowTokens: number
+      }) => void)
+    | null,
+): void {
+  learnedContextWindowSink = sink
+}
+
+/** Test-only: wipe the learned-window overlay so suites stay hermetic. */
+export function clearLearnedContextWindowsForTest(): void {
+  learnedContextWindows.clear()
+}
+
+/**
  * Record a context window learned from an overflow error for `(providerId,
  * model)`. An explicit user-declared `windowTokens` capability always wins —
  * the overlay only fills gaps, it never overrides config. Guards the same
@@ -706,6 +739,19 @@ export function recordLearnedModelContextWindow(
   console.info(
     `${COMPAT_LOG_PREFIX} learned-window-overlay: ${configured.providerId}/${model} — learned windowTokens=${tokens}`,
   )
+  // Durable write-back (best-effort): the host's sink persists the learned
+  // window via its settings writer; without a sink the overlay stays
+  // in-memory. Only NEW overlays reach the sink — idempotent re-learns and
+  // the explicit-config-wins case have already returned above.
+  try {
+    learnedContextWindowSink?.({
+      providerId: configured.providerId,
+      model,
+      windowTokens: tokens,
+    })
+  } catch {
+    // Bookkeeping must never break the request path.
+  }
 }
 
 /** Look up a learned window for a routable model string (no routing applied). */

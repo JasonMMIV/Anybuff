@@ -5,7 +5,8 @@ import {
   hydrateModelCapabilities,
   resolveEffectiveContextWindow,
   resolveModelContextOutputTokens,
-  toCompactionTriggerTokens
+  toCompactionTriggerTokens,
+  setLearnedContextWindowSink
 } from '@codebuff/sdk'
 import { isSensitiveFile } from '../files/file-filter'
 import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig, recordProviderModelCapability } from '../settings/settings'
@@ -723,9 +724,18 @@ const CONTEXT_OVERFLOW_RESUME_MAX_K = 3
  */
 const overflowResumeCounts = new Map<string, number>()
 
+/**
+ * F2 (2026-09-07): the effective window each task's last overflow-compaction
+ * attempt ran against. A different window on the next resume (model switch
+ * after a give-up, or a window learned/hydrated between attempts) restarts
+ * the halving ladder at k=1. Cleared together with the counter.
+ */
+const overflowResumeWindows = new Map<string, number>()
+
 /** Clear a task's overflow-resume counter (fresh turn / successful run). */
 export function resetOverflowResumeCount(taskId: string): void {
   overflowResumeCounts.delete(taskId)
+  overflowResumeWindows.delete(taskId)
 }
 
 /** The model string a resume attempt should size its compaction target for.
@@ -787,6 +797,18 @@ export function hydrateUnknownModelCaps(settings: {
     })
 }
 
+/**
+ * P0 A2 durable write-back (plan §4.6 差異 #1 close-out, 2026-09-07): windows
+ * learned from real overflow errors live in the SDK's in-memory overlay. Route
+ * new overlays through the same gap-only, best-effort settings writer B1d
+ * hydration uses (recordProviderModelCapability never overrides an explicit
+ * windowTokens and never throws) so a gateway's real window survives process
+ * restarts instead of being re-learned on every boot.
+ */
+setLearnedContextWindowSink(({ providerId, model, windowTokens }) => {
+  recordProviderModelCapability({ providerId, model, windowTokens })
+})
+
 export type OverflowResumePlan =
   | { action: 'run' }
   | { action: 'compact'; k: number; maxTokens: number }
@@ -799,18 +821,30 @@ export type OverflowResumePlan =
  * - `run`: not an overflow resume — unchanged behavior;
  * - `compact`: increment k and compact toward trigger(W) × 0.5^(k−1);
  * - `give-up`: k already exceeded the cap — surface the explicit message.
+ * A changed effective window (F2, 2026-09-07) restarts the ladder at k=1 with
+ * the full trigger of the NEW window — the give-up guidance says "switch to a
+ * larger window", and following it must not stay blocked by a stale k.
  */
 export function planOverflowResume(params: {
   resumeReason: string | undefined
   previousRunMessageHistory: unknown
   effectiveWindowTokens: number | undefined
   previousK: number
+  /** Effective window the previous overflow attempt ran against (F2). */
+  previousWindowTokens?: number
 }): OverflowResumePlan {
   const isOverflow = params.resumeReason === 'context-overflow'
   const hasHistory = Array.isArray(params.previousRunMessageHistory) && params.previousRunMessageHistory.length > 0
   if (!isOverflow || !hasHistory) return { action: 'run' }
 
-  const k = params.previousK + 1
+  const window = params.effectiveWindowTokens ?? UNKNOWN_MODEL_CONTEXT_FALLBACK
+  // F2: a changed window (model switch after give-up, or a window learned or
+  // hydrated between attempts — including the 1M fallback resolving to a real
+  // value) restarts the halving ladder at k=1 sized for the NEW window.
+  const windowChanged =
+    params.previousWindowTokens !== undefined &&
+    params.previousWindowTokens !== window
+  const k = windowChanged ? 1 : params.previousK + 1
   if (k > CONTEXT_OVERFLOW_RESUME_MAX_K) {
     return {
       action: 'give-up',
@@ -819,7 +853,6 @@ export function planOverflowResume(params: {
     }
   }
 
-  const window = params.effectiveWindowTokens ?? UNKNOWN_MODEL_CONTEXT_FALLBACK
   const trigger = toCompactionTriggerTokens(window)
   // Halve each consecutive attempt so the loop converges instead of ping-ponging
   // at the same budget; floor at 1000 so a tiny window never underflows.
@@ -919,19 +952,25 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           } & Record<string, unknown>
         }
         const messageHistory = historyContainer?.sessionState?.mainAgentState?.messageHistory
+        const effectiveWindowTokens = resolveEffectiveContextWindow(
+          resolveRoutedModelForRun(currentSettings, agentId) ?? '',
+        )
         const plan = planOverflowResume({
           resumeReason,
           previousRunMessageHistory: messageHistory,
-          effectiveWindowTokens: resolveEffectiveContextWindow(
-            resolveRoutedModelForRun(currentSettings, agentId) ?? '',
-          ),
+          effectiveWindowTokens,
           previousK: overflowResumeCounts.get(taskId) ?? 0,
+          // F2: a window change (model switch after give-up, or a window
+          // learned/hydrated between attempts) restarts the halving ladder.
+          previousWindowTokens: overflowResumeWindows.get(taskId),
         })
         if (plan.action === 'give-up') {
           // Deliberately do NOT reset the k-counter here: the anti-loop guard
-          // must survive a stubborn manual Resume (only a successful run or a
-          // fresh user turn clears it) so a give-up → resume → give-up click
-          // loop can never re-open the halving sequence at the full trigger.
+          // must survive a stubborn manual Resume (only a successful run, a
+          // fresh user turn, or a CHANGED effective window — F2 in
+          // planOverflowResume — re-opens the ladder) so a give-up → resume →
+          // give-up click loop on the same model can never re-open the
+          // halving sequence at the full trigger.
           finishRun(taskId, previousRun, {
             interrupted: true,
             errorMessage: plan.message,
@@ -948,6 +987,10 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         }
         if (plan.action === 'compact') {
           overflowResumeCounts.set(taskId, plan.k)
+          overflowResumeWindows.set(
+            taskId,
+            effectiveWindowTokens ?? UNKNOWN_MODEL_CONTEXT_FALLBACK,
+          )
           const res = compactMessagesForResume({
             messages: messageHistory as MainAgentHistoryMessage[],
             maxTokens: plan.maxTokens

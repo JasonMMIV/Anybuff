@@ -26,17 +26,35 @@ function resolvePresetCapabilities(providerId: string, model: string) {
 }
 
 describe('provider presets (B1a capability metadata)', () => {
-  test('opencode-go: every preset member declares a window and output cap', () => {
-    const preset = ANYBUFF_PROVIDER_PRESETS['opencode-go']
-    const provider = (preset.config.providers as Record<string, any>)[
-      'opencode-go'
-    ] as { models: readonly string[]; modelCapabilities: Record<string, { context: { windowTokens: number; outputTokens: number } }> }
+  test('every member of every preset declares a window and output cap (ollama exempt)', () => {
+    // Generalized from the opencode-go-only loop (P1.5 review B1): a member
+    // added to ANY preset's models list without a matching capability entry
+    // silently degrades to the 1M unknown-window fallback — the §3.3 trigger
+    // then over-runs the real window and the task dies on overflow. ollama is
+    // the documented exemption: local models vary with num_ctx per pull, so
+    // A2 error-message learning is the source of truth there (plan §5 B1a).
+    for (const [presetId, preset] of Object.entries(ANYBUFF_PROVIDER_PRESETS)) {
+      if (presetId === 'ollama') continue
+      const provider = (preset.config.providers as Record<string, any>)[
+        presetId
+      ] as {
+        models: readonly string[]
+        modelCapabilities: Record<
+          string,
+          { context: { windowTokens: number; outputTokens: number } }
+        >
+      }
 
-    for (const model of provider.models) {
-      const capability = provider.modelCapabilities[model]
-      expect([model, capability]).toBeDefined()
-      expect(capability.context.windowTokens).toBeGreaterThan(0)
-      expect(capability.context.outputTokens).toBeGreaterThan(0)
+      for (const model of provider.models) {
+        const capability = provider.modelCapabilities[model]
+        if (capability === undefined) {
+          throw new Error(
+            `${presetId}/${model} is in the preset models list but has no modelCapabilities entry — every non-ollama preset member must declare windowTokens and outputTokens (B1c ordering rule; a missing entry silently degrades to the 1M fallback)`,
+          )
+        }
+        expect(capability.context.windowTokens).toBeGreaterThan(0)
+        expect(capability.context.outputTokens).toBeGreaterThan(0)
+      }
     }
   })
 

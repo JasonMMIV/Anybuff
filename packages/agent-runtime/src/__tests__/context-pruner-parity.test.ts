@@ -39,7 +39,10 @@ const noopLogger = {
  * Its STEP 0 strips exactly those, so appending them here leaves it with
  * `history` — the same input the runtime hands `compactMessages`.
  */
-function runPruner(history: Message[]): Message[] {
+function runPruner(
+  history: Message[],
+  params: Record<string, unknown> = {},
+): Message[] {
   const messages: Message[] = [
     ...history,
     {
@@ -69,7 +72,7 @@ function runPruner(history: Message[]): Message[] {
       // passing the history through untouched.
       contextTokenCount: 1_000_000,
     },
-    params: { maxContextLength: 1_000 },
+    params: { maxContextLength: 1_000, ...params },
     logger: noopLogger,
   } as any)
 
@@ -436,45 +439,75 @@ describe('context-pruner parity', () => {
       userBudget: 3_000,
     }).messages
 
-    const messages: Message[] = [
-      ...history,
-      {
-        role: 'user',
-        content: [{ type: 'text', text: '<user_message>{}</user_message>' }],
-        tags: ['USER_PROMPT'],
-        sentAt: 1,
-      },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'PRUNER INSTRUCTIONS' }],
-        tags: ['INSTRUCTIONS_PROMPT'],
-        sentAt: 1,
-      },
-    ]
-    const generator = contextPruner.handleSteps!({
-      agentState: {
-        agentId: 'context-pruner',
-        runId: 'test-run',
-        messageHistory: messages as any,
-        systemPrompt: '',
-        toolDefinitions: {},
-        contextTokenCount: 1_000_000,
-      },
-      params: {
-        maxContextLength: 1_000,
-        assistantToolBudget: 2_000,
-        userBudget: 3_000,
-      },
-      logger: noopLogger,
-    } as any)
-    let fromPruner: Message[] | undefined
-    let result = generator.next()
-    while (!result.done) {
-      const value: any = result.value
-      if (value?.toolName === 'set_messages') fromPruner = value.input.messages
-      result = generator.next() as any
-    }
+    const fromPruner = runPruner(history, {
+      assistantToolBudget: 2_000,
+      userBudget: 3_000,
+    })
 
-    expect(normalize(fromRuntime)).toEqual(normalize(fromPruner!))
+    expect(normalize(fromRuntime)).toEqual(normalize(fromPruner))
+  })
+
+  it('matches the pruner with a verbatim tail open and the C2 exemption boundary inside the head', () => {
+    // P1.5 review B2: the C2 recent-exemption marking must happen on the HEAD
+    // ONLY, after the verbatim tail is split off. The head's newest prose is
+    // not the history's newest overall — the tail holds those — so marking the
+    // full history would waste the five exemptions on tail prose (verbatim
+    // anyway) and truncate the head's newest under the legacy 1,300-token cap.
+    // The big head message below is that trap: intact under head-only marking
+    // (≈4k tokens < the 6k cap), truncated to ~3.9k chars under full-history
+    // marking — a byte difference the parity assert turns into a failure.
+    // Explicit budgets on BOTH sides: the implicit ones scale differently
+    // (pruner anchor 1k → scale 0.5 → tail 5k; runtime default anchor 400k →
+    // scale 1 → tail 10k) and would slice different tails.
+    const filler = 'K'.repeat(5_900)
+    const history: Message[] = [
+      user('the original request', ['USER_PROMPT']),
+      assistant('head old short 1'),
+      assistant('head old short 2'),
+      assistant('head old short 3'),
+      assistant(
+        `HEAD_BIG_START_ ${filler} HEAD_BIG_MID_MARKER ${filler} _HEAD_BIG_END`,
+      ),
+      // The two big prose messages below are tail-boundary bait: they fill
+      // the tail budget so the big head message above stays in the head.
+      assistant('J'.repeat(10_500)),
+      assistant('L'.repeat(10_500)),
+      assistant('', [{ toolName: 'read_files', input: { paths: ['a.ts'] } }]),
+      toolMessage('read_files', { content: 'file body' }),
+      assistant('', [{ toolName: 'str_replace', input: { path: 'a.ts' } }]),
+      toolMessage('str_replace', { message: 'replaced 1 occurrence' }),
+      assistant('tail prose 1'),
+      assistant('tail prose 2'),
+      assistant('tail prose 3'),
+    ]
+
+    const budgets = {
+      assistantToolBudget: 30_000,
+      userBudget: 30_000,
+      tailBudget: 10_000,
+    }
+    const fromRuntime = compactMessages({
+      messages: history,
+      maxContextLength: 1_000,
+      ...budgets,
+    }).messages
+    const fromPruner = runPruner(history, budgets)
+
+    // Parity: locks split-tail, the post-split C2 marking, and head assembly
+    // together across the two copies.
+    expect(normalize(fromRuntime)).toEqual(normalize(fromPruner))
+
+    // Non-vacuous guards: the verbatim tail really is open (the raw tool
+    // result survives outside the memory) and the big head message really got
+    // the 6k recent-exemption cap (its middle marker survives the 80/20 gap
+    // that a 1,300-token cap would have eaten).
+    const memory = textOfFirst(fromRuntime)
+    expect(memory).not.toContain('file body')
+    expect(
+      fromRuntime.some((message) =>
+        JSON.stringify(message.content).includes('file body'),
+      ),
+    ).toBe(true)
+    expect(memory).toContain('HEAD_BIG_MID_MARKER')
   })
 })
