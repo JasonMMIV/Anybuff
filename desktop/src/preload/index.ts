@@ -148,6 +148,9 @@ const api = {
   setTheme: (theme: 'dark' | 'light') => ipcRenderer.send('AnyBuff:setTheme', theme),
   /** Android-only: on-device engine diagnostics log (always null on desktop). */
   readEngineLog: async (): Promise<string | null> => null,
+  /** Android-only: pull a SAF folder staged while this page was (re)loading —
+   *  single-shot (clears the shell-side holder); always null on desktop. */
+  takeStagedFolder: async (): Promise<string | null> => null,
   getZoomFactor: () => webFrame.getZoomFactor(),
   setZoomFactor: (factor: number) => webFrame.setZoomFactor(factor),
   onEvent: (callback: (event: UiEvent) => void) => {

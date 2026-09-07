@@ -1419,53 +1419,61 @@ export default function SettingsModal({
     return candidateModels.filter((m) => m.toLowerCase().includes(q))
   }, [candidateModels, modelSearchFilter])
 
-  const NAV_ITEMS: { id: SettingsTab; label: string; icon: React.ReactNode; badge?: number | string }[] = [
-    {
-      id: 'general',
-      label: 'General',
-      icon: <SettingsIcon size={16} />
-    },
-    {
-      id: 'theme',
-      label: 'Theme',
-      icon: <PaletteIcon size={16} />
-    },
-    {
-      id: 'providers',
-      label: 'Providers & Models',
-      icon: <SparklesIcon size={16} />
-    },
-    {
-      id: 'search',
-      label: 'Web Search',
-      icon: <SearchIcon size={16} />
-    },
-    {
-      id: 'mcp',
-      label: 'MCP Tools',
-      icon: <PlugIcon size={16} />
-    },
-    {
-      id: 'routing',
-      label: 'Agent Routing',
-      icon: <ActivityIcon size={16} />
-    },
-    {
-      id: 'agents',
-      label: 'Custom Agents',
-      icon: <SpecialistIcon size={16} />
-    },
-    {
-      id: 'engine',
-      label: 'Engine',
-      icon: <ServerIcon size={16} />
-    },
-    {
-      id: 'about',
-      label: 'About',
-      icon: <InfoIcon size={16} />
-    }
-  ]
+  // The 'engine' tab (on-device engine diagnostics) is Android-only: its log
+  // is written by the Kotlin shell and read over the __ANYBUFF_NATIVE__ bridge
+  // (window.AnyBuff.readEngineLog returns null on desktop). Keep it out of the
+  // Windows build entirely — the detection mirrors main.tsx's is-webview flag
+  // (added exactly when the WS/native shell mounts, never in Electron).
+  const isEngineTabAvailable =
+    typeof document !== 'undefined' && document.documentElement.classList.contains('is-webview')
+  const NAV_ITEMS: { id: SettingsTab; label: string; icon: React.ReactNode; badge?: number | string }[] = useMemo(() => {
+    const items: { id: SettingsTab; label: string; icon: React.ReactNode; badge?: number | string }[] = [
+      {
+        id: 'general',
+        label: 'General',
+        icon: <SettingsIcon size={16} />
+      },
+      {
+        id: 'theme',
+        label: 'Theme',
+        icon: <PaletteIcon size={16} />
+      },
+      {
+        id: 'providers',
+        label: 'Providers & Models',
+        icon: <SparklesIcon size={16} />
+      },
+      {
+        id: 'search',
+        label: 'Web Search',
+        icon: <SearchIcon size={16} />
+      },
+      {
+        id: 'mcp',
+        label: 'MCP Tools',
+        icon: <PlugIcon size={16} />
+      },
+      {
+        id: 'routing',
+        label: 'Agent Routing',
+        icon: <ActivityIcon size={16} />
+      },
+      {
+        id: 'agents',
+        label: 'Custom Agents',
+        icon: <SpecialistIcon size={16} />
+      },
+      ...(isEngineTabAvailable
+        ? [{ id: 'engine' as const, label: 'Engine', icon: <ServerIcon size={16} /> }]
+        : []),
+      {
+        id: 'about',
+        label: 'About',
+        icon: <InfoIcon size={16} />
+      }
+    ]
+    return items
+  }, [isEngineTabAvailable])
 
   return (
     <div className="settings-page">

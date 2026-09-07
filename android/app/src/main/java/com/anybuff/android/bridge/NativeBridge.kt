@@ -116,6 +116,20 @@ class NativeBridge(
                     pendingFiles[id] = replyProxy
                     pickFilesLauncher.launch(arrayOf("*/*"))
                 }
+                "takeStagedFolder" -> {
+                    // Page-mounted PULL of a staged SAF pick. The push
+                    // (flushPendingFolder, from onPageFinished) can fire before
+                    // the freshly (re)created page has mounted its listener —
+                    // onPageFinished races React's module evaluation + mount —
+                    // so a reload would silently lose the user's pick. The
+                    // page therefore asks once it is actually ready to apply
+                    // one. Delivery is single-shot: the holder clears HERE
+                    // (the push never clears it).
+                    val staged = pendingFolderPath
+                    pendingFolderPath = null
+                    EngineLog.append(activity, "pick: staged folder pulled (${staged ?: "none"})")
+                    post(id, replyProxy) { put("path", staged ?: JSONObject.NULL) }
+                }
                 "openExternal" -> {
                     val url = msg.optString("url")
                     openExternal(url)
@@ -244,18 +258,21 @@ class NativeBridge(
             }
             if (replyProxy != null && postSafely(id, replyProxy, result)) {
                 EngineLog.append(activity, "pick: replied live id=$id path=${result.path}")
-                return@Thread
             }
-            // No live request (page recreated mid-pick) or the old page's
-            // replyProxy is dead: stage the result for the next page load
-            // instead of silently dropping the user's selection.
+            // Stage EVERY successfully copied pick — not just the no-live-request
+            // case. A live reply that "succeeded" from this side can still be lost
+            // before the page's JS runs it: the render process can die between the
+            // reply and the handler (memory pressure), the Activity can be
+            // recreated racing the picker return, or the reply listener can be
+            // missing (the round-9 bug this whole path backstops). The staged
+            // holder is process-wide and survives recreation; it is flushed right
+            // now when the page is ready, or by the next onPageFinished. The
+            // renderer dedupes (its folder-pending handler skips a path equal to
+            // the current cwd), so the double delivery is harmless.
             if (result.path != null) {
                 pendingFolderPath = result.path
                 EngineLog.append(activity, "pick: staged ${result.path} for the loaded page")
                 activity.runOnUiThread {
-                    // If the (recreated) page already finished loading, push the
-                    // folder to it now; otherwise the holder stays and the
-                    // onPageFinished flush delivers it right after the load.
                     if (pageReady.get()) flushPendingFolder()
                 }
             }
@@ -270,7 +287,6 @@ class NativeBridge(
      */
     fun flushPendingFolder() {
         val p = pendingFolderPath ?: return
-        pendingFolderPath = null
         EngineLog.append(activity, "pick: flushing staged folder $p")
         val escaped = p.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
         try {
@@ -279,10 +295,13 @@ class NativeBridge(
                 null,
             )
         } catch (e: Exception) {
-            // Page not in a state that can run JS (still loading / destroyed) —
-            // keep the holder so a later flush (next onPageFinished) retries.
-            Log.w(TAG, "pending folder push failed; will retry", e)
-            pendingFolderPath = p
+            // Page not in a state that can run JS (still loading / destroyed).
+            // The holder is deliberately NOT cleared here: this push can also
+            // land before the fresh page's React app has mounted its listener
+            // (onPageFinished races module evaluation), so the only reliable
+            // delivery is the page's own pull (takeStagedFolder), which is
+            // also the only place that clears the holder.
+            Log.w(TAG, "pending folder push failed", e)
         }
     }
 
@@ -456,14 +475,28 @@ class NativeBridge(
           const send = (method, payload) =>
             new Promise((resolve) => {
               const id = Math.floor(Math.random() * 1e9);
+              // Replies from JavaScriptReplyProxy.postMessage are delivered to
+              // the injected object's OWN onmessage/addEventListener('message')
+              // — they are NEVER dispatched as DOM 'message' events on window
+              // (the WebMessageListener channel lives outside Blink's event
+              // machinery; see androidx.webkit WebViewCompat#addWebMessageListener
+              // javadoc and components/js_injection/renderer/js_binding.cc).
+              // The old window.addEventListener here never fired: the picker
+              // opened and the copy succeeded, but the reply was silently
+              // dropped and the awaiting pickFolder() promise hung forever —
+              // the "selected a folder, UI still shows no project" bug.
               const handler = (ev) => {
-                const msg = JSON.parse(ev.data);
-                if (msg.id === id) {
-                  window.removeEventListener('message', handler);
-                  resolve(msg);
-                }
+                let msg;
+                try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                if (!msg || msg.id !== id) return;
+                try { androidNative.removeEventListener('message', handler); } catch (e) {}
+                // Diagnostic breadcrumb (logged on the MATCHED reply only, so
+                // concurrent sends cannot mislabel it): confirms bridge replies
+                // reach the page — the round-9 bug made every one of these silent.
+                try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: 'bridge', detail: 'reply ' + method + ' id=' + id })); } catch (e) {}
+                resolve(msg);
               };
-              window.addEventListener('message', handler);
+              androidNative.addEventListener('message', handler);
               androidNative.postMessage(JSON.stringify(Object.assign({ id, method }, payload || {})));
             });
           window.__ANYBUFF_WS_URL__ = '$escapedWs';
@@ -475,6 +508,7 @@ class NativeBridge(
             getVersion: () => send('getVersion').then(r => r.version),
             restartEngine: () => { androidNative.postMessage(JSON.stringify({ method: 'restartEngine' })); },
             readEngineLog: () => send('readEngineLog').then(r => r.log || ''),
+            takeStagedFolder: () => send('takeStagedFolder').then(r => r.path || null),
             logEvent: (kind, detail) => { try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: String(kind || ''), detail: String(detail || '') })); } catch (e) {} },
             // saveKey/deleteKey hand a freshly-typed key to the shell for
             // Keystore storage (same transient renderer→native crossing the

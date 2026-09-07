@@ -13,9 +13,11 @@ tags
 node_modules
 dev
 dist
+dist-web
 dist-env
 tsconfig.tsbuildinfo
 .manicode
+.commandcode/
 __mock-projects__
 npm-app/src/__tests__/data/
 .aider*

@@ -63,6 +63,8 @@ export interface AnyBuffNativeBridge {
   readEngineLog?: () => Promise<string>
   /** Android-only: append a renderer lifecycle event to the engine log. */
   logEvent?: (kind: string, detail: string) => void
+  /** Android-only: pull a SAF folder staged while the page was (re)loading. */
+  takeStagedFolder?(): Promise<string | null>
 }
 
 export interface WsHostOptions {
@@ -443,6 +445,10 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     /** Android-only: on-device engine diagnostics log (null elsewhere). */
     readEngineLog: async (): Promise<string | null> =>
       native?.readEngineLog ? await native.readEngineLog() : null,
+    /** Android-only: pull a SAF folder staged while this page was (re)loading
+     *  (push can race React mount, so the page also pulls once it is ready). */
+    takeStagedFolder: async (): Promise<string | null> =>
+      native?.takeStagedFolder ? await native.takeStagedFolder() : null,
   }
 
   return api as unknown as AnyBuffApi
