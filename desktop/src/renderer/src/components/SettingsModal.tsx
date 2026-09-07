@@ -1610,7 +1610,7 @@ export default function SettingsModal({
                   ? 'Configure API endpoint parameters, encryption keys, and active models for this provider.'
                   : 'Manage AI model providers and endpoints. Changes are saved automatically.')}
               {activeTab === 'general' &&
-                'Set reasoning effort, tool approval mode, and per-run limits. The active model is picked from the selector beside the chat input.'}
+                'Set tool approval mode and per-run limits. The active model and reasoning level are picked beside the chat input.'}
               {activeTab === 'theme' &&
                 'Customize the appearance mode and color scheme palette of AnyBuff.'}
               {activeTab === 'routing' &&
@@ -2017,20 +2017,6 @@ export default function SettingsModal({
           {activeTab === 'general' && (
             <div className="settings-tab-content">
               <div className="settings-section-card">
-                <div className="settings-field-group">
-                  <label className="settings-field-label">Reasoning Level</label>
-                  <CustomSelect
-                    value={reasoningEffort}
-                    onChange={setReasoningEffort}
-                    fullWidth
-                    options={getReasoningOptionsForModel(activeModel).map((r) => ({
-                      value: r,
-                      label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')
-                    }))}
-                  />
-                  <p className="hint">Controls extended thinking effort for models supporting reasoning tokens.</p>
-                </div>
-
                 <div className="settings-field-group">
                   <label className="settings-field-label">Approval Mode</label>
                   <CustomSelect
