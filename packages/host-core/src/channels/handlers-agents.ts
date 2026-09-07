@@ -16,7 +16,9 @@ import {
   saveLocalAgentFile as saveLocalAgentFileFn,
   type CreateLocalAgentInput,
 } from '../agents/local-agents'
-import { getLastLocalAgents } from '../run/start-run'
+import { bundledAgents } from '../agents/bundled-agents'
+import { AGENT_ID_FOR_MODE, buildAgentDefinitions, getLastLocalAgents } from '../run/start-run'
+import type { MentionAgentInfo } from '../contracts/types'
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -92,6 +94,53 @@ export async function listLocalAgents(cwd: string): Promise<unknown> {
       validationErrors: [{ agentId: '', filePath: '', message: err instanceof Error ? err.message : String(err) }],
     }
   }
+}
+
+/** Deliberate exclusion from the @-mention menu (upstream lists every
+ *  spawnable): context-pruner is a zero-LLM maintenance routine spawned
+ *  programmatically before each step and its UI activity is silenced
+ *  (SILENT_AGENT_TYPES, maintenance ledger) — offering it as a pickable
+ *  "agent" would only produce a no-op turn. */
+const MENTION_HIDDEN_AGENT_IDS = new Set(['context-pruner'])
+
+/**
+ * AnyBuff:listMentionAgents — agents offered by the composer's @-mention menu,
+ * mirroring the upstream CLI's `loadLocalAgents(agentMode)` semantics
+ * (cli/src/utils/local-agent-registry.ts):
+ *   - bundled agents are filtered to the current mode's ROOT spawnableAgents
+ *     (so the menu never offers something the root cannot spawn),
+ *   - `.agents/` local agents are always included and override bundled agents
+ *     with the same id (buildAgentDefinitions already injects them into the
+ *     coding roots' spawnableAgents — reusing the merged view keeps the menu
+ *     and the run in lockstep),
+ *   - sorted by displayName.
+ * ADR-23: a pick only inserts `@agent-id ` into the draft — the ROOT stays
+ * the mode's default agent and spawns the mentioned agent as a SUB-AGENT
+ * ("Spawn mentioned agents"); there is no per-turn root override anymore.
+ */
+export async function listMentionAgents(cwd: string, mode?: 'default' | 'plan' | 'chat'): Promise<MentionAgentInfo[]> {
+  const rootId = AGENT_ID_FOR_MODE[mode ?? 'default']
+  // Reuse the run's merged definitions: custom ids are already appended to
+  // the coding roots' spawnableAgents (chat is deliberately excluded — a
+  // lightweight root must not gain full-access project agents, ADR-20).
+  // Side effect (benign): this also refreshes the lastLocalAgents snapshot
+  // the Settings panel reads — same cwd scan the panel itself performs.
+  const { definitions } = await buildAgentDefinitions(cwd).catch(() => ({
+    // Broken .agents/ load must never break the menu — fall back to the
+    // bundled-only view (mirrors the run's own fallback to bundledAgents).
+    definitions: bundledAgents,
+  }))
+  const spawnable = new Set(definitions[rootId]?.spawnableAgents ?? [])
+  const out: MentionAgentInfo[] = []
+  for (const [id, def] of Object.entries(definitions)) {
+    if (!spawnable.has(id) || MENTION_HIDDEN_AGENT_IDS.has(id)) continue
+    out.push({
+      id,
+      displayName: def?.displayName ?? id,
+      description: typeof def?.spawnerPrompt === 'string' && def.spawnerPrompt ? def.spawnerPrompt : undefined,
+    })
+  }
+  return out.sort((a, b) => a.displayName.localeCompare(b.displayName, 'en'))
 }
 
 /** AnyBuff:createLocalAgent */

@@ -116,6 +116,38 @@ describe('read-only round-trips', () => {
     expect(res.ok).toBe(true)
   })
 
+  // ADR-23: the @-mention menu offers the MODE root's spawnable agents
+  // (upstream loadLocalAgents semantics) — never a root switch.
+  test('listMentionAgents returns the default root spawnables minus context-pruner', async () => {
+    const res = await host.dispatch('listMentionAgents', [dataDir, 'default'])
+    expect(res.ok).toBe(true)
+    const inner = (res as { ok: true; result: Array<{ id: string }> }).result
+    expect(Array.isArray(inner)).toBe(true)
+    const ids = inner.map((a) => a.id)
+    // base2 root spawnables that ship in the bundle:
+    for (const expected of ['file-picker', 'code-searcher', 'researcher-web', 'researcher-docs', 'basher', 'thinker', 'editor', 'code-reviewer']) {
+      expect(ids).toContain(expected)
+    }
+    // Zero-LLM maintenance routine — deliberately not pickable.
+    expect(ids).not.toContain('context-pruner')
+    // Root agents themselves are never spawnable picks.
+    expect(ids).not.toContain('base2')
+    expect(ids).not.toContain('base-chat')
+  })
+
+  test('listMentionAgents narrows for chat mode (lightweight root)', async () => {
+    const res = await host.dispatch('listMentionAgents', [dataDir, 'chat'])
+    expect(res.ok).toBe(true)
+    const inner = (res as { ok: true; result: Array<{ id: string }> }).result
+    const ids = inner.map((a) => a.id)
+    // base-chat's spawnable set is researcher-web + thinker (+context-pruner,
+    // which the menu hides): nothing else leaks into the lightweight root.
+    expect(ids).toContain('researcher-web')
+    expect(ids).toContain('thinker')
+    expect(ids).not.toContain('editor')
+    expect(ids).not.toContain('file-picker')
+  })
+
   test('searchHistory returns [] for an empty query', async () => {
     const res = await host.dispatch('searchHistory', [''])
     expect(res.ok).toBe(true)

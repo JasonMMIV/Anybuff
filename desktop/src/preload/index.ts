@@ -94,6 +94,10 @@ const api = {
   testMcpServer: (payload: { record: unknown }) => ipcRenderer.invoke('AnyBuff:testMcpServer', payload),
   listSkills: (cwd: string) => ipcRenderer.invoke('AnyBuff:listSkills', cwd),
   listLocalAgents: (cwd: string) => ipcRenderer.invoke('AnyBuff:listLocalAgents', cwd),
+  /** ADR-23 @-mention menu — mode-root spawnable agents (upstream semantics;
+   *  picking one inserts @id into the draft, the ROOT spawns it as a sub-agent). */
+  listMentionAgents: (cwd: string, mode?: 'default' | 'plan' | 'chat') =>
+    ipcRenderer.invoke('AnyBuff:listMentionAgents', cwd, mode),
   createLocalAgent: (payload: unknown) => ipcRenderer.invoke('AnyBuff:createLocalAgent', payload),
   deleteLocalAgent: (payload: { cwd: string; filePath?: string; id?: string }) =>
     ipcRenderer.invoke('AnyBuff:deleteLocalAgent', payload),
@@ -123,8 +127,6 @@ const api = {
     taskId?: string
     resume?: boolean
     mode?: 'default' | 'plan' | 'chat'
-    /** #20 @agent mention override. */
-    agentId?: string
     /** #4 base64 image parts (composer paste/attach), see host contracts. */
     content?: Array<{ type: 'image'; image: string; mediaType: string }>
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),

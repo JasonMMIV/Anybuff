@@ -69,10 +69,11 @@ interface ComposerProps {
   totalCost: number
   fileCandidates: string[]
   skills: SkillInfo[]
-  /** #20 custom agents (.agents/ + bundled) offered by the @-mention menu. */
+  /** #20 custom agents offered by the @-mention menu (mode-root spawnables).
+   *  ADR-23: picking one only inserts `@id ` into the draft — the ROOT stays
+   *  the mode's agent and spawns the mention as a sub-agent (upstream
+   *  "Spawn mentioned agents" semantics; no per-turn root override). */
   agentMentions: AgentMentionInfo[]
-  /** #20 picking an @agent mention selects it as the run's root agent. */
-  onAgentMentionPick?: (agentId: string) => void
   /** Increment to programmatically focus the textarea (e.g. after Revert restores a message). */
   focusSignal?: number
   /** Open the /review scope picker (#5 第二批). */
@@ -174,7 +175,6 @@ export default function Composer(props: ComposerProps) {
     fileCandidates,
     skills,
     agentMentions,
-    onAgentMentionPick,
     focusSignal,
     onReviewRequest,
     onArmInterview,
@@ -308,10 +308,12 @@ export default function Composer(props: ComposerProps) {
     }
   }
 
-  /** #20: pick a custom agent — inserts @agentId and selects it for the run. */
+  /** #20/ADR-23: pick an agent — inserts `@id ` into the draft, exactly like
+   *  the upstream CLI's handleMentionItemClick. The message then flows to the
+   *  mode's ROOT agent, which spawns the mentioned agent as a sub-agent
+   *  ("Spawn mentioned agents") — the root never changes. */
   const selectAgentMention = (agent: AgentMentionInfo) => {
     replaceToken(`@${agent.id} `)
-    onAgentMentionPick?.(agent.id)
   }
 
   const selectSkill = (skill: SkillInfo | { id: string }) => {

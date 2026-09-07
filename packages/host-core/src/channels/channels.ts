@@ -41,6 +41,7 @@ export const CHANNELS = [
   'testMcpServer',
   // Custom agents & skills
   'listLocalAgents',
+  'listMentionAgents',
   'createLocalAgent',
   'deleteLocalAgent',
   'readLocalAgentFile',

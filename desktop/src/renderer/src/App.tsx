@@ -378,10 +378,10 @@ export default function App() {
   // #17 保險絲: per-run step cap (0 = SDK default) + cost mode — persisted via settings.
   const [maxAgentSteps, setMaxAgentSteps] = useState(0)
   const [costMode, setCostMode] = useState<'normal' | 'max' | 'lite'>('normal')
-  // #20 custom agents offered by the @-mention menu (bundled subset + .agents/).
+  // #20/ADR-23 agents offered by the @-mention menu — the current MODE root's
+  // spawnable agents (.agents/ locals included). Picking one only inserts
+  // `@id ` into the draft; the root never changes (upstream semantics).
   const [agentMentions, setAgentMentions] = useState<AgentMentionInfo[]>([])
-  /** #20 an @agent pick selects that agent as the root for the next run. */
-  const [mentionedAgentId, setMentionedAgentId] = useState<string | null>(null)
   /** #9 bash results accumulated since the last prompt send (become context). */
   const pendingBashRef = useRef<BashCommandResult[]>([])
 
@@ -443,8 +443,6 @@ export default function App() {
   maxAgentStepsRef.current = maxAgentSteps
   const costModeRef = useRef(costMode)
   costModeRef.current = costMode
-  const mentionedAgentIdRef = useRef(mentionedAgentId)
-  mentionedAgentIdRef.current = mentionedAgentId
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const msgRefs = useRef<(HTMLDivElement | null)[]>([])
   // Stable per-row ref: the index is read from data-index, so the callback
@@ -674,27 +672,32 @@ export default function App() {
     void window.AnyBuff.gitBranch(cwd).then(setBranch)
     void window.AnyBuff.listFiles(cwd).then((t) => setFileCandidates(flattenTree(t as TreeNode[], cwd)))
     void window.AnyBuff.listSkills(cwd).then((s) => setSkills(s as SkillInfo[]))
-    // #20 custom agents for the @-mention menu (project/parent/home scopes).
-    void window.AnyBuff
-      .listLocalAgents(cwd)
-      .then((res) => {
-        const local = (res as { agents?: { id: string; displayName: string; spawnerPrompt?: string }[] }).agents ?? []
-        const localMentions: AgentMentionInfo[] = local.map((a) => ({
-          id: a.id,
-          displayName: a.displayName || a.id,
-          description: a.spawnerPrompt?.slice(0, 80)
-        }))
-        const bundledMentions: AgentMentionInfo[] = [
-          { id: 'researcher-web', displayName: 'Web Researcher' },
-          { id: 'code-reviewer', displayName: 'Code Reviewer' }
-        ]
-        const seen = new Set(localMentions.map((a) => a.id))
-        setAgentMentions([...localMentions, ...bundledMentions.filter((b) => !seen.has(b.id))])
-      })
-      .catch(() => setAgentMentions([]))
-    // A new folder invalidates a previous @agent pick.
-    setMentionedAgentId(null)
   }, [cwd, isPreview])
+
+  // #20/ADR-23 @-mention menu — the current MODE root's spawnable agents,
+  // resolved host-side from the run's own merged agent definitions so the
+  // menu can never offer an agent the root cannot spawn (upstream
+  // loadLocalAgents(agentMode) semantics; .agents/ locals override bundled
+  // ids with the same name). Re-resolves whenever the folder OR the mode
+  // changes — Chat/Build/Plan roots have different spawnable sets.
+  useEffect(() => {
+    if (!cwd) return
+    if (isPreview) {
+      setAgentMentions([
+        { id: 'researcher-web', displayName: 'Web Researcher' },
+        { id: 'researcher-docs', displayName: 'Docs Researcher' },
+        { id: 'thinker', displayName: 'Thinker' }
+      ])
+      return
+    }
+    void window.AnyBuff
+      .listMentionAgents(cwd, agentMode)
+      // Guard the envelope: a failed dispatch / WS timeout resolves
+      // { ok: false, error } (truthy) — without the Array.isArray check the
+      // composer's agentMentions.filter would crash on a non-array.
+      .then((res) => setAgentMentions(Array.isArray(res) ? (res as AgentMentionInfo[]) : []))
+      .catch(() => setAgentMentions([]))
+  }, [cwd, agentMode, isPreview])
 
   // Auto-scroll to bottom — paused while the user has scrolled up to read
   // history; scrolling back near the bottom resumes following the stream.
@@ -1495,8 +1498,6 @@ export default function App() {
         displayText: text,
         taskId: currentTaskRef.current ?? undefined,
         mode: agentMode,
-        // #20: an @agent mention routes this run to that agent root.
-        ...(mentionedAgentIdRef.current ? { agentId: mentionedAgentIdRef.current } : {}),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
       }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string }>
@@ -2777,7 +2778,6 @@ export default function App() {
                     fileCandidates={fileCandidates}
                     skills={skills}
                     agentMentions={agentMentions}
-                    onAgentMentionPick={setMentionedAgentId}
                     focusSignal={focusSignal}
                   />
                 </>

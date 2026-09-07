@@ -97,11 +97,16 @@ export interface RunPromptPayload {
   taskId?: string
   resume?: boolean
   mode?: UIAgentMode
-  /** #20 @agent mention override — runs this turn with the named root agent
-   *  (must exist in the bundled or project agent definitions). */
-  agentId?: string
   /** #4 圖片附件/剪貼簿貼圖: base64 image parts sent alongside the prompt. */
   content?: RunImagePart[]
+}
+
+/** Entry of AnyBuff:listMentionAgents — an agent offered by the @-mention menu. */
+export interface MentionAgentInfo {
+  id: string
+  displayName: string
+  /** Short spawner description shown under the id in the menu. */
+  description?: string
 }
 
 /** App-level state returned by AnyBuff:getState. */

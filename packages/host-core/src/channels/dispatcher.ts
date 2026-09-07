@@ -27,7 +27,7 @@ import {
 import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
 import { runBashCommand } from '../run/bash-command'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
-import { listLocalAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
+import { listLocalAgents, listMentionAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
 import { listFiles, listDir, readFile, pathInfo, gitBranch, gitDiff, gitAccept, gitRevert, projectName } from './handlers-files'
 import { attachEventSink } from '../run/start-run'
 import { bridgeEventBus, type EventBus } from '../events'
@@ -75,6 +75,7 @@ const registry: Record<string, Handler> = {
   testMcpServer,
   // Agents & skills
   listLocalAgents,
+  listMentionAgents,
   createLocalAgent,
   deleteLocalAgent,
   readLocalAgentFile,

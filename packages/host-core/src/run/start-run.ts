@@ -643,8 +643,12 @@ export function getLastLocalAgents(): LocalAgentsResult {
   return lastLocalAgents
 }
 
-/** Load custom agents for a project and merge them over the bundled definitions. */
-async function buildAgentDefinitions(cwd: string): Promise<{ definitions: Record<string, any>; local: LocalAgentsResult }> {
+/** Load custom agents for a project and merge them over the bundled definitions.
+ * Exported so AnyBuff:listMentionAgents can reuse the exact same merged view
+ * (custom agents injected into the coding roots' spawnableAgents) the run
+ * itself uses — the @-mention menu must never offer an agent the root
+ * cannot actually spawn. */
+export async function buildAgentDefinitions(cwd: string): Promise<{ definitions: Record<string, any>; local: LocalAgentsResult }> {
   const local = await loadProjectLocalAgents(cwd)
   lastLocalAgents = local
   const merged: Record<string, any> = { ...bundledAgents }
@@ -698,14 +702,17 @@ export interface StartRunOptions {
   /** UI agent mode — selects the bundled root agent
    *  ('default' → base2, 'plan' → base2-plan, 'chat' → base-chat). */
   mode?: 'default' | 'plan' | 'chat'
-  /** #20 @agent mention override — explicit root agent id for this turn. */
-  agentId?: string
   /** #17 multimodal content parts (images pasted/attached in the composer). */
   content?: Array<{ type: 'image'; image: string; mediaType: string }>
 }
 
-/** UI agent mode → bundled root agent id (mirrors the upstream CLI's AGENT_MODE_TO_ID table). */
-const AGENT_ID_FOR_MODE: Record<'default' | 'plan' | 'chat', string> = {
+/** UI agent mode → bundled root agent id (mirrors the upstream CLI's AGENT_MODE_TO_ID table).
+ *
+ * Upstream semantics (ADR-23): the ROOT agent is decided ONLY by the UI mode
+ * toggle — an @agent token in the message text is a spawn instruction for the
+ * root ("Spawn mentioned agents"), never a root switch. The previous per-turn
+ * `agentId` root override is removed. */
+export const AGENT_ID_FOR_MODE: Record<'default' | 'plan' | 'chat', string> = {
   default: 'base2',
   plan: 'base2-plan',
   chat: 'base-chat'
@@ -871,10 +878,10 @@ export function planOverflowResume(params: {
  */
 export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   const { cwd, prompt, displayText, taskId } = opts
-  // #20: an explicit @agent mention wins over the UI mode's default root; it
-  // is validated against the merged definitions later in this function, so a
-  // stale/typo'd id surfaces as a normal "Invalid agent ID" error.
-  const agentId = opts.agentId && opts.agentId.trim() ? opts.agentId.trim() : AGENT_ID_FOR_MODE[opts.mode ?? 'default']
+  // Upstream semantics (ADR-23): the run's root agent comes ONLY from the UI
+  // mode — an @agent token in the prompt is handled by the root itself
+  // ("Spawn mentioned agents") as a sub-agent spawn, not a root override.
+  const agentId = AGENT_ID_FOR_MODE[opts.mode ?? 'default']
   // #17: normalize image content once — the SDK accepts base64 image parts on
   // the run; a malformed entry is dropped rather than failing the whole turn.
   const imageContent = (opts.content ?? []).filter(

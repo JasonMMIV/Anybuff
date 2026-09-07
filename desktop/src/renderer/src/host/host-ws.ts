@@ -348,6 +348,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     testMcpServer: (payload: { record: unknown }) => call('testMcpServer', payload),
     listSkills: (cwd: string) => call('listSkills', cwd),
     listLocalAgents: (cwd: string) => call('listLocalAgents', cwd),
+    /** ADR-23 @-mention menu — mode-root spawnable agents (upstream semantics). */
+    listMentionAgents: (cwd: string, mode?: 'default' | 'plan' | 'chat') => call('listMentionAgents', cwd, mode),
     createLocalAgent: (payload: unknown) => call('createLocalAgent', payload),
     deleteLocalAgent: (payload: { cwd: string; filePath?: string; id?: string }) => call('deleteLocalAgent', payload),
     readLocalAgentFile: (payload: { filePath: string }) => call('readLocalAgentFile', payload),
@@ -369,7 +371,6 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       taskId?: string
       resume?: boolean
       mode?: 'default' | 'plan' | 'chat'
-      agentId?: string
       content?: Array<{ type: 'image'; image: string; mediaType: string }>
     }) => call('runPrompt', payload),
     abort: () => call('abort'),
