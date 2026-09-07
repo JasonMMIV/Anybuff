@@ -715,8 +715,15 @@ export default function App() {
   // requesting page died with the old WebView, so the shell stages the guest
   // path and pushes it here once the page can run JS. Applied via
   // applyOpenedFolder (declared below with the other handlers).
+  // cwdRef mirrors cwd for the pull below without re-running the effect on
+  // every cwd change mid-pick (the pull itself must not re-fire on cwd updates).
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
   useEffect(() => {
     if (isPreview) return
+    const nativeTakeStagedFolder = (
+      window as unknown as { __ANYBUFF_NATIVE__?: { takeStagedFolder?: () => Promise<string | null> } }
+    ).__ANYBUFF_NATIVE__?.takeStagedFolder
     const onFolderPending = (ev: Event): void => {
       const path = (ev as CustomEvent<string>).detail
       if (typeof path !== 'string' || !path) return
@@ -733,6 +740,20 @@ export default function App() {
       void window.AnyBuff.listProjects().then((p) => setProjects(p as ProjectRecord[]))
     }
     window.addEventListener('anybuff:folder-pending', onFolderPending)
+    // PULL the staged pick once this page is ready to apply it. The shell's
+    // PUSH (flushPendingFolder, from onPageFinished) can fire before the
+    // freshly (re)created page's React app has mounted this listener —
+    // onPageFinished races module evaluation — so a reload could silently
+    // lose a pick. Pulling closes that hole; the shell delivers single-shot
+    // (only the pull clears its holder) and the cwd dedupe above makes a
+    // push+pull double delivery harmless.
+    if (nativeTakeStagedFolder) {
+      void nativeTakeStagedFolder().then((path) => {
+        if (typeof path === 'string' && path && path !== cwdRef.current) onFolderPending(
+          new CustomEvent('anybuff:folder-pending', { detail: path })
+        )
+      })
+    }
     return () => window.removeEventListener('anybuff:folder-pending', onFolderPending)
   }, [isPreview, cwd])
 
@@ -2355,6 +2376,10 @@ export default function App() {
             onSelectColorTheme={setColorTheme}
             initialTab={settingsTab}
             cwd={cwd}
+            maxAgentSteps={maxAgentSteps}
+            onSelectMaxAgentSteps={onMaxAgentStepsChange}
+            costMode={costMode}
+            onSelectCostMode={onCostModeChange}
           />
         ) : (
           <>
@@ -2739,10 +2764,6 @@ export default function App() {
                     skills={skills}
                     agentMentions={agentMentions}
                     onAgentMentionPick={setMentionedAgentId}
-                    maxAgentSteps={maxAgentSteps}
-                    onMaxAgentStepsChange={onMaxAgentStepsChange}
-                    costMode={costMode}
-                    onCostModeChange={onCostModeChange}
                     focusSignal={focusSignal}
                   />
                 </>

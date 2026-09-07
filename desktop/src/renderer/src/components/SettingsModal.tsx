@@ -335,6 +335,11 @@ interface Props {
   onSelectColorTheme: (theme: ColorTheme) => void
   initialTab?: SettingsTab
   cwd?: string | null
+  /** #17 run guardrails, edited here instead of the composer toolbar. */
+  maxAgentSteps?: number
+  onSelectMaxAgentSteps?: (steps: number) => void
+  costMode?: 'normal' | 'max' | 'lite'
+  onSelectCostMode?: (mode: 'normal' | 'max' | 'lite') => void
 }
 
 const COLOR_THEMES: { id: ColorTheme; label: string; previewColor: string; description: string }[] = [
@@ -407,7 +412,11 @@ export default function SettingsModal({
   colorTheme,
   onSelectColorTheme,
   initialTab,
-  cwd: propCwd
+  cwd: propCwd,
+  maxAgentSteps = 0,
+  onSelectMaxAgentSteps,
+  costMode = 'normal',
+  onSelectCostMode
 }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false)
@@ -2044,6 +2053,35 @@ export default function SettingsModal({
                     ]}
                   />
                   <p className="hint">Determines when AnyBuff requires confirmation before modifying files or running commands.</p>
+                </div>
+
+                <div className="settings-field-group">
+                  <label className="settings-field-label">Max Agent Steps</label>
+                  <CustomSelect
+                    value={String(maxAgentSteps)}
+                    onChange={(v) => onSelectMaxAgentSteps?.(Number(v))}
+                    fullWidth
+                    options={[0, 20, 40, 60, 100, 200].map((n) => ({
+                      value: String(n),
+                      label: n === 0 ? 'Default (200 steps)' : `Limit to ${n} steps`
+                    }))}
+                  />
+                  <p className="hint">Caps the steps a single run may take (0 = SDK default of 200) — stops a runaway agent loop from burning tokens unattended.</p>
+                </div>
+
+                <div className="settings-field-group">
+                  <label className="settings-field-label">Cost Mode</label>
+                  <CustomSelect
+                    value={costMode}
+                    onChange={(v) => onSelectCostMode?.(v as 'normal' | 'max' | 'lite')}
+                    fullWidth
+                    options={[
+                      { value: 'normal', label: 'Normal — default balance' },
+                      { value: 'lite', label: 'Lite — leanest, cheapest run' },
+                      { value: 'max', label: 'Max — most thorough, most tokens' }
+                    ]}
+                  />
+                  <p className="hint">Trade-off between thoroughness and token spend. Applies when no explicit @agent is picked; picked agents keep their own shape.</p>
                 </div>
               </div>
             </div>

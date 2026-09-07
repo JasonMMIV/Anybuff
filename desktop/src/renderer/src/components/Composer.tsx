@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpIcon, ChatIcon, HammerIcon, LightbulbIcon, ListIcon, PaperclipIcon, PlusIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
+import { ArrowUpIcon, ChatIcon, HammerIcon, LightbulbIcon, ListIcon, PaperclipIcon, PlusIcon, SpecialistIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
 import CustomSelect from './CustomSelect'
 
 export interface Attachment {
@@ -73,12 +73,6 @@ interface ComposerProps {
   agentMentions: AgentMentionInfo[]
   /** #20 picking an @agent mention selects it as the run's root agent. */
   onAgentMentionPick?: (agentId: string) => void
-  /** #17 per-run step cap (0 = SDK default). */
-  maxAgentSteps: number
-  onMaxAgentStepsChange: (steps: number) => void
-  /** #17 SDK cost mode flag. */
-  costMode: 'normal' | 'max' | 'lite'
-  onCostModeChange: (mode: 'normal' | 'max' | 'lite') => void
   /** Increment to programmatically focus the textarea (e.g. after Revert restores a message). */
   focusSignal?: number
   /** Open the /review scope picker (#5 第二批). */
@@ -103,15 +97,6 @@ type Mention =
   | { kind: 'agent'; query: string }
   | { kind: 'skill'; query: string }
   | null
-
-/** Slash-step presets offered for the #17 maxAgentSteps quick control. */
-const MAX_STEPS_OPTIONS = [0, 20, 40, 60, 100, 200]
-
-const COST_MODE_OPTIONS: { value: 'normal' | 'max' | 'lite'; label: string }[] = [
-  { value: 'normal', label: 'Cost: Normal' },
-  { value: 'max', label: 'Cost: Max' },
-  { value: 'lite', label: 'Cost: Lite' }
-]
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -190,10 +175,6 @@ export default function Composer(props: ComposerProps) {
     skills,
     agentMentions,
     onAgentMentionPick,
-    maxAgentSteps,
-    onMaxAgentStepsChange,
-    costMode,
-    onCostModeChange,
     focusSignal,
     onReviewRequest,
     onArmInterview,
@@ -629,7 +610,7 @@ export default function Composer(props: ComposerProps) {
                     }}
                     onMouseEnter={() => setMentionIndex(i)}
                   >
-                    <span className="mention-icon">🤖</span>
+                    <span className="mention-icon"><SpecialistIcon size={13} /></span>
                     <span className="mention-text">@{a.id}</span>
                     {a.displayName !== a.id && <span className="mention-desc">{a.displayName}</span>}
                     {a.description && <span className="mention-desc">{a.description}</span>}
@@ -751,32 +732,6 @@ export default function Composer(props: ComposerProps) {
             title="Reasoning level"
           />
 
-          {/* #17 保險絲：per-run step cap (0 = SDK default 200) — stops a
-              runaway agent loop from burning tokens unattended. */}
-          <CustomSelect
-            value={String(maxAgentSteps)}
-            onChange={(v) => onMaxAgentStepsChange(Number(v))}
-            disabled={running}
-            size="small"
-            placement="top"
-            className="steps-select"
-            options={MAX_STEPS_OPTIONS.map((n) => ({
-              value: String(n),
-              label: n === 0 ? 'Steps: ∞' : `Steps: ≤ ${n}`
-            }))}
-            title="Max agent steps per run (0 = default cap of 200)"
-          />
-
-          <CustomSelect
-            value={costMode}
-            onChange={(v) => onCostModeChange(v as 'normal' | 'max' | 'lite')}
-            disabled={running}
-            size="small"
-            placement="top"
-            className="costmode-select"
-            options={COST_MODE_OPTIONS}
-            title="Cost mode flag forwarded to the model run"
-          />
         </div>
 
         <div className="toolbar-right">
