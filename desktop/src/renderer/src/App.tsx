@@ -28,10 +28,12 @@ import {
   InfoIcon,
   PanelLeftIcon,
   PanelRightIcon,
+  UndoIcon,
   WindowMinimizeIcon,
   WindowMaximizeIcon,
   WindowRestoreIcon,
-  WindowCloseIcon
+  WindowCloseIcon,
+  XIcon
 } from './components/Icons'
 import type { TreeNode } from './components/FileTree'
 import type { UiEvent } from '../../preload'
@@ -1720,6 +1722,18 @@ export default function App() {
     setFocusSignal((n) => n + 1)
   }, [pendingRevert, cwd, refreshProjects])
 
+  useEffect(() => {
+    if (!pendingRevert) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setPendingRevert(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pendingRevert])
+
   const openFileByPath = useCallback(async (path: string, name: string) => {
     if (isPreview) {
       setSelectedFile({ path, content: '// simulated file content (preview mode)', name })
@@ -2788,33 +2802,60 @@ export default function App() {
       </div>
 
       {pendingRevert && (
-        <div className="modal-backdrop" onClick={() => setPendingRevert(null)}>
-          <div className="modal revert-modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Revert this exchange?</h2>
-            <p className="hint">
-              {pendingRevert.files.length > 0
-                ? `This will undo the changes made to ${pendingRevert.files.length} file(s) in this conversation:`
-                : 'This will discard this exchange from the conversation.'}
-            </p>
-            {pendingRevert.files.length > 0 && (
-              <div className="revert-file-list">
-                {pendingRevert.files.slice(0, 8).map((f) => (
-                  <div key={f} className="revert-file">
-                    {f}
-                  </div>
-                ))}
-                {pendingRevert.files.length > 8 && (
-                  <div className="revert-file more">… and {pendingRevert.files.length - 8} more</div>
-                )}
+        <div className="modal-backdrop revert-modal-backdrop" onClick={() => setPendingRevert(null)}>
+          <div className="modal revert-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="revert-modal-title">
+            <div className="revert-modal-header">
+              <div className="revert-modal-title" id="revert-modal-title">
+                <div className="revert-modal-icon-badge">
+                  <UndoIcon size={16} />
+                </div>
+                <span>Revert this exchange?</span>
               </div>
-            )}
-            <p className="hint">Your original message will be restored in the input box as unsent text, so you can edit and resend it.</p>
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setPendingRevert(null)}>
+              <button
+                type="button"
+                className="mini-btn revert-modal-close-btn"
+                onClick={() => setPendingRevert(null)}
+                title="Cancel"
+                aria-label="Close"
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+
+            <div className="revert-modal-body">
+              <p className="revert-modal-desc">
+                {pendingRevert.files.length > 0
+                  ? `This will undo the changes made to ${pendingRevert.files.length} file${pendingRevert.files.length === 1 ? '' : 's'} in this conversation:`
+                  : 'This will discard this exchange from the conversation.'}
+              </p>
+
+              {pendingRevert.files.length > 0 && (
+                <div className="revert-file-list">
+                  {pendingRevert.files.slice(0, 8).map((f) => (
+                    <div key={f} className="revert-file">
+                      <span className="revert-file-bullet">−</span>
+                      <span className="revert-file-path">{f}</span>
+                    </div>
+                  ))}
+                  {pendingRevert.files.length > 8 && (
+                    <div className="revert-file more">… and {pendingRevert.files.length - 8} more files</div>
+                  )}
+                </div>
+              )}
+
+              <div className="revert-restore-note">
+                <InfoIcon size={14} className="revert-note-icon" />
+                <span>Your original message will be restored in the input box as unsent text, so you can edit and resend it.</span>
+              </div>
+            </div>
+
+            <div className="revert-modal-footer">
+              <button type="button" className="btn ghost revert-cancel-btn" onClick={() => setPendingRevert(null)}>
                 Cancel
               </button>
-              <button className="btn danger" onClick={() => void confirmRevert()}>
-                Revert
+              <button type="button" className="btn btn-revert-confirm" onClick={() => void confirmRevert()}>
+                <UndoIcon size={13} />
+                <span>Revert</span>
               </button>
             </div>
           </div>
