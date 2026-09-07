@@ -563,7 +563,7 @@ export default function Composer(props: ComposerProps) {
             }
           }}
           onClick={() => setMention(detectMention(prompt, textareaRef.current?.selectionStart ?? prompt.length))}
-          placeholder="Type a message — ! for bash, / for skills, @ for files & agents"
+          placeholder="Type a message — / for skills, @ for files & agents"
           rows={1}
           disabled={disabled}
         />
