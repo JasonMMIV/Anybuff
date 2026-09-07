@@ -1610,7 +1610,7 @@ export default function SettingsModal({
                   ? 'Configure API endpoint parameters, encryption keys, and active models for this provider.'
                   : 'Manage AI model providers and endpoints. Changes are saved automatically.')}
               {activeTab === 'general' &&
-                'Set your default model, reasoning effort, and tool approval mode.'}
+                'Set reasoning effort, tool approval mode, and per-run limits. The active model is picked from the selector beside the chat input.'}
               {activeTab === 'theme' &&
                 'Customize the appearance mode and color scheme palette of AnyBuff.'}
               {activeTab === 'routing' &&
@@ -2018,23 +2018,6 @@ export default function SettingsModal({
             <div className="settings-tab-content">
               <div className="settings-section-card">
                 <div className="settings-field-group">
-                  <label className="settings-field-label">Default Model</label>
-                  <CustomSelect
-                    value={activeModel}
-                    onChange={setActiveModel}
-                    fullWidth
-                    placeholder={providers.every((p) => p.models.length === 0) ? 'Add models to a provider first' : 'Select default model'}
-                    options={providers.flatMap((p) =>
-                      p.models.map((m) => ({
-                        value: `${p.id}/${m}`,
-                        label: `${p.label} / ${m}`
-                      }))
-                    )}
-                  />
-                  <p className="hint">Used for primary reasoning and all agents without custom routing rules.</p>
-                </div>
-
-                <div className="settings-field-group">
                   <label className="settings-field-label">Reasoning Level</label>
                   <CustomSelect
                     value={reasoningEffort}
@@ -2160,12 +2143,12 @@ export default function SettingsModal({
                 <span>Configured Agent Routes</span>
               </div>
               <p className="hint">
-                Route specific agents to different models (e.g. a cheap/fast model for <code>file-picker</code>, a powerful one for <code>editor</code>). Agents without a route use the global default model.
+                Route specific agents to different models (e.g. a cheap/fast model for <code>file-picker</code>, a powerful one for <code>editor</code>). Agents without a route use the model selected in the composer.
               </p>
 
               {Object.keys(agentRouting).length === 0 ? (
                 <div className="settings-empty-card">
-                  <p>No per-agent routes configured. All agents use the default model.</p>
+                  <p>No per-agent routes configured. All agents use the model selected in the composer.</p>
                 </div>
               ) : (
                 <div className="route-list">
