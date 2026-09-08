@@ -7209,6 +7209,186 @@ select option {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Android WebView toolbar selects: icon-only when collapsed, enlarged ~50% for touch */
+.is-webview .mode-select .custom-select-value,
+.is-webview .model-select .custom-select-value,
+.is-webview .reasoning-select .custom-select-value {
+  display: none;
+}
+
+.is-webview .mode-select .custom-select-trigger,
+.is-webview .model-select .custom-select-trigger,
+.is-webview .reasoning-select .custom-select-trigger {
+  padding: 6px 9px;
+  min-height: 36px;
+  min-width: 44px;
+  border-radius: 7px;
+  gap: 6px;
+}
+
+.is-webview .mode-select .custom-select-icon svg,
+.is-webview .model-select .custom-select-icon svg,
+.is-webview .reasoning-select .custom-select-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.is-webview .mode-select .custom-select-chevron,
+.is-webview .model-select .custom-select-chevron,
+.is-webview .reasoning-select .custom-select-chevron {
+  width: 14px;
+  height: 14px;
+}
+
+.is-webview .mode-select,
+.is-webview .model-select,
+.is-webview .reasoning-select {
+  max-width: none;
+  width: auto;
+}
+
+.is-webview .token-ring-wrap {
+  position: relative;
+}
+
+.is-webview .token-ring-wrap.is-touchable {
+  cursor: pointer;
+  padding: 4px;
+  min-height: 36px;
+  min-width: 36px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.is-webview .token-ring-wrap.is-touchable:active,
+.is-webview .token-ring-wrap.expanded {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+}
+
+.is-webview .cost-badge {
+  font-size: 13px;
+  padding: 2px 6px;
+}
+
+.is-webview .composer textarea::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Floating token usage popover menu (Android WebView) */
+.token-ring-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  padding: 10px 12px;
+  min-width: 175px;
+  max-width: calc(100vw - 32px);
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  animation: select-dropdown-in-top 0.15s ease-out;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.token-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.token-popover-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-0);
+}
+
+.token-popover-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+}
+
+.token-popover-badge.tok-normal {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.token-popover-badge.tok-warn {
+  background: rgba(234, 179, 8, 0.18);
+  color: #eab308;
+}
+
+.token-popover-badge.tok-danger {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+
+.token-popover-bar-track {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.token-popover-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
+.token-popover-bar-fill.tok-normal {
+  background: var(--accent);
+}
+
+.token-popover-bar-fill.tok-warn {
+  background: var(--yellow);
+}
+
+.token-popover-bar-fill.tok-danger {
+  background: var(--red);
+}
+
+.token-popover-detail {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.token-popover-counts {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+
+.token-popover-counts strong {
+  color: var(--text-0);
+  font-weight: 700;
+}
+
+.token-popover-unit {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+
 /* Base definitions for responsive controls */
 .sidebar-mobile-header {
   display: none;
@@ -7484,44 +7664,66 @@ select option {
     flex-shrink: 0;
   }
 
-  .mode-select .custom-select-value {
+  .is-webview .mode-select .custom-select-value,
+  .is-webview .model-select .custom-select-value,
+  .is-webview .reasoning-select .custom-select-value {
     display: none;
   }
 
-  .mode-select .custom-select-trigger {
-    padding: 4px 6px;
+  .is-webview .mode-select .custom-select-trigger,
+  .is-webview .model-select .custom-select-trigger,
+  .is-webview .reasoning-select .custom-select-trigger {
+    padding: 6px 9px;
+    min-height: 36px;
+    min-width: 44px;
+    border-radius: 7px;
+    gap: 6px;
   }
 
-  .model-select {
-    max-width: 105px;
+  .is-webview .mode-select .custom-select-icon svg,
+  .is-webview .model-select .custom-select-icon svg,
+  .is-webview .reasoning-select .custom-select-icon svg {
+    width: 19px;
+    height: 19px;
   }
 
-  .model-select .custom-select-value {
-    max-width: 65px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .is-webview .mode-select .custom-select-chevron,
+  .is-webview .model-select .custom-select-chevron,
+  .is-webview .reasoning-select .custom-select-chevron {
+    width: 14px;
+    height: 14px;
   }
 
-  .reasoning-select {
-    max-width: 75px;
+  .is-webview .model-select,
+  .is-webview .reasoning-select,
+  .is-webview .mode-select {
+    max-width: none;
+    width: auto;
   }
 
-  .reasoning-select .custom-select-value {
-    max-width: 42px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .is-webview .token-ring-wrap.is-touchable {
+    cursor: pointer;
+    padding: 4px;
+    min-height: 36px;
+    min-width: 36px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
 
-  .token-ring-wrap {
-    font-size: 11px;
-    gap: 4px;
+  .is-webview .token-ring-wrap.is-touchable:active,
+  .is-webview .token-ring-wrap.expanded {
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
   }
 
-  .cost-badge {
-    font-size: 11px;
-    padding: 1px 4px;
+  .is-webview .cost-badge {
+    font-size: 13px;
+    padding: 2px 6px;
   }
 
   /* Settings Page on Mobile */
@@ -7700,7 +7902,7 @@ select option {
     padding: 8px 14px 20px 14px;
   }
 
-  /* Subpages */
+  /* Subpages — Providers & Models */
   .provider-fields-grid {
     grid-template-columns: 1fr !important;
   }
@@ -7720,19 +7922,207 @@ select option {
     justify-content: center;
   }
 
-  .provider-models-title-wrap {
+  .provider-list-view-header {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
+    align-items: stretch;
+    gap: 10px;
   }
 
-  .provider-models-toolbar {
+  .provider-list-view-actions {
+    display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .provider-list-view-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 130px;
   }
 
   .provider-cards-grid {
     grid-template-columns: 1fr !important;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .provider-summary-card {
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
+    padding: 14px;
+  }
+
+  .provider-summary-head {
+    width: 100%;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .provider-summary-title-wrap {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .provider-summary-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .provider-summary-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .provider-detail-top-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .provider-detail-top-nav .back-to-list-btn {
+    align-self: flex-start;
+  }
+
+  .provider-detail-heading {
+    font-size: 15px;
+    word-break: break-word;
+  }
+
+  .provider-detail-section {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px;
+    overflow: hidden;
+  }
+
+  .provider-detail-section-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .provider-models-title-wrap {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .provider-models-toolbar {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .provider-models-toolbar .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 85px;
+  }
+
+  .model-manual-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .model-manual-row input {
+    width: 100% !important;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .model-manual-row .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .preset-modal-dialog {
+    width: min(520px, calc(100vw - 24px)) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: 88dvh !important;
+    box-sizing: border-box;
+  }
+
+  .preset-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Subpages — MCP Tools Page */
+  .settings-section-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .settings-section-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .settings-section-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 105px;
+  }
+
+  .settings-empty-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .settings-empty-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .mcp-server-card {
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .mcp-server-card-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .mcp-server-info {
+    flex: 1 1 calc(100% - 90px);
+    min-width: 0;
+  }
+
+  .mcp-server-card-actions {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .mcp-server-card-actions .btn {
+    flex: 1 1 auto;
+    max-width: 140px;
+    justify-content: center;
   }
 
   /* MCP Key-Value Editor */

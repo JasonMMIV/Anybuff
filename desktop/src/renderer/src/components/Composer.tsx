@@ -105,12 +105,33 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
+const isWebView =
+  typeof document !== 'undefined' && document.documentElement.classList.contains('is-webview')
+
 function TokenRing({ used, max, running }: { used: number; max: number; running: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!isWebView || !expanded) return
+    function handleClickOutside(e: MouseEvent | TouchEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setExpanded(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
+  }, [isWebView, expanded])
+
   const pct = max > 0 ? Math.min(100, (used / max) * 100) : 0
   const colorClass = pct >= 90 ? 'tok-danger' : pct >= 70 ? 'tok-warn' : 'tok-normal'
 
-  const size = 15
-  const strokeWidth = 2.2
+  const size = isWebView ? 23 : 15
+  const strokeWidth = isWebView ? 3.2 : 2.2
   const center = size / 2
   const radius = center - strokeWidth / 2
   const circumference = 2 * Math.PI * radius
@@ -120,7 +141,26 @@ function TokenRing({ used, max, running }: { used: number; max: number; running:
   const text = `${formatTokens(used)}/${formatTokens(max)}`
 
   return (
-    <div className="token-ring-wrap" title={title}>
+    <div
+      ref={wrapRef}
+      className={`token-ring-wrap ${isWebView ? 'is-touchable' : ''} ${isWebView ? (expanded ? 'expanded' : 'collapsed') : ''}`}
+      title={isWebView ? undefined : title}
+      onClick={() => {
+        if (isWebView) {
+          setExpanded((prev) => !prev)
+        }
+      }}
+      role={isWebView ? 'button' : undefined}
+      tabIndex={isWebView ? 0 : undefined}
+      aria-haspopup={isWebView ? 'dialog' : undefined}
+      aria-expanded={isWebView ? expanded : undefined}
+      onKeyDown={(e) => {
+        if (isWebView && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          setExpanded((prev) => !prev)
+        }
+      }}
+    >
       <svg className={`token-ring-svg${running ? ' pulsing' : ''}`} width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         <circle
           className="token-ring-bg"
@@ -141,7 +181,25 @@ function TokenRing({ used, max, running }: { used: number; max: number; running:
           transform={`rotate(-90 ${center} ${center})`}
         />
       </svg>
-      <span className="token-text">{text}</span>
+      {!isWebView && <span className="token-text">{text}</span>}
+
+      {isWebView && expanded && (
+        <div className="token-ring-popover" role="tooltip" onClick={(e) => e.stopPropagation()}>
+          <div className="token-popover-header">
+            <span className="token-popover-title">Token Usage</span>
+            <span className={`token-popover-badge ${colorClass}`}>{pct.toFixed(1)}%</span>
+          </div>
+          <div className="token-popover-bar-track">
+            <div className={`token-popover-bar-fill ${colorClass}`} style={{ width: `${Math.min(100, pct)}%` }} />
+          </div>
+          <div className="token-popover-detail">
+            <span className="token-popover-counts">
+              <strong>{used.toLocaleString()}</strong> / {max.toLocaleString()}
+            </span>
+            <span className="token-popover-unit">tokens</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -565,7 +623,7 @@ export default function Composer(props: ComposerProps) {
             }
           }}
           onClick={() => setMention(detectMention(prompt, textareaRef.current?.selectionStart ?? prompt.length))}
-          placeholder="Type a message — / for skills, @ for files & agents"
+          placeholder={isWebView ? 'Type a message' : 'Type a message — / for skills, @ for files & agents'}
           rows={1}
           disabled={disabled}
         />
