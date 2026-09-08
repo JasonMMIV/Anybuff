@@ -7276,6 +7276,10 @@ select option {
   padding: 2px 6px;
 }
 
+.is-webview .token-text {
+  display: none !important;
+}
+
 .is-webview .composer textarea::placeholder {
   white-space: nowrap;
   overflow: hidden;

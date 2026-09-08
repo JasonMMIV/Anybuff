@@ -105,10 +105,16 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
-const isWebView =
-  typeof document !== 'undefined' && document.documentElement.classList.contains('is-webview')
+function useIsWebView(): boolean {
+  if (typeof document === 'undefined') return false
+  return (
+    document.documentElement.classList.contains('is-webview') ||
+    typeof (window as unknown as { __ANYBUFF_WS_URL__?: string }).__ANYBUFF_WS_URL__ !== 'undefined'
+  )
+}
 
 function TokenRing({ used, max, running }: { used: number; max: number; running: boolean }) {
+  const isWebView = useIsWebView()
   const [expanded, setExpanded] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -205,6 +211,7 @@ function TokenRing({ used, max, running }: { used: number; max: number; running:
 }
 
 export default function Composer(props: ComposerProps) {
+  const isWebView = useIsWebView()
   const {
     prompt,
     onChange,
