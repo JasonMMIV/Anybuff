@@ -42,6 +42,16 @@ class MainActivity : ComponentActivity() {
     /** True once the appassets page finished loading (pending-folder push gate). */
     private val pageReady = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * Current system dark/light theme (round 12) — the shell is the source of
+     * truth for the renderer's 'system' theme mode: the WebView's
+     * prefers-color-scheme media query is derived from this Activity's theme
+     * (isLightTheme), not from the system uiMode, and never live-updates (see
+     * onConfigurationChanged). UI-thread confined: written in onCreate /
+     * onConfigurationChanged, read by injectAndLoad's runOnUiThread block.
+     */
+    private var systemTheme: String = "light"
+
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         bridge.onFolderPicked(uri)
     }
@@ -55,6 +65,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         vault = KeyVault(this)
+        // Round 12: capture the true system theme before the first bootstrap —
+        // the renderer's 'system' mode reads this, not the WebView media query
+        // (see onConfigurationChanged).
+        systemTheme = themeFromConfiguration(resources.configuration)
         webView = WebView(this)
         setContentView(webView)
 
@@ -97,6 +111,11 @@ class MainActivity : ComponentActivity() {
                     // may have been staged after the load started — deliver it
                     // now that the page can run JS.
                     bridge.flushPendingFolder()
+                    // Round 12: re-sync the injected system theme on every page
+                    // load — a dark-mode toggle during the load (or before the
+                    // renderer mounted its listener) left the page with a stale
+                    // value; the re-dispatch is idempotent for the renderer.
+                    pushSystemTheme(systemTheme)
                 }
             }
             // Render-process crash recovery (R5): recreate the WebView. The
@@ -170,7 +189,7 @@ class MainActivity : ComponentActivity() {
             booted = true
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                bridge.bootstrapJs(wsUrl),
+                bridge.bootstrapJs(wsUrl, systemTheme),
                 setOf(APPASSETS_ORIGIN),
             )
             webView.loadUrl(APPASSETS_ORIGIN + "/assets/www/index.html")
@@ -231,6 +250,53 @@ class MainActivity : ComponentActivity() {
             startForegroundService(intent)
         } else {
             startService(intent)
+        }
+    }
+
+    /** Map a configuration's night mode onto the renderer's theme ids. */
+    private fun themeFromConfiguration(config: android.content.res.Configuration): String =
+        if ((config.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        ) "dark" else "light"
+
+    /**
+     * Round 12: forward system dark-mode toggles to the renderer. The
+     * manifest keeps uiMode in android:configChanges deliberately —
+     * recreating the Activity would tear down the WebView and re-race the
+     * sandbox boot path (round-8 crash-recovery discipline) — so the change
+     * is pushed instead: the live page gets a DOM event, and a later page
+     * reload picks the fresh value up from the document-start bootstrap
+     * (bootstrapJs reads systemTheme at injection time).
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val next = themeFromConfiguration(newConfig)
+        if (next != systemTheme) {
+            systemTheme = next
+            pushSystemTheme(next)
+        }
+    }
+
+    /** Push the current system theme to the live page (main thread, best-effort). */
+    private fun pushSystemTheme(theme: String) {
+        runOnUiThread {
+            // A config change can race activity teardown — never touch a
+            // destroyed WebView (explicit intent guard; the try/catch below
+            // is the belt).
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            // pageReady gates evaluateJavascript: a mid-load page may not run
+            // JS reliably, and the document-start bootstrap carries the fresh
+            // value into the next load anyway.
+            if (!pageReady.get()) return@runOnUiThread
+            try {
+                webView.evaluateJavascript(
+                    "window.__ANYBUFF_SYSTEM_THEME__ = '$theme';" +
+                        " window.dispatchEvent(new CustomEvent('anybuff:system-theme-change'));",
+                    null,
+                )
+            } catch (_: Exception) {
+                // Page not in a state that can run JS — the bootstrap covers it.
+            }
         }
     }
 

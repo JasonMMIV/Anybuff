@@ -174,6 +174,33 @@ function basenameOf(p: string): string {
   return p.split(/[\\/]/).pop() ?? p
 }
 
+/**
+ * Round 12 (Android theme follow-system): the Android WebView derives
+ * prefers-color-scheme from the hosting Activity theme's android:isLightTheme
+ * attribute — NOT from the system uiMode/night setting — and with uiMode kept
+ * in android:configChanges (deliberately no Activity recreation; recreating
+ * would tear down the WebView and re-race the sandbox boot) the media query
+ * never live-updates when the system toggles dark mode (Chromium
+ * aw_dark_mode.cc / DarkModeHelper.java; Google issuetracker 170328697;
+ * react-native-webview#3013). The Kotlin shell therefore injects the TRUE
+ * system theme as window.__ANYBUFF_SYSTEM_THEME__ and pushes changes as
+ * 'anybuff:system-theme-change' DOM events. On desktop both helpers are
+ * inert (no injected global, event never fires) and matchMedia stays the
+ * single source — zero desktop behavior change (is-webview discipline).
+ */
+
+/** The shell-injected system theme, when present (Android WebView only). */
+function getSystemTheme(): 'dark' | 'light' | null {
+  const injected = (window as unknown as { __ANYBUFF_SYSTEM_THEME__?: unknown }).__ANYBUFF_SYSTEM_THEME__
+  return injected === 'dark' || injected === 'light' ? injected : null
+}
+
+/** Subscribe to shell-pushed system theme changes (never fired on desktop). */
+function onSystemThemeChange(callback: () => void): () => void {
+  window.addEventListener('anybuff:system-theme-change', callback)
+  return () => window.removeEventListener('anybuff:system-theme-change', callback)
+}
+
 export interface FollowupItem {
   prompt: string
   label?: string
@@ -308,6 +335,11 @@ export default function App() {
     const saved = localStorage.getItem('AnyBuff-theme-mode')
     const mode = saved === 'dark' || saved === 'light' ? saved : 'system'
     if (mode !== 'system') return mode
+    // Round 12: prefer the shell-injected system theme (Android WebView —
+    // its media query is pinned to the Activity theme, not the system uiMode);
+    // matchMedia remains the source on desktop/preview.
+    const injected = getSystemTheme()
+    if (injected) return injected
     return typeof window.matchMedia !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   })
   const [colorTheme, setColorTheme] = useState<ColorTheme>(() => {
@@ -455,19 +487,36 @@ export default function App() {
 
   // #18 Theme mode switch: persist the user choice, resolve 'system' against
   // the OS preference, and keep following live OS changes while in system mode.
+  // Round 12 (Android): the WebView's prefers-color-scheme is derived from the
+  // Activity theme's android:isLightTheme attribute — NOT the system uiMode —
+  // and with uiMode in android:configChanges it never live-updates (Chromium
+  // aw_dark_mode.cc / DarkModeHelper.java; Google issuetracker 170328697;
+  // react-native-webview#3013). The Kotlin shell therefore injects the true
+  // system theme (window.__ANYBUFF_SYSTEM_THEME__) and pushes changes as
+  // 'anybuff:system-theme-change' events; when the global is absent (desktop
+  // Electron, browser preview) matchMedia remains the single source — zero
+  // desktop behavior change.
   useEffect(() => {
     if (typeof window.matchMedia === 'undefined') return
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const apply = () => {
       setTheme((prev) => {
-        const next = themeMode === 'system' ? (mq.matches ? 'dark' : 'light') : themeMode
+        // Shell-injected system theme wins when present (Android WebView).
+        const native = getSystemTheme()
+        const next = themeMode === 'system' ? (native ?? (mq.matches ? 'dark' : 'light')) : themeMode
         return next === prev ? prev : next
       })
     }
     apply()
     // Chrome/Chromium ≥ 84 supports addEventListener on MediaQueryList.
     mq.addEventListener?.('change', apply)
-    return () => mq.removeEventListener?.('change', apply)
+    // Android shell pushes system dark-mode toggles the WebView media query
+    // cannot observe (round 12); never fired on desktop.
+    const unsubSystemTheme = onSystemThemeChange(apply)
+    return () => {
+      mq.removeEventListener?.('change', apply)
+      unsubSystemTheme()
+    }
   }, [themeMode])
 
   useEffect(() => {
@@ -557,6 +606,48 @@ export default function App() {
   // #18: 'system' | 'dark' | 'light' — the Settings modal offers all three.
   const selectThemeMode = useCallback((mode: ThemeMode) => setThemeMode(mode), [])
 
+  /**
+   * Cold-start state load (round 12): pulled out of the mount effect so the
+   * host-reconnected listener can re-run it. A getState that failed while the
+   * WS socket was still CONNECTING (pre-round-12 shim fail-fast, or across a
+   * mid-boot engine restart) used to strand the app on the welcome screen
+   * with an empty sidebar — the only recovery was opening Settings and back
+   * out (its close handler re-fetches state). Behavior is identical to the
+   * old inline IIFE.
+   */
+  const loadInitialState = useCallback(() => {
+    void (async () => {
+      const state = (await window.AnyBuff.getState()) as {
+        cwd: string | null
+        running: boolean
+        settings: {
+          providers: { id: string; label: string; models: string[] }[]
+          activeModel: string
+          reasoningEffort: string
+          approvalMode: string
+          hasProvider: boolean
+          projects: ProjectRecord[]
+          maxAgentSteps?: number
+          costMode?: 'normal' | 'max' | 'lite'
+        }
+      }
+      setCwd(state.cwd)
+      setRunning(state.running)
+      setRunningTaskId((state as { runningTaskId?: string | null }).runningTaskId ?? null)
+      setHasProvider(state.settings.hasProvider)
+      setSettings({
+        providers: state.settings.providers,
+        activeModel: state.settings.activeModel,
+        reasoningEffort: state.settings.reasoningEffort,
+        approvalMode: state.settings.approvalMode
+      })
+      setProjects(state.settings.projects ?? [])
+      // #17 restore persisted run guardrails
+      setMaxAgentSteps(typeof state.settings.maxAgentSteps === 'number' ? state.settings.maxAgentSteps : 0)
+      setCostMode(state.settings.costMode ?? 'normal')
+    })()
+  }, [])
+
   // Initial state
   useEffect(() => {
     if (isPreview) {
@@ -629,37 +720,8 @@ export default function App() {
       ])
       return
     }
-    void (async () => {
-      const state = (await window.AnyBuff.getState()) as {
-        cwd: string | null
-        running: boolean
-        settings: {
-          providers: { id: string; label: string; models: string[] }[]
-          activeModel: string
-          reasoningEffort: string
-          approvalMode: string
-          hasProvider: boolean
-          projects: ProjectRecord[]
-          maxAgentSteps?: number
-          costMode?: 'normal' | 'max' | 'lite'
-        }
-      }
-      setCwd(state.cwd)
-      setRunning(state.running)
-      setRunningTaskId((state as { runningTaskId?: string | null }).runningTaskId ?? null)
-      setHasProvider(state.settings.hasProvider)
-      setSettings({
-        providers: state.settings.providers,
-        activeModel: state.settings.activeModel,
-        reasoningEffort: state.settings.reasoningEffort,
-        approvalMode: state.settings.approvalMode
-      })
-      setProjects(state.settings.projects ?? [])
-      // #17 restore persisted run guardrails
-      setMaxAgentSteps(typeof state.settings.maxAgentSteps === 'number' ? state.settings.maxAgentSteps : 0)
-      setCostMode(state.settings.costMode ?? 'normal')
-    })()
-  }, [isPreview])
+    loadInitialState()
+  }, [isPreview, loadInitialState])
 
   // Project name, git branch, @-file candidates, skills
   useEffect(() => {
@@ -1166,10 +1228,21 @@ export default function App() {
   // automatically when the host comes back up.
   useEffect(() => {
     if (isPreview) return
-    const onUp = (): void => setHostDown(false)
+    const onUp = (): void => {
+      setHostDown(false)
+      // Round 12 symptom 3 self-heal: a cold-start getState that failed while
+      // the socket was still connecting left the app on the welcome screen
+      // with an empty sidebar even though the engine came up seconds later.
+      // The socket is demonstrably open now — if cwd is STILL unset, re-fetch
+      // the state. The null guard keeps an in-progress conversation untouched
+      // (mirrors the cwd dedupe discipline of the folder-pending handler).
+      // cwdRef (not a cwd dep) avoids re-registering the listener on every
+      // project switch.
+      if (cwdRef.current == null) loadInitialState()
+    }
     window.addEventListener('anybuff:host-reconnected', onUp)
     return () => window.removeEventListener('anybuff:host-reconnected', onUp)
-  }, [isPreview])
+  }, [isPreview, loadInitialState])
 
   // Shared by selectFolder and the Android folder-pending push: reset the view
   // to a fresh conversation in the newly opened project. The ref lets the

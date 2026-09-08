@@ -15,6 +15,9 @@
  *   Client → host: { id, channel, args }            (request)
  *   Host → client: { id, ok, result | error }       (response)
  *   Host → client: { event: 'event', payload }      (pushed UiEvent broadcast)
+ *   Host → client: { event: 'ping', payload }      (heartbeat keepalive frame —
+ *                                                    a data frame browsers CAN
+ *                                                    observe, round 12)
  *
  * Events are broadcast to every connected client so a future multi-surface
  * Android shell (chat WebView + settings WebView) gets all updates.
@@ -40,7 +43,8 @@ export interface WsHostOptions {
   bindAddress?: string
   /**
    * Heartbeat interval in ms (ping every client, terminate the ones that do
-   * not pong). 0 disables. Default 30s.
+   * not pong; alive clients also receive an application-level { event: 'ping' }
+   * keepalive frame — see the heartbeat block below). 0 disables. Default 30s.
    *
    * Without this, a half-open socket (device slept, network torn down without
    * FIN/RST — routine on Android) lingers forever: the client looks connected,
@@ -62,7 +66,10 @@ function nowIso(): string {
 }
 
 /** Send a JSON frame, swallowing per-socket failures. */
-function sendJson(ws: WebSocket, obj: WsResponse | { event: 'event'; payload: unknown }): void {
+function sendJson(
+  ws: WebSocket,
+  obj: WsResponse | { event: 'event' | 'ping'; payload: unknown },
+): void {
   if (ws.readyState !== ws.OPEN) return
   try {
     ws.send(JSON.stringify(obj))
@@ -135,6 +142,18 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
             }
             aliveClients.delete(client)
             try { client.ping() } catch {}
+            // Application-level keepalive frame (device round 12): browsers
+            // cannot observe WS protocol-level pong frames in JS, so the
+            // Android renderer's watchdog — which feeds its liveness clock
+            // only from data frames in onmessage — misjudged an
+            // idle-but-healthy socket as dead every ~45s and force-closed it
+            // (symptom 2: periodic "Engine connection lost" overlay + page
+            // refresh, then an automatic reconnect). This data frame keeps
+            // such clocks fed. Older clients ignore it (they only handle
+            // event === 'event' and matching numeric ids); the payload shape
+            // mirrors WsEventFrame. sendJson already swallows per-socket
+            // failures mid-teardown.
+            sendJson(client, { event: 'ping', payload: { t: Date.now() } })
           }
         }, heartbeatMs)
       : null

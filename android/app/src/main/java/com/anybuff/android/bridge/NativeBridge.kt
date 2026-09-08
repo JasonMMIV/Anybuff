@@ -419,8 +419,19 @@ class NativeBridge(
         replyProxy.postMessage(obj.toString())
     }
 
-    /** The JS the WS shim expects — a bridge that returns Promises. */
-    fun bootstrapJs(wsUrl: String): String {
+    /**
+     * The JS the WS shim expects — a bridge that returns Promises.
+     *
+     * [systemTheme] ("dark"|"light", round 12) is the TRUE system uiMode at
+     * page-load time: the WebView's prefers-color-scheme media query is
+     * derived from the hosting Activity theme's android:isLightTheme
+     * attribute — not from the system uiMode — and stays frozen once the
+     * theme is applied (Chromium aw_dark_mode.cc / DarkModeHelper.java), so
+     * the shell supplies the renderer's 'system' mode itself. MainActivity
+     * pushes later dark-mode toggles as 'anybuff:system-theme-change' DOM
+     * events.
+     */
+    fun bootstrapJs(wsUrl: String, systemTheme: String = "light"): String {
         // The renderer's createWsAnyBuff reads __ANYBUFF_NATIVE__ (host-ws.ts)
         // for pickFolder/pickFiles/openExternal/getVersion/restartEngine. This
         // exposes that object backed by the message channel.
@@ -456,6 +467,7 @@ class NativeBridge(
             });
           window.__ANYBUFF_WS_URL__ = '$escapedWs';
           window.__ANYBUFF_APP_VERSION__ = '$appVersion';
+          window.__ANYBUFF_SYSTEM_THEME__ = '$systemTheme';
           window.__ANYBUFF_NATIVE__ = {
             pickFolder: () => send('pickFolder').then(r => (r.error ? Promise.reject(new Error(r.error)) : r.path || null)),
             pickFiles: () => send('pickFiles').then(r => r.paths || []),

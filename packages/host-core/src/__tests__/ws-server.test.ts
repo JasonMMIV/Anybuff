@@ -274,3 +274,40 @@ describe('event broadcast', () => {
     expect(idleSink.isAvailable()).toBe(false)
   })
 })
+
+describe('heartbeat keepalive frame (round 12)', () => {
+  test('an idle-but-healthy client receives the app-level ping frame', async () => {
+    // Browsers cannot observe WS protocol pongs in JS, so the server's
+    // heartbeat now also emits { event: 'ping' } next to the protocol ping —
+    // the Android renderer's watchdog/inactivity clock feeds on data frames
+    // only (device round 12 symptom 2: idle sockets were misjudged dead and
+    // force-closed, surfacing the "Engine connection lost" overlay + page
+    // refresh every ~45s). A short heartbeatMs makes the frame observable
+    // within the test timeout. Same bus/host wiring as the shared server so
+    // the process-singleton dispatcher bridge (see dispatcher.ts note) stays
+    // attached to the same bus.
+    const fastServer = await startWsHost({
+      host: createHost({ eventBus: bus }),
+      eventBus: bus,
+      heartbeatMs: 50,
+      allowedOrigins: ['https://localhost'],
+    })
+    try {
+      const ws = await openWs(`ws://127.0.0.1:${fastServer.port}?token=${fastServer.token}`)
+      const ping = await new Promise<{ event?: string }>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('no ping frame within 2s')), 2000)
+        ws.on('message', (raw) => {
+          const msg = JSON.parse(raw.toString()) as { event?: string }
+          if (msg.event === 'ping') {
+            clearTimeout(timer)
+            resolve(msg)
+          }
+        })
+      })
+      expect(ping.event).toBe('ping')
+      ws.close()
+    } finally {
+      await fastServer.close()
+    }
+  })
+})

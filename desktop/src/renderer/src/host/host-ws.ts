@@ -77,7 +77,14 @@ export interface AnyBuffNativeBridge {
 export interface WsHostOptions {
   /** WS URL with token, e.g. ws://127.0.0.1:8765?token=abc */
   url: string
-  /** Timeout for a request before rejecting (ms). Default 30s. */
+  /**
+   * Per-request INACTIVITY window in ms (round 12): any frame on the socket
+   * re-arms it, so long-running channels (runPrompt replies only arrive when
+   * the whole run finishes) no longer time out mid-run while their events
+   * stream. Floored at 60s (2× the server's 30s heartbeat) so a single missed
+   * keepalive cannot race the timer; every request is additionally bounded by
+   * a 30min absolute cap. Default 30s (→ 60s effective).
+   */
   timeoutMs?: number
   /** Installed app version reported by getAppVersion (default '0.0.0-ws'). */
   appVersion?: string
@@ -130,7 +137,23 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
   const { url, timeoutMs = 30_000, appVersion = '0.0.0-ws', native, updateRepo } = options
 
   let seq = 0
-  const pending = new Map<number, (v: unknown) => void>()
+  /**
+   * Pending requests. Each entry owns the resolver plus two timers (round 12):
+   * an INACTIVITY window that any incoming frame re-arms (see onmessage) and
+   * an ABSOLUTE cap armed once — see call() for why runPrompt legitimately
+   * produces no reply frame for minutes while a long coding task streams
+   * events over other frames.
+   */
+  interface PendingEntry {
+    resolve: (v: unknown) => void
+    /** Re-arm this request's inactivity window (any frame proves liveness). */
+    armInactivity: () => void
+    /** Clear both timers — the reply arrived or the request was superseded. */
+    clearTimers: () => void
+  }
+  const pending = new Map<number, PendingEntry>()
+  /** Requests parked while the socket is CONNECTING — drained on open (round 12). */
+  const sendOnOpen: Array<{ id: number; channel: string; args: unknown[] }> = []
   const eventListeners = new Set<(event: unknown) => void>()
   const updateListeners = new Set<(event: UpdateUiEvent) => void>()
 
@@ -140,9 +163,10 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
    * on a dead engine — every call resolves a timeout envelope and no events
    * ever arrive again. */
   function failPending(reason: string): void {
-    for (const [id, resolve] of [...pending]) {
+    for (const [id, entry] of [...pending]) {
+      entry.clearTimers()
       pending.delete(id)
-      resolve({ ok: false, error: reason })
+      entry.resolve({ ok: false, error: reason })
     }
   }
 
@@ -244,6 +268,24 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       lastMessageAt = Date.now()
       startWatchdog()
       logEvent('ws', 'connected')
+      // Drain requests parked while CONNECTING (see call()) — the socket is
+      // OPEN now; their timers kept running the whole time, so a wedged
+      // handshake still surfaces as a timeout rather than a hang. Skip any
+      // that already timed out while parked (code-review round 12): their
+      // pending entry was resolved and deleted, so re-sending would execute
+      // host work nobody awaits — the duplicate-runPrompt hazard the onclose
+      // flush guards against, on the slow-handshake path.
+      for (const parked of sendOnOpen.splice(0)) {
+        if (!pending.has(parked.id)) continue
+        try { socket.send(JSON.stringify(parked)) } catch {
+          const entry = pending.get(parked.id)
+          if (entry) {
+            pending.delete(parked.id)
+            entry.clearTimers()
+            entry.resolve({ ok: false, error: 'Host connection lost' })
+          }
+        }
+      }
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('anybuff:host-reconnected'))
       }
@@ -256,6 +298,10 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     socket.onclose = () => {
       if (socket !== ws) return // superseded by a newer attempt
       logEvent('ws', `closed (failedUpgrades=${failedUpgrades}, everOpened=${socketEverOpened})`)
+      // Drop requests parked while CONNECTING — their pending entries are
+      // resolved right below; re-sending them on the NEXT socket could
+      // duplicate work on the host (a parked runPrompt would actually run).
+      sendOnOpen.splice(0)
       failPending('Host connection lost')
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('anybuff:host-disconnected'))
@@ -281,6 +327,11 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
 
     socket.onmessage = (raw: MessageEvent) => {
       lastMessageAt = Date.now()
+      // Any frame proves the socket AND the engine behind it are alive —
+      // re-arm every pending request's inactivity window (round 12; see
+      // call() for why runPrompt legitimately stays silent for minutes while
+      // its own events stream over other frames).
+      for (const entry of pending.values()) entry.armInactivity()
       let msg: { id?: number; ok?: boolean; result?: unknown; error?: string; event?: string; payload?: unknown }
       try {
         msg = JSON.parse(String(raw.data))
@@ -291,16 +342,25 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
         for (const l of [...eventListeners]) l(msg.payload)
         return
       }
+      if (msg.event === 'ping') {
+        // Server heartbeat keepalive frame (round 12 — see ws-server.ts):
+        // browsers cannot observe protocol-level pongs in JS, so the server
+        // also emits this data frame to keep this watchdog (and the inactivity
+        // re-arm above) fed on an otherwise idle socket. Nothing else to do —
+        // lastMessageAt was already updated.
+        return
+      }
       if (typeof msg.id === 'number' && pending.has(msg.id)) {
         const p = pending.get(msg.id)!
         pending.delete(msg.id)
-        if (msg.ok) p(msg.result)
+        p.clearTimers()
+        if (msg.ok) p.resolve(msg.result)
         // Parity with the Electron IPC path: business-channel failures travel as
         // RESOLVED { ok: false, error } objects (dispatch never rejects and the
         // host-bridge returns the envelope), never as thrown exceptions. The
         // renderer branches on `.ok` either way — only a true transport failure
         // (timeout / dead socket) resolves an error envelope.
-        else p({ ok: false, error: msg.error ?? 'WS request failed' })
+        else p.resolve({ ok: false, error: msg.error ?? 'WS request failed' })
       }
     }
   }
@@ -311,25 +371,81 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
   function call<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
     const id = ++seq
     return new Promise<T>((resolve) => {
-      const timer = setTimeout(() => {
+      // ── Timeout semantics (round 12): INACTIVITY, not elapsed time ──────
+      // runPrompt's reply only arrives when the ENTIRE run finishes — a
+      // multi-minute coding task legitimately produces no response frame for
+      // that channel while stream/tool events flow constantly over other
+      // frames. Electron's invoke has no timeout, so the desktop never saw
+      // this; over WS every >30s run used to resolve "WS request timed out:
+      // runPrompt" while the run KEPT RUNNING on the host — the renderer
+      // then flipped running=false and the next message collided with
+      // "Another task is already running" (round 12 symptom 4, both strings
+      // observed on device). Now: any incoming frame (server ping keepalive,
+      // event broadcasts, other replies) proves socket+engine liveness and
+      // re-arms the inactivity window (see onmessage); a per-request
+      // ABSOLUTE 30min cap armed once still catches a wedged handler without
+      // hanging forever.
+      const inactivityMs = Math.max(timeoutMs, 60_000)
+      const absoluteMs = 30 * 60_000
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null
+      let absoluteTimer: ReturnType<typeof setTimeout> | null = null
+      const clearTimers = (): void => {
+        if (inactivityTimer != null) clearTimeout(inactivityTimer)
+        if (absoluteTimer != null) clearTimeout(absoluteTimer)
+        inactivityTimer = null
+        absoluteTimer = null
+      }
+      const entry: PendingEntry = {
+        resolve: (v) => {
+          clearTimers()
+          resolve(v as T)
+        },
+        armInactivity: () => {
+          if (inactivityTimer != null) clearTimeout(inactivityTimer)
+          inactivityTimer = setTimeout(() => {
+            pending.delete(id)
+            clearTimers()
+            // Transport-level failure (no frame at all for the whole
+            // inactivity window — dead socket/engine). Resolve an error
+            // envelope rather than reject so the UI can render it like any
+            // other failed call.
+            resolve({ ok: false, error: `WS request timed out: ${channel}` } as T)
+          }, inactivityMs)
+        },
+        clearTimers,
+      }
+      // Absolute cap: armed once, never re-armed — bounds a channel that
+      // stopped responding at all without ever racing a legitimately long run.
+      absoluteTimer = setTimeout(() => {
         pending.delete(id)
-        // Transport-level failure (no reply). Resolve an error envelope rather
-        // than reject so the UI can render it like any other failed call.
-        resolve({ ok: false, error: `WS request timed out: ${channel}` } as T)
-      }, timeoutMs)
-      pending.set(id, (v) => {
-        clearTimeout(timer)
-        resolve(v as T)
-      })
+        clearTimers()
+        resolve({ ok: false, error: `WS request timed out (absolute cap): ${channel}` } as T)
+      }, absoluteMs)
+      entry.armInactivity()
+      pending.set(id, entry)
       const socket = ws
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
+      if (!socket || (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING)) {
         // Socket down (reconnecting): fail fast instead of throwing
         // InvalidStateError from send() on a closed socket. The overlay is up
         // and the reconnect loop owns recovery; the caller gets an error
         // envelope like any other failed call.
         pending.delete(id)
-        clearTimeout(timer)
-        resolve({ ok: false, error: 'Host connection lost' } as T)
+        entry.clearTimers()
+        entry.resolve({ ok: false, error: 'Host connection lost' })
+        return
+      }
+      if (socket.readyState === WebSocket.CONNECTING) {
+        // Round 12 symptom 3: on Android cold start the page mounts while the
+        // WS handshake is still CONNECTING (a proot/ptrace-bound loopback
+        // handshake can take seconds); the old fail-fast made the initial
+        // getState() resolve an error envelope, so state.cwd stayed undefined
+        // — the welcome screen showed despite a persisted cwd, and the
+        // sidebar listed no projects until the user opened Settings (whose
+        // close handler re-fetches state once the socket was open). Park the
+        // request and send it on open instead — matching the desktop IPC
+        // feel where calls just work. If this attempt dies, onclose flushes
+        // the queue and failPending resolves the request.
+        sendOnOpen.push({ id, channel, args })
         return
       }
       socket.send(JSON.stringify({ id, channel, args }))
