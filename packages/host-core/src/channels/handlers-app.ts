@@ -53,16 +53,33 @@ export function getState(): unknown {
   }
 }
 
-/** AnyBuff:saveSettings — persists provider/model/keys/routing/web-search prefs. */
+/** AnyBuff:saveSettings — persists provider/model/keys/routing/web-search prefs.
+ *
+ * Key writes are isolated per key: one failing key (e.g. OS keychain
+ * unavailable, or a headless host with no persistence seam) must not
+ * silently drop the routing/web-search/guardrail fields that follow —
+ * failures are collected into `keyErrors` and the rest of the payload still
+ * persists (2026-09-08 device round 10: a single throwing key blocked
+ * everything after it, so "did the other fields even save?" was unknowable). */
 export function saveSettings(payload: SaveSettingsPayload): unknown {
   updateProviders(payload.providers, payload.activeModel, payload.reasoningEffort, payload.approvalMode)
+  const keyErrors: string[] = []
   if (payload.apiKeys) {
     for (const [id, key] of Object.entries(payload.apiKeys)) {
-      if (key) saveProviderApiKey(id, key.trim())
+      if (!key) continue
+      try {
+        saveProviderApiKey(id, key.trim())
+      } catch (error) {
+        keyErrors.push(`${id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
   for (const id of payload.deleteKeys ?? []) {
-    saveProviderApiKey(id, '')
+    try {
+      saveProviderApiKey(id, '')
+    } catch (error) {
+      keyErrors.push(`${id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
   if (payload.agentRouting) updateAgentRouting(payload.agentRouting)
   if (payload.webSearchProvider) setWebSearchProvider(payload.webSearchProvider)
@@ -71,15 +88,23 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
   }
   if (payload.searchApiKeys) {
     for (const [provider, key] of Object.entries(payload.searchApiKeys)) {
-      if (key && (provider === 'tinyfish' || provider === 'firecrawl')) {
+      if (!key || (provider !== 'tinyfish' && provider !== 'firecrawl')) continue
+      try {
         saveSearchApiKey(provider, key.trim())
+      } catch (error) {
+        keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   }
   for (const provider of payload.deleteSearchKeys ?? []) {
-    if (provider === 'tinyfish' || provider === 'firecrawl') saveSearchApiKey(provider, '')
+    if (provider !== 'tinyfish' && provider !== 'firecrawl') continue
+    try {
+      saveSearchApiKey(provider, '')
+    } catch (error) {
+      keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
-  return { ok: true, settings: getAppSettings() }
+  return { ok: true, ...(keyErrors.length > 0 ? { keyErrors } : {}), settings: getAppSettings() }
 }
 
 export async function fetchModels(payload: {

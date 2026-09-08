@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ColorTheme, ThemeMode } from '../App'
+import type { AnyBuffNativeBridge } from '../host/host-ws'
 import {
   ActivityIcon,
   AppIcon,
@@ -402,6 +403,18 @@ function urlError(url: string): string | null {
   }
 }
 
+/**
+ * The Android WebView's native bridge (injected by the Kotlin shell), or null
+ * on desktop / browser preview. API keys go to the shell FIRST when present:
+ * the Android Keystore is the durable store there (plan §4.0 deviation 3),
+ * while the host's in-memory overlay — synced over the saveSettings channel —
+ * only serves the running engine process.
+ */
+function getNativeBridge(): AnyBuffNativeBridge | null {
+  if (typeof window === 'undefined') return null
+  return (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__ ?? null
+}
+
 export default function SettingsModal({
   onClose,
   onCreateAgent,
@@ -688,6 +701,57 @@ export default function SettingsModal({
         return { ...p, apiKeyEnv: env }
       })
 
+      // ── Keys: durable store first, then the host channel ──────────────
+      // Android (native bridge present): the Android Keystore is the only
+      // durable store — hand each freshly-typed key to the shell FIRST
+      // (native.saveKey), then relay it over the channel so the host's
+      // in-memory keyPersistence overlay picks it up for the running engine
+      // process. Desktop has no native bridge: keys travel the channel once
+      // and are DPAPI-encrypted by the host (ADR-11). A refused Keystore
+      // write is reported, never silently dropped (2026-09-08 device round
+      // 10: keys vanished without a trace before this).
+      const native = getNativeBridge()
+      const nativeSaveKey = native?.saveKey
+      const nativeDeleteKey = native?.deleteKey
+      const channelApiKeys: Record<string, string> = {}
+      const keyErrors: string[] = []
+      for (const [id, key] of Object.entries(apiKeys)) {
+        if (!key.trim()) continue
+        if (nativeSaveKey) {
+          const ok = await nativeSaveKey(id, key.trim())
+          if (!ok) {
+            keyErrors.push('Could not store the API key in the device keychain (Keystore write failed).')
+            continue
+          }
+        }
+        channelApiKeys[id] = key.trim()
+      }
+      for (const id of deleteKeys) {
+        if (nativeDeleteKey && !(await nativeDeleteKey(id))) {
+          keyErrors.push(`Could not remove the stored key for "${id}" from the device keychain.`)
+        }
+      }
+      // Web-search keys share the same keychain under the host's vault-key
+      // convention (search-tinyfish / search-firecrawl, ADR-17).
+      const channelSearchKeys: Partial<Record<WebSearchProviderId, string>> = {}
+      for (const [provider, v] of Object.entries(searchApiKeys)) {
+        if (!v.trim() || (provider !== 'tinyfish' && provider !== 'firecrawl')) continue
+        if (nativeSaveKey) {
+          const ok = await nativeSaveKey(`search-${provider}`, v.trim())
+          if (!ok) {
+            keyErrors.push(`Could not store the ${provider} key in the device keychain.`)
+            continue
+          }
+        }
+        channelSearchKeys[provider as WebSearchProviderId] = v.trim()
+      }
+      for (const provider of deleteSearchKeys) {
+        if (provider !== 'tinyfish' && provider !== 'firecrawl') continue
+        if (nativeDeleteKey && !(await nativeDeleteKey(`search-${provider}`))) {
+          keyErrors.push(`Could not remove the ${provider} key from the device keychain.`)
+        }
+      }
+
       const result = (await window.AnyBuff.saveSettings({
         providers: normalizedProviders.map((p) => ({
           id: p.id,
@@ -702,19 +766,33 @@ export default function SettingsModal({
         activeModel: finalModel,
         reasoningEffort,
         approvalMode,
-        apiKeys: Object.fromEntries(Object.entries(apiKeys).filter(([, v]) => v.trim())),
+        apiKeys: channelApiKeys,
         deleteKeys,
         agentRouting: Object.fromEntries(Object.entries(agentRouting).filter(([, r]) => r.model.trim())),
         webSearchProvider,
-        searchApiKeys: Object.fromEntries(
-          Object.entries(searchApiKeys).filter(([provider, v]) => v.trim() && (provider === 'tinyfish' || provider === 'firecrawl'))
-        ),
+        searchApiKeys: channelSearchKeys,
         deleteSearchKeys
-      })) as { ok?: boolean; settings?: { hasProvider?: boolean }; error?: string }
-
-      if (result.ok) {
-        onSaved?.({ hasProvider: Boolean(result.settings?.hasProvider) })
+      })) as {
+        ok?: boolean
+        keyErrors?: string[]
+        settings?: { hasProvider?: boolean; providerHasKey?: Record<string, boolean>; webSearchHasKey?: Record<string, boolean> }
+        error?: string
       }
+
+      if (!result.ok) {
+        // A failed save must never be silent — round 10's "keys don't save"
+        // bug was invisible because only the happy path was handled.
+        setError(`Save failed: ${result.error ?? 'unknown error'}`)
+        return
+      }
+      const allKeyErrors = [...(result.keyErrors ?? []), ...keyErrors]
+      setError(allKeyErrors.length > 0 ? `Saved, but some keys failed: ${allKeyErrors.join(' ')}` : null)
+      // Reflect key presence immediately from the host round-trip — covers
+      // both the native Keystore path and the desktop DPAPI path, saves and
+      // deletes alike (drives the "Key Set" badges and placeholders).
+      if (result.settings?.providerHasKey) setProviderHasKey(result.settings.providerHasKey)
+      if (result.settings?.webSearchHasKey) setWebSearchHasKey(result.settings.webSearchHasKey)
+      onSaved?.({ hasProvider: Boolean(result.settings?.hasProvider) })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error('Settings auto-save failed:', err)

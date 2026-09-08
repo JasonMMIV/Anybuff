@@ -65,6 +65,13 @@ export interface AnyBuffNativeBridge {
   logEvent?: (kind: string, detail: string) => void
   /** Android-only: pull a SAF folder staged while the page was (re)loading. */
   takeStagedFolder?(): Promise<string | null>
+  /** Android-only: persist a provider/search key into the device keychain
+   *  (Keystore) — the durable store behind the host's memory-only
+   *  keyPersistence seam (plan §2.2 / §4.0 deviation 3). Resolves false on a
+   *  Keystore failure; never rejects. */
+  saveKey?(providerId: string, apiKey: string): Promise<boolean>
+  /** Android-only: remove a key from the device keychain. */
+  deleteKey?(providerId: string): Promise<boolean>
 }
 
 export interface WsHostOptions {

@@ -116,10 +116,28 @@ async function main(): Promise<void> {
   const tsWasm = process.env.ANYBUFF_HOST_TS_WASM
   if (tsWasm) process.env.CODEBUFF_TREE_SITTER_WASM_PATH = tsWasm
 
+  // Memory-only keyPersistence gate (the Android arm of ADR-11/12). Without
+  // a seam, saveProviderApiKey falls through to the disk-encryption path,
+  // which noDiskSecrets refuses by design — every Settings key save on
+  // Android silently failed (2026-09-08 device round 10). The seam bodies
+  // are intentionally no-op, and settings.ts is the only RUNTIME overlay
+  // writer — it refreshes the live in-memory keyOverrides overlay itself
+  // from the values relayed over the saveSettings channel (the boot-time
+  // ANYBUFF_HOST_SECRETS hydration populates the overlay once, before the
+  // env is installed). The durable store is the Kotlin Keystore — the
+  // renderer hands each key to it via the native bridge (saveKey) BEFORE
+  // relaying it here — and on a host reboot the shell re-hydrates the
+  // overlay via ANYBUFF_HOST_SECRETS.
+  const keyPersistence = {
+    save(_providerId: string, _plain: string): void {},
+    remove(_providerId: string): void {},
+  }
+
   installHostEnv({
     paths: { dataDir, appDataDir, homeDir },
     secrets: noDiskSecrets(),
     keyOverrides,
+    keyPersistence,
   })
 
   const bus = createEventBus()

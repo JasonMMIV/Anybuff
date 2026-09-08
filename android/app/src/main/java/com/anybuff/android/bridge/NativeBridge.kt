@@ -156,11 +156,22 @@ class NativeBridge(
                     // { providerId, apiKey } → Keystore encrypt → filesDir.
                     val providerId = msg.optString("providerId")
                     val apiKey = msg.optString("apiKey")
-                    val ok = saveProviderKey(providerId, apiKey)
+                    val ok = vault.saveProviderKey(providerId, apiKey)
+                    // Round-10 breadcrumb: key saves used to fail with no
+                    // trace — the engine log now records what landed.
+                    EngineLog.append(
+                        activity,
+                        if (ok) "keys: saved $providerId" else "keys: save FAILED for $providerId",
+                    )
                     post(id, replyProxy) { put("ok", ok) }
                 }
                 "deleteKey" -> {
-                    val ok = deleteProviderKey(msg.optString("providerId"))
+                    val providerId = msg.optString("providerId")
+                    val ok = vault.deleteProviderKey(providerId)
+                    EngineLog.append(
+                        activity,
+                        if (ok) "keys: deleted $providerId" else "keys: delete FAILED for $providerId",
+                    )
                     post(id, replyProxy) { put("ok", ok) }
                 }
                 else -> post(id, replyProxy) { put("ok", false); put("error", "unknown method $method") }
@@ -170,66 +181,10 @@ class NativeBridge(
         }
     }
 
-    /* ── Keystore key store (filesDir/keys.json, values encrypted) ── */
-
-    private fun keysFile(): File = File(activity.filesDir, "provider-keys.json")
-
-    private fun loadKeyMap(): MutableMap<String, String> = try {
-        val raw = keysFile().readText()
-        val obj = JSONObject(raw)
-        val map = mutableMapOf<String, String>()
-        obj.keys().forEach { k -> map[k] = obj.getString(k) }
-        map
-    } catch (e: Exception) {
-        mutableMapOf()
-    }
-
-    private fun saveKeyMap(map: Map<String, String>) {
-        val obj = JSONObject()
-        map.forEach { (k, v) -> obj.put(k, v) }
-        // Atomic write: a kill mid-write must not corrupt the whole key store
-        // (same pattern as host-core files/atomic-write).
-        val tmp = File(keysFile().parentFile, keysFile().name + ".tmp")
-        tmp.writeText(obj.toString())
-        if (!tmp.renameTo(keysFile())) {
-            tmp.delete()
-            keysFile().writeText(obj.toString())
-        }
-    }
-
-    private fun saveProviderKey(providerId: String, apiKey: String): Boolean {
-        return try {
-            if (apiKey.isEmpty()) {
-                deleteProviderKey(providerId)
-                return true
-            }
-            val map = loadKeyMap()
-            map[providerId] = vault.encrypt(apiKey)
-            saveKeyMap(map)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "saveProviderKey failed", e)
-            false
-        }
-    }
-
-    private fun deleteProviderKey(providerId: String): Boolean = try {
-        val map = loadKeyMap()
-        map.remove(providerId)
-        saveKeyMap(map)
-        true
-    } catch (e: Exception) {
-        false
-    }
-
-    /** JSON map of ALL decrypted keys for the one-shot host handshake. */
-    fun allPlaintextKeys(): String {
-        val obj = JSONObject()
-        loadKeyMap().forEach { (id, enc) ->
-            vault.decrypt(enc)?.let { obj.put(id, it) }
-        }
-        return obj.toString()
-    }
+    /* The durable provider-key store (filesDir/provider-keys.json,
+     * Keystore-encrypted values) lives in KeyVault — moved there in round 10
+     * so the app-process singleton SandboxManager can read the FRESH key set
+     * at every host spawn without capturing an Activity. */
 
     /* ── SAF result delivery ─────────────────────────────────── */
 

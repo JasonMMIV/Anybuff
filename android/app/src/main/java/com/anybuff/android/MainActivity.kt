@@ -54,7 +54,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        vault = KeyVault()
+        vault = KeyVault(this)
         webView = WebView(this)
         setContentView(webView)
 
@@ -142,8 +142,9 @@ class MainActivity : ComponentActivity() {
         )
         bridge.register()
 
-        // Start the engine FGS and boot the sandbox. The keys are rehydrated
-        // from Keystore and handed to the host in one shot (never to the page).
+        // Start the engine FGS and boot the sandbox. Keys are read from the
+        // Keystore at spawn time inside SandboxManager and handed to the host
+        // in one shot (never to the page).
         startEngineService()
         bootEngine()
     }
@@ -155,7 +156,6 @@ class MainActivity : ComponentActivity() {
                 override fun onHostReady(wsUrl: String) = injectAndLoad(wsUrl)
                 override fun onError(error: String) = showBootError(error)
             },
-            hostSecretsJson = bridge.allPlaintextKeys(),
         )
     }
 

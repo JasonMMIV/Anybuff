@@ -2,6 +2,7 @@ package com.anybuff.android.engine
 
 import android.content.Context
 import android.util.Log
+import com.anybuff.android.crypto.KeyVault
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,8 +24,10 @@ import java.util.concurrent.atomic.AtomicReference
  *      the WebView bridge.
  *   4. Stop / kill on demand (FGS stop, activity destroy).
  *
- * Keys never pass through this manager in plaintext beyond the one-shot
- * handshake JSON handed to the host (ADR-12).
+ * Keys never touch disk in plaintext: the KeyVault (Keystore-backed
+ * provider-keys.json) is the durable store, and only the one-shot handshake
+ * JSON handed to the host carries plaintext — built FRESH at every spawn
+ * from the vault, never cached from boot time (ADR-12; round 10).
  */
 class SandboxManager private constructor(context: Context) {
 
@@ -32,6 +35,9 @@ class SandboxManager private constructor(context: Context) {
     private val paths = SandboxPaths(appContext)
     private val installer = RootfsInstaller(appContext, paths)
     private val runner = ProotRunner(appContext, paths)
+
+    /** Durable key store (Keystore) — read fresh at every host spawn (round 10). */
+    private val vault = KeyVault(appContext)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -42,11 +48,6 @@ class SandboxManager private constructor(context: Context) {
      * dead host re-injects the fresh URL into the live page (injectAndLoad). */
     @Volatile
     private var primaryListener: Listener? = null
-
-    /** One-shot handshake JSON retained in RAM for auto-reboots (same
-     * exposure as the running host process itself — ADR-12 keeps it off disk). */
-    @Volatile
-    private var lastSecretsJson: String = "{}"
 
     /** True while a deliberate stop is settling — the exit monitor must not
      * auto-reboot those (FGS stop, activity finishing, renderer restart). */
@@ -97,10 +98,13 @@ class SandboxManager private constructor(context: Context) {
     /** Listeners awaiting a boot that is already in flight (recreated Activity). */
     private val pendingListeners = java.util.concurrent.ConcurrentLinkedQueue<Listener>()
 
-    /** Idempotent boot. Safe to call repeatedly; no-ops when already up. */
-    fun start(listener: Listener, hostSecretsJson: String = "{}") {
+    /** Idempotent boot. Safe to call repeatedly; no-ops when already up.
+     *  The host's key handshake is built at SPAWN time from the KeyVault —
+     *  not snapshotted here — so keys saved after the last boot are included
+     *  (round 10: the old boot-time snapshot could resurrect deleted keys /
+     *  drop freshly-saved ones on an auto-reboot). */
+    fun start(listener: Listener) {
         primaryListener = listener
-        if (hostSecretsJson.isNotEmpty()) lastSecretsJson = hostSecretsJson
         stopping = false
         val alive = host.get()?.process?.isAlive == true
         if (alive) {
@@ -131,7 +135,11 @@ class SandboxManager private constructor(context: Context) {
                     )
                 }
                 val workspaceDir = File(appContext.filesDir, "workspaces")
-                val h = runner.startHost(hostSecretsJson, workspaceDir)
+                // Fresh key set at every spawn (see start() doc): a reboot
+                // after the user saved/removed a key must boot the engine
+                // with the CURRENT key set, not the previous boot's snapshot.
+                val secretsJson = withContext(Dispatchers.IO) { vault.allPlaintextKeys() }
+                val h = runner.startHost(secretsJson, workspaceDir)
                 host.set(h)
                 EngineLog.append(appContext, "HOST READY ${h.wsUrl}")
                 synchronized(recentExits) { recentExits.clear() } // healthy boot resets the crash-loop guard
@@ -287,7 +295,6 @@ class SandboxManager private constructor(context: Context) {
                     override fun onHostReady(wsUrl: String) {}
                     override fun onError(error: String) {}
                 },
-                lastSecretsJson,
             )
         }.apply {
             isDaemon = true

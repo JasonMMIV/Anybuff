@@ -7449,16 +7449,28 @@ select option {
     margin-right: 8px;
   }
 
+  /* Round-10 fix: NO overflow-x here. Once one axis scrolls, CSS computes
+     the other axis's `visible` as `auto` — which clipped the placement-top
+     dropdowns of the mode/model/reasoning selects, so the open menu looked
+     "covered by the composer" and was untappable on phones. The selects
+     already shrink (rules below); wrapping is the safety valve on very
+     narrow screens instead of a clipping scroll container. */
   .composer-toolbar {
     padding: 6px 8px;
     gap: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
   }
 
-  .composer-toolbar::-webkit-scrollbar {
-    display: none;
+  /* Keep the upward-opening menus comfortably wide on phones (the desktop
+     min-widths assume a 760px composer; model labels need the room) and
+     never wider than the viewport. */
+  .toolbar-left .custom-select-dropdown {
+    min-width: 150px;
+    max-width: calc(100vw - 24px);
+  }
+
+  .toolbar-left .model-select .custom-select-dropdown {
+    min-width: 220px;
   }
 
   .toolbar-left {

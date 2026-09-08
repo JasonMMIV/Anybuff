@@ -375,6 +375,18 @@ function searchKeyId(provider: WebSearchProviderId): string | null {
 export function saveSearchApiKey(provider: WebSearchProviderId, apiKey: string): void {
   const id = searchKeyId(provider)
   if (!id) return
+  // Android headless host: the shell's Keystore is the durable store (the
+  // renderer mirrors the key into it via the native bridge under this same
+  // vault-key id, ADR-17); the host only refreshes the live in-memory overlay.
+  const persistence = hostKeyPersistence()
+  if (persistence) {
+    if (apiKey) persistence.save(id, apiKey)
+    else persistence.remove(id)
+    const overlays = hostKeyOverrides()
+    if (apiKey) overlays[id] = apiKey
+    else delete overlays[id]
+    return
+  }
   const s = loadSettings()
   s.encryptedKeys = s.encryptedKeys ?? {}
   if (!apiKey) {
@@ -393,6 +405,11 @@ export function saveSearchApiKey(provider: WebSearchProviderId, apiKey: string):
 export function getSearchApiKey(provider: WebSearchProviderId): string | undefined {
   const id = searchKeyId(provider)
   if (!id) return undefined
+  // In-memory overlay first (Android: Keystore values hydrated at boot, or
+  // freshly-saved keys relayed over saveSettings — same precedence as
+  // getProviderApiKey).
+  const overlay = hostKeyOverrides()[id]
+  if (overlay !== undefined) return overlay
   const s = loadSettings()
   const enc = s.encryptedKeys?.[id]
   if (!enc) return undefined
