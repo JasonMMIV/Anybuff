@@ -565,6 +565,13 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     },
     selectFiles: async () => (native?.pickFiles ? await native.pickFiles() : []),
     getPathForFile: (_file: File) => '',
+    /** #8 conversation export — desktop shell only (native save dialog); the
+     *  Android shell has no file-save bridge yet. The renderer surfaces the
+     *  error envelope as a notice. */
+    exportConversationFile: async () => ({
+      ok: false,
+      error: 'Conversation export is not supported on this device yet.',
+    }),
     setTheme: shellNoOps,
     getZoomFactor: () => 1,
     setZoomFactor: shellNoOps,

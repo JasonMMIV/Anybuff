@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import {
+  DownloadIcon,
   EditIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -55,6 +56,8 @@ interface SidebarProps {
   onOpenProject: (path: string) => void
   onOpenTask: (project: ProjectRecord, task: TaskRecord) => void
   onRenameTask?: (project: ProjectRecord, task: TaskRecord, newPrompt: string) => void
+  /** #8 對話匯出（選單順序 Rename → Export → Delete）：把整段對話匯出成 Markdown 檔。 */
+  onExportTask?: (project: ProjectRecord, task: TaskRecord) => void
   onDeleteTask?: (project: ProjectRecord, task: TaskRecord) => void
   onRemoveProject?: (project: ProjectRecord) => void
   onSettings: () => void
@@ -334,7 +337,7 @@ export default function Sidebar(props: SidebarProps) {
                           e.preventDefault()
                           e.stopPropagation()
                           const menuWidth = 130
-                          const menuHeight = 74
+                          const menuHeight = 110
                           const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8)
                           const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8)
                           setContextMenu({ x, y, project: p, task: t })
@@ -354,7 +357,7 @@ export default function Sidebar(props: SidebarProps) {
                             e.stopPropagation()
                             const rect = e.currentTarget.getBoundingClientRect()
                             const menuWidth = 130
-                            const menuHeight = 74
+                            const menuHeight = 110
                             const x = Math.min(rect.right, window.innerWidth - menuWidth - 8)
                             const y = Math.min(rect.bottom + 4, window.innerHeight - menuHeight - 8)
                             setContextMenu({ x, y, project: p, task: t })
@@ -408,6 +411,19 @@ export default function Sidebar(props: SidebarProps) {
           >
             <EditIcon size={14} />
             <span>Rename</span>
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={(e) => {
+              e.stopPropagation()
+              const { project, task } = contextMenu
+              setContextMenu(null)
+              props.onExportTask?.(project, task)
+            }}
+          >
+            <DownloadIcon size={14} />
+            <span>Export</span>
           </button>
           <button
             type="button"

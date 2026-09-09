@@ -86,6 +86,9 @@ const api = {
   selectFiles: () => ipcRenderer.invoke('AnyBuff:selectFiles'),
   /** Resolve the on-disk path of a dropped File object (Electron ≥32 removed File.path). */
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  /** #8 對話匯出：renderer serializes the conversation (Markdown), the shell saves it via the native dialog. */
+  exportConversationFile: (payload: { content: string; defaultName: string; startDir?: string | null }) =>
+    ipcRenderer.invoke('AnyBuff:exportConversationFile', payload),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
   /* MCP servers (Settings → MCP Tools) */
   listMcpServers: (cwd: string | null) => ipcRenderer.invoke('AnyBuff:listMcpServers', cwd),

@@ -14,6 +14,7 @@
     "preview": "node scripts/dev-launcher.mjs preview",
     "start": "node scripts/dev-launcher.mjs preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "bun test test/",
     "dist": "node scripts/pre-dist.mjs && electron-vite build && electron-builder --win --publish never && node scripts/smoke-packaged.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs"
   },

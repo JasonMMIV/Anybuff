@@ -18,6 +18,11 @@ import {
 } from './utils/prompt-builders'
 import { formatBashContext, type BashCommandResult } from './utils/bash-context'
 import {
+  serializeConversationToMarkdown,
+  suggestExportFileName,
+  type ExportMessage
+} from './utils/export-conversation'
+import {
   isNotificationSoundEnabled,
   playRunFinishedSound,
   playRunInterruptedSound,
@@ -2364,6 +2369,68 @@ export default function App() {
     [historyTask, newTask]
   )
 
+  /** #8 對話匯出：把整段對話(含工具輸入與結果)序列化成 Markdown 檔存下來。 */
+  const onExportTask = useCallback(
+    async (project: ProjectRecord, task: TaskRecord) => {
+      // 1) Gather the full transcript — the sidebar list only carries titles.
+      let transcript: ExportMessage[]
+      if (isPreview) {
+        transcript = (task.messages ?? []) as ExportMessage[]
+      } else {
+        const view = (await window.AnyBuff.getTaskView(task.id)) as {
+          ok: boolean
+          exists?: boolean
+          transcript?: ExportMessage[]
+          error?: string
+        }
+        if (!view?.ok || !view.exists) {
+          setNotice(view?.error ?? 'Failed to load this conversation for export.')
+          return
+        }
+        transcript = view.transcript ?? []
+      }
+
+      // 2) Serialize to Markdown (upstream /copy format, adapted — see
+      //    utils/export-conversation.ts).
+      const { text, messageCount } = serializeConversationToMarkdown(transcript)
+      if (!text.trim()) {
+        setNotice('Nothing to export — the conversation is empty.')
+        return
+      }
+      const defaultName = suggestExportFileName(task.prompt, project.name)
+
+      // 3) Browser preview (no Electron shell): fall back to a client-side download.
+      if (isPreview) {
+        const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = defaultName
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        // Revoke on the next tick so the download has a chance to start.
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        setNotice(`Exported conversation (${messageCount} messages) — downloaded ${defaultName}`)
+        return
+      }
+
+      // 4) Desktop: native save dialog owned by the Electron shell.
+      const res = (await window.AnyBuff.exportConversationFile({
+        content: text,
+        defaultName,
+        startDir: project.path
+      })) as { ok: boolean; canceled?: boolean; path?: string; error?: string }
+      if (!res?.ok) {
+        // A cancel is quiet; failures (incl. unsupported shells) surface.
+        if (!res?.canceled) setNotice(res?.error ?? 'Failed to export the conversation.')
+        return
+      }
+      setNotice(`Exported conversation (${messageCount} messages): ${res.path ?? defaultName}`)
+    },
+    [isPreview]
+  )
+
   const onRemoveProject = useCallback(
     async (project: ProjectRecord) => {
       if (!isPreview) {
@@ -2599,6 +2666,7 @@ export default function App() {
               onOpenProject={(p) => void onOpenProject(p)}
               onOpenTask={(p, t) => void onOpenTask(p, t)}
               onRenameTask={onRenameTask}
+              onExportTask={onExportTask}
               onDeleteTask={onDeleteTask}
               onRemoveProject={onRemoveProject}
               onSettings={() => setShowSettings(true)}

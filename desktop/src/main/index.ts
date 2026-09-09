@@ -257,6 +257,41 @@ function registerShellIpc(): void {
     return result.filePaths
   })
 
+  // #8 對話匯出 — the renderer serializes the conversation into Markdown; the
+  // shell owns the native save dialog + file write (dialog is Electron-only,
+  // ADR-21: window/dialog handlers stay out of host-core).
+  ipcMain.handle(
+    'AnyBuff:exportConversationFile',
+    async (_e, payload: { content?: string; defaultName?: string; startDir?: string | null }) => {
+      const content = typeof payload?.content === 'string' ? payload.content : ''
+      if (!content.trim()) return { ok: false, error: 'Nothing to export — the conversation is empty.' }
+      const defaultName =
+        typeof payload?.defaultName === 'string' && payload.defaultName.trim()
+          ? payload.defaultName
+          : 'conversation.md'
+      // Default to the conversation's project folder when it still exists.
+      const startDir =
+        typeof payload?.startDir === 'string' && payload.startDir && existsSync(payload.startDir)
+          ? payload.startDir
+          : app.getPath('documents')
+      const result = await dialog.showSaveDialog({
+        title: 'Export conversation',
+        defaultPath: join(startDir, defaultName),
+        filters: [
+          { name: 'Markdown', extensions: ['md'] },
+          { name: 'Plain text', extensions: ['txt'] },
+        ],
+      })
+      if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+      try {
+        writeFileSync(result.filePath, content, 'utf8')
+        return { ok: true, path: result.filePath }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
   ipcMain.on('AnyBuff:setTheme', (_e, theme: 'dark' | 'light') => {
     // The native title bar follows nativeTheme for dark/light mode
     nativeTheme.themeSource = theme
