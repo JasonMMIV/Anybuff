@@ -1412,14 +1412,44 @@ export default function App() {
     })
   }, [])
 
+  /** #6：/init 的聊天氣泡標題（實際送出的 prompt 固定為 '/init'，用於觸發引擎
+   *  內建 initPrompt——'User has typed "init"…'，讓 agent 分析專案後建立/更新
+   *  根目錄 knowledge.md）。 */
+  const INIT_DISPLAY_TEXT =
+    'Initialize project knowledge base — analyze the repo and create/update knowledge.md'
+
   const send = useCallback(
-    async (textOverride?: string, prebuiltPrompt?: string) => {
+    async (textOverride?: string, prebuiltPrompt?: string, opts?: { mode?: AgentMode }) => {
       let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
-      if (/^\/init(?:\s|$)/i.test(text)) {
-        setPrompt('')
-        openAgentWizard()
-        return
+
+      /* ── #6：/init → 專案知識庫初始化（取代舊的「開啟 Agent Workshop」快捷）──
+       * 舊版把 bare `/init` 當作建立自訂 agent 精靈（Agent Workshop）的隱藏入口，
+       * 與 init=知識庫初始化的概念撞名、易誤導新手（缺口表 #6 備註）；自訂 agent
+       * 精靈改由 Settings → Custom Agents 進入。
+       * 此處把 bare `/init` 轉成一則 prebuilt prompt 精確為 '/init' 的 run——引擎在
+       * loopAgentSteps 偵測到 prompt === '/init' 時會注入 initPrompt，要求 agent
+       * 分析專案並建立/更新根目錄 knowledge.md（若已存在則依現況補強）。
+       * 寫入 knowledge.md 需要 write_file：非 Build（default）模式時，本輪改用
+       * Build root（base2）執行，但不切換 UI 的模式狀態。 */
+      let initRun = false
+      // 注意：`/init` 執行中送出時會先佇列、稍後由 drain 以 send(標題, '/init')
+      // 重新派送——若只認「原始文字恰為 /init」會在 drain 時漏判，Chat/Plan 模式下
+      // 就會退回無 write_file 的 root，故 prebuiltPrompt === '/init' 也視為 init。
+      if (prebuiltPrompt === '/init' || /^\/init(?:\s|$)/i.test(text)) {
+        initRun = true
+        if (prebuiltPrompt !== '/init' && !textOverride) {
+          // 手打路徑：換成可讀標題，並把 prompt 精確設為 '/init' 以觸發引擎 initPrompt。
+          setPrompt('')
+          if (text.trim() !== '/init') {
+            setNotice('`/init` takes no arguments — starting project knowledge-base init.')
+          }
+          text = INIT_DISPLAY_TEXT
+          prebuiltPrompt = '/init'
+        }
+        if (agentMode !== 'default') {
+          setNotice('`/init` needs file-write access to create/update knowledge.md — running this turn in Build mode.')
+        }
       }
 
       /* ── #9 Bash mode: `!command` runs locally, output becomes context ── */
@@ -1512,7 +1542,12 @@ export default function App() {
       const bakedWithContext = bashContext ? `${bashContext}${bakedBody}` : bakedBody
       const finalPrompt = interviewWrap
         ? `${buildInterviewPrompt('')}\n\n${bakedWithContext}`
-        : (builtPrompt ? `${bashContext}${builtPrompt}` : bakedWithContext)
+        : (builtPrompt
+            // 引擎 hook 是「prompt 精確等於 '/init'」的 key match——前面若又黏了
+            // bash context 會把整串 prompt 弄髒導致 hook 失效；/init 本身就會讀檔
+            // 分析專案，不需要帶上回合的 !command 輸出。
+            ? (builtPrompt === '/init' ? builtPrompt : `${bashContext}${builtPrompt}`)
+            : bakedWithContext)
 
       if (running) {
         if (isPreview) return
@@ -1593,7 +1628,7 @@ export default function App() {
         prompt: finalPrompt,
         displayText: text,
         taskId: currentTaskRef.current ?? undefined,
-        mode: agentMode,
+        mode: opts?.mode ?? (initRun ? 'default' : agentMode),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
       }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string }>
@@ -1621,7 +1656,7 @@ export default function App() {
       setApprovalRequest(null)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, openAgentWizard, setViewTask, interviewArmed, attachments])
+  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, setViewTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -1636,6 +1671,18 @@ export default function App() {
     },
     [send]
   )
+
+  /** #6：/init（由 / 清單選取）—— 送出一則 prebuilt prompt '/init' 的 run，引擎
+   *  注入 initPrompt 後 agent 會分析專案並建立/更新根目錄 knowledge.md。
+   *  知識庫寫檔需要檔案工具：非 Build 模式時本輪強制以 Build root（base2）執行
+   *  （不切換 UI 的模式狀態）。 */
+  const runInitKnowledge = useCallback(() => {
+    setPrompt('')
+    if (agentMode !== 'default') {
+      setNotice('`/init` needs file-write access to create/update knowledge.md — running this turn in Build mode.')
+    }
+    void send(INIT_DISPLAY_TEXT, '/init', { mode: 'default' })
+  }, [send, agentMode])
 
   // When the current turn ends, automatically dispatch the first queued message.
   // drainingQueueRef serializes against re-entrant effect runs (StrictMode dev
@@ -2853,6 +2900,7 @@ export default function App() {
                     onArmInterview={() => setInterviewArmed(true)}
                     onDisarmInterview={() => setInterviewArmed(false)}
                     interviewArmed={interviewArmed}
+                    onInitKnowledge={runInitKnowledge}
                     running={viewRunning}
                     stopping={viewStopping}
                     sendBlocked={busyElsewhere}

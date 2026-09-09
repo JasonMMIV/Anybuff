@@ -84,11 +84,14 @@ interface ComposerProps {
   onDisarmInterview: () => void
   /** Whether interview mode is currently armed (drives the chip indicator). */
   interviewArmed?: boolean
+  /** #6: /init — analyze the project and create/update the root knowledge.md. */
+  onInitKnowledge: () => void
 }
 
 import { getReasoningOptionsForModel } from '../utils/reasoning'
 
 const SLASH_COMMANDS: { id: string; label: string; description: string }[] = [
+  { id: 'init', label: 'init', description: 'Analyze the project and create/update knowledge.md (project long-term memory)' },
   { id: 'review', label: 'review', description: 'Structured code review with scope presets' },
   { id: 'interview', label: 'interview', description: 'Interrogate your request into a detailed spec' }
 ]
@@ -244,7 +247,8 @@ export default function Composer(props: ComposerProps) {
     onReviewRequest,
     onArmInterview,
     onDisarmInterview,
-    interviewArmed
+    interviewArmed,
+    onInitKnowledge
   } = props
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -386,8 +390,10 @@ export default function Composer(props: ComposerProps) {
       // Built-in command
       replaceToken('')
       // #5 第二批：/review opens the scope picker; /interview arms the wrapper.
+      // #6：/init 立即啟動 knowledge.md 產生 run（無需武裝）。
       if (skill.id === 'review') onReviewRequest()
       else if (skill.id === 'interview') onArmInterview()
+      else if (skill.id === 'init') onInitKnowledge()
       return
     }
     replaceToken(`/skill:${(skill as SkillInfo).name} `)
