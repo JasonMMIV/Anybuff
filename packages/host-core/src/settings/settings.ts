@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSyn
 import { dirname, join } from 'path'
 import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
 import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence } from '../env'
+import {
+  findVerifiedReasoningLadder,
+  getVerifiedReasoningLadders,
+} from '@codebuff/sdk'
 
 /**
  * Provider settings management (multi-provider).
@@ -15,7 +19,17 @@ import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence } from '..
  */
 
 export type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-export type ReasoningEffort = 'default' | 'high' | 'medium' | 'low' | 'minimal' | 'none'
+/** ADR-25: 'extra-high' and 'max' are real SDK-schema menu/wire values — the
+ * union previously lied about what can be persisted. */
+export type ReasoningEffort =
+  | 'default'
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'minimal'
+  | 'none'
+  | 'extra-high'
+  | 'max'
 export type ApprovalMode = 'balanced' | 'strict' | 'allow-all'
 
 /** #17 run-options guardrails: max steps per run (loop fuse) and cost mode.
@@ -36,7 +50,12 @@ export interface ProviderConfig {
    *  overflow errors (A2) or lazy catalog hydration (P1 B1d). Written into
    *  the generated anybuff.json so the SDK reads it; never set by hand here —
    *  explicit anybuff.json entries still win at resolution time. */
-  modelCapabilities?: Record<string, { context?: { windowTokens?: number; outputTokens?: number } }>
+  modelCapabilities?: Record<string, {
+    context?: { windowTokens?: number; outputTokens?: number }
+    /** ADR-25: declared reasoning ladders flow through to anybuff.json and
+     * the Desktop menus (explicit declarations win over the SDK seed table). */
+    reasoning?: { supported?: boolean; efforts?: string[]; defaultEffort?: string }
+  }>
 }
 
 import type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
@@ -88,6 +107,10 @@ export interface AppSettings {
   maxAgentSteps: number
   /** #17 cost mode flag forwarded to the SDK run. */
   costMode: RunCostMode
+  /** ADR-25 per-model reasoning-effort ladders for the UI menus: keys are
+   * provider-qualified `${providerId}/${model}` (explicit declarations,
+   * which win for that route) or bare model ids (SDK-verified seed ladders). */
+  reasoningLadders: Record<string, string[]>
 }
 
 const SETTINGS_FILE = 'AnyBuff-app-settings.json'
@@ -313,6 +336,36 @@ function touchTaskUpdated(taskId: string): void {
   }
 }
 
+/**
+ * ADR-25: per-model reasoning-effort ladders for the UI menus. Merges the
+ * SDK-verified seed table (bare model ids — vendor-documented native levels,
+ * variant-tolerant) with provider-declared `modelCapabilities` (qualified
+ * `${providerId}/${model}` keys, which win for that route). Pure — no
+ * host-env seams — so it is unit-testable without installing a host.
+ */
+export function buildReasoningLadders(
+  providers: ProviderConfig[]
+): Record<string, string[]> {
+  const ladders: Record<string, string[]> = {}
+  for (const [bareModel, efforts] of Object.entries(
+    getVerifiedReasoningLadders()
+  )) {
+    ladders[bareModel] = [...efforts]
+  }
+  for (const provider of providers) {
+    for (const model of provider.models ?? []) {
+      const declared = provider.modelCapabilities?.[model]?.reasoning?.efforts
+      const efforts = declared?.length
+        ? declared
+        : findVerifiedReasoningLadder(model)?.efforts
+      if (efforts?.length) {
+        ladders[`${provider.id}/${model}`] = [...efforts]
+      }
+    }
+  }
+  return ladders
+}
+
 export function getAppSettings(): AppSettings {
   const s = loadSettings()
 
@@ -353,6 +406,7 @@ export function getAppSettings(): AppSettings {
     webSearchProvider: s.webSearchProvider ?? 'duckduckgo',
     maxAgentSteps: s.maxAgentSteps ?? 0,
     costMode: s.costMode ?? 'normal',
+    reasoningLadders: buildReasoningLadders(s.providers),
     webSearchHasKey: {
       duckduckgo: false,
       firecrawl: getSearchApiKey('firecrawl') !== undefined,

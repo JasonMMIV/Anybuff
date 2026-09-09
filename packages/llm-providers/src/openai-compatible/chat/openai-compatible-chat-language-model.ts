@@ -253,10 +253,19 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
         compatibleOptions.reasoningEffort !== 'default'
           ? {
               reasoning_effort: compatibleOptions.reasoningEffort,
-              enable_thinking:
-                this.config.enableThinking ??
-                compatibleOptions.enableThinking ??
-                true,
+              // enable_thinking is DashScope-specific (Qwen / DeepSeek-R1 over
+              // Alibaba's compatible mode): strict OpenAI-compatible gateways
+              // reject the unknown parameter with a 400. Send it only when the
+              // provider explicitly opted in — never as an implicit companion
+              // of a reasoning effort (ADR-25).
+              ...((this.config.enableThinking ??
+                compatibleOptions.enableThinking) !== undefined
+                ? {
+                    enable_thinking:
+                      this.config.enableThinking ??
+                      compatibleOptions.enableThinking,
+                  }
+                : {}),
             }
           : (this.config.enableThinking ?? compatibleOptions.enableThinking) !==
               undefined

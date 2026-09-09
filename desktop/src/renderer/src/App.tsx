@@ -52,6 +52,8 @@ interface UiSettings {
   activeModel: string
   reasoningEffort: string
   approvalMode: string
+  /** ADR-25 per-model reasoning ladders (qualified + bare-id keys) from host settings. */
+  reasoningLadders?: Record<string, string[]>
 }
 
 type ChatItem =
@@ -652,6 +654,7 @@ export default function App() {
           projects: ProjectRecord[]
           maxAgentSteps?: number
           costMode?: 'normal' | 'max' | 'lite'
+          reasoningLadders?: Record<string, string[]>
         }
       }
       setCwd(state.cwd)
@@ -664,7 +667,8 @@ export default function App() {
         providers: state.settings.providers,
         activeModel: state.settings.activeModel,
         reasoningEffort: state.settings.reasoningEffort,
-        approvalMode: state.settings.approvalMode
+        approvalMode: state.settings.approvalMode,
+        reasoningLadders: state.settings.reasoningLadders ?? {}
       })
       setProjects(state.settings.projects ?? [])
       // #17 restore persisted run guardrails
@@ -1932,10 +1936,10 @@ export default function App() {
     setShowSettings(false)
     if (!isPreview) {
       void window.AnyBuff.getState().then((state) => {
-        const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[]; hasProvider?: boolean } }).settings
+        const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[]; hasProvider?: boolean; reasoningLadders?: Record<string, string[]> } }).settings
         if (s) {
           setHasProvider(Boolean(s.hasProvider))
-          setSettings({ providers: s.providers, activeModel: s.activeModel, reasoningEffort: s.reasoningEffort, approvalMode: s.approvalMode })
+          setSettings({ providers: s.providers, activeModel: s.activeModel, reasoningEffort: s.reasoningEffort, approvalMode: s.approvalMode, reasoningLadders: s.reasoningLadders ?? {} })
         }
       })
       refreshProjects()
@@ -1947,9 +1951,9 @@ export default function App() {
       setHasProvider(saved.hasProvider)
       if (!isPreview) {
         void window.AnyBuff.getState().then((state) => {
-          const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[] } }).settings
+          const s = (state as { settings: { activeModel: string; reasoningEffort: string; approvalMode: string; providers: { id: string; label: string; models: string[] }[]; reasoningLadders?: Record<string, string[]> } }).settings
           if (s) {
-            setSettings({ providers: s.providers, activeModel: s.activeModel, reasoningEffort: s.reasoningEffort, approvalMode: s.approvalMode })
+            setSettings({ providers: s.providers, activeModel: s.activeModel, reasoningEffort: s.reasoningEffort, approvalMode: s.approvalMode, reasoningLadders: s.reasoningLadders ?? {} })
           }
         })
         refreshProjects()
@@ -2949,7 +2953,7 @@ export default function App() {
                     providers={models}
                     activeModel={settings.activeModel}
                     onModelChange={onModelChange}
-                    reasoningEffort={settings.reasoningEffort}
+                    reasoningEffort={settings.reasoningEffort} reasoningLadders={settings.reasoningLadders ?? {}}
                     onReasoningChange={onReasoningChange}
                     agentMode={agentMode}
                     onAgentModeChange={setAgentMode}

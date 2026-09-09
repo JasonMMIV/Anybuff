@@ -29,6 +29,10 @@ import {
 } from '../provider-config'
 import { resolveModelsToTry } from './failover'
 import {
+  clampReasoningEffortToLadder,
+  findVerifiedReasoningLadder,
+} from './reasoning-effort'
+import {
   getHydratedCapabilities,
   hydrateModelCapabilities,
   type HydratedCapabilities,
@@ -1075,6 +1079,38 @@ export async function getModelForRequest(
         agentId ? ` for agent '${agentId}'` : ''
       }. Add a provider mapping in anybuff.json or set ${'ANYBUFF_PROVIDER_CONFIG'}.`,
     )
+  }
+
+  // ADR-25 request-time reasoning-effort clamp: declared capabilities win,
+  // the verified seed table fills gaps, and models with neither are sent
+  // verbatim — a loud 400 is preferable to guessing (never suppress, ADR-10).
+  // ('default' is a host-menu sentinel: the SDK schema rejects it, so an effort
+  // resolved this far is always a real rung — llm.ts's withConfiguredReasoningEffort
+  // keeps the 'default' check for its own string-typed input.)
+  if (reasoningEffort) {
+    const seed = findVerifiedReasoningLadder(effectiveModel)
+    const ladder =
+      resolvedCapabilities?.reasoning?.efforts?.length
+        ? resolvedCapabilities.reasoning.efforts
+        : seed?.efforts
+    if (ladder?.length) {
+      const clamped = clampReasoningEffortToLadder(
+        reasoningEffort,
+        ladder,
+        seed?.requestMap,
+      )
+      if (clamped !== reasoningEffort) {
+        logCompat(
+          'reasoning-effort-clamp',
+          {
+            providerId: configuredProviderModel.providerId,
+            providerModel: configuredProviderModel.providerModel,
+          },
+          `'${reasoningEffort}' → '${clamped}' (native ladder: ${ladder.join('/')})`,
+        )
+        reasoningEffort = clamped as AnybuffReasoningEffort
+      }
+    }
   }
 
   // Post-resolution key injection wins over whatever env-based resolution found.

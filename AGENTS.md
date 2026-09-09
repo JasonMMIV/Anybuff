@@ -20,8 +20,11 @@ an Electron desktop shell. Read "AnyBuff 專案全貌與維護者指南.md" (§2
   SDK side: `provider-config.ts`. Host side (shared desktop+Android):
   `packages/host-core/src/files/atomic-write.ts`.
 - **Compat rules have expiry dates** (§2 non-negotiable #5): verify against live vendor
-  behavior before touching the deepseek/glm tool_choice list or stop-strip
-  defaults; observability logs use the `[anybuff-compat]` prefix.
+  behavior before touching the deepseek/glm tool_choice list, the stop-strip
+  defaults, or the verified reasoning-effort ladders in
+  `sdk/src/impl/reasoning-effort.ts` (ADR-25 — every row carries `verifiedAt`; keep
+  `requestMap` aligned with the vendor's documented requested→actual table);
+  observability logs use the `[anybuff-compat]` prefix.
 
 ## Build & verify loop
 

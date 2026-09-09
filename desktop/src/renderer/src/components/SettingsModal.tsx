@@ -477,7 +477,7 @@ export default function SettingsModal({
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
   const [deleteKeys, setDeleteKeys] = useState<string[]>([])
   const [activeModel, setActiveModel] = useState('')
-  const [reasoningEffort, setReasoningEffort] = useState('default')
+  const [reasoningEffort, setReasoningEffort] = useState('default'); const [reasoningLadders, setReasoningLadders] = useState<Record<string, string[]>>({})
   const [approvalMode, setApprovalMode] = useState<'balanced' | 'strict' | 'allow-all'>('balanced')
   const [agentRouting, setAgentRouting] = useState<Record<string, { model: string; reasoningEffort: string }>>({})
   const [allAgentIds, setAllAgentIds] = useState<string[]>([])
@@ -633,10 +633,10 @@ export default function SettingsModal({
         settings?: {
           providers?: ProviderDraft[]
           activeModel?: string
-          reasoningEffort?: string
+          reasoningEffort?: string; reasoningLadders?: Record<string, string[]>
           approvalMode?: 'balanced' | 'strict' | 'allow-all'
           providerHasKey?: Record<string, boolean>
-          agentRouting?: Record<string, { model: string; reasoningEffort?: string }>
+          agentRouting?: Record<string, { model: string; reasoningEffort?: string; reasoningLadders?: Record<string, string[]> }>
           webSearchProvider?: WebSearchProviderId
           webSearchHasKey?: Record<string, boolean>
         }
@@ -648,7 +648,7 @@ export default function SettingsModal({
         setProviders(loaded)
       }
       setActiveModel(s?.activeModel ?? '')
-      if (s?.reasoningEffort) setReasoningEffort(s.reasoningEffort)
+      if (s?.reasoningEffort) setReasoningEffort(s.reasoningEffort); if (s?.reasoningLadders) setReasoningLadders(s.reasoningLadders)
       if (s?.approvalMode) setApprovalMode(s.approvalMode)
       setProviderHasKey(s?.providerHasKey ?? {})
       setAgentRouting(
@@ -2286,7 +2286,7 @@ export default function SettingsModal({
                           }))
                         }
                         size="small"
-                        options={getReasoningOptionsForModel(route.model).map((r) => ({
+                        options={getReasoningOptionsForModel(route.model, reasoningLadders).map((r) => ({
                           value: r,
                           label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')
                         }))}

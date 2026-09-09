@@ -63,6 +63,8 @@ interface ComposerProps {
   onModelChange: (model: string) => void
   reasoningEffort: string
   onReasoningChange: (effort: string) => void
+  /** ADR-25 per-model reasoning ladders (`${providerId}/${model}` and bare-id keys), from host settings. */
+  reasoningLadders?: Record<string, string[]>
   agentMode: AgentMode
   onAgentModeChange: (mode: AgentMode) => void
   tokenUsage: { used: number; max: number } | null
@@ -236,6 +238,7 @@ export default function Composer(props: ComposerProps) {
     onModelChange,
     reasoningEffort,
     onReasoningChange,
+    reasoningLadders,
     agentMode,
     onAgentModeChange,
     tokenUsage,
@@ -798,7 +801,7 @@ export default function Composer(props: ComposerProps) {
             size="small"
             placement="top"
             className="reasoning-select"
-            options={getReasoningOptionsForModel(activeModel).map((r) => ({
+            options={getReasoningOptionsForModel(activeModel, reasoningLadders).map((r) => ({
               value: r,
               label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')
             }))}
