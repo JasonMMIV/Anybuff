@@ -8,6 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
+import DiagnosticsModal from './components/DiagnosticsModal'
 import RunElapsed from './components/RunElapsed'
 import {
   buildInterviewPrompt,
@@ -411,6 +412,8 @@ export default function App() {
   }, [])
 
   const [showSettings, setShowSettings] = useState(false)
+  /** #15：/diagnostics 診斷面板（獨立 Modal，不污染對話串）。 */
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [settingsTab, setSettingsTab] = useState<'general' | 'providers' | 'theme' | 'routing' | 'agents' | 'search'>('general')
   const [showAgentWizard, setShowAgentWizard] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -1239,6 +1242,13 @@ export default function App() {
     setShowSettings(false)
     setShowAgentWizard(true)
   }, [cwd])
+
+  /** #15：開啟診斷面板（Settings → About「Diagnostics」快捷按鈕）。 */
+  const openDiagnostics = useCallback(() => {
+    setShowSettings(false)
+    setShowAgentWizard(false)
+    setShowDiagnostics(true)
+  }, [])
 
   // The local engine host (proot/Node) died or its socket broke: the WS shim
   // dispatched anybuff:host-disconnected and the recovery overlay is up. The
@@ -2547,6 +2557,7 @@ export default function App() {
           <SettingsModal
             onClose={handleCloseSettings}
             onCreateAgent={openAgentWizard}
+            onOpenDiagnostics={openDiagnostics}
             onSaved={onSettingsSaved}
             theme={theme}
             themeMode={themeMode}
@@ -2567,6 +2578,7 @@ export default function App() {
             {reviewScopeOpen && (
               <ReviewScopePanel onClose={() => setReviewScopeOpen(false)} onRun={runReviewScope} />
             )}
+            {showDiagnostics && <DiagnosticsModal onClose={() => setShowDiagnostics(false)} />}
             <Sidebar
               open={leftOpen}
               onClose={() => setLeftOpen(false)}

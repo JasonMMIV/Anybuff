@@ -462,6 +462,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
   const api: Record<string, unknown> = {
     // ── Business channels (WS) ─────────────────────────────────────────
     getState: () => call('getState'),
+    /** #15 /diagnostics — host process snapshot (WS transport). */
+    getDiagnostics: () => call('getDiagnostics'),
     saveSettings: (payload: unknown) => call('saveSettings', payload),
     listMcpServers: (cwd: string | null) => call('listMcpServers', cwd),
     saveMcpServer: (payload: unknown) => call('saveMcpServer', payload),

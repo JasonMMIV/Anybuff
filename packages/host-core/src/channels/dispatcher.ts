@@ -13,6 +13,7 @@
 
 import { CHANNELS, type HostChannel } from './channels'
 import { getState, saveSettings, fetchModels } from './handlers-app'
+import { getDiagnostics } from '../diagnostics'
 import {
   listProjects,
   saveCwd,
@@ -50,6 +51,8 @@ const registry: Record<string, Handler> = {
   getState,
   saveSettings,
   fetchModels,
+  // #15 /diagnostics — process snapshot
+  getDiagnostics,
   // Projects & tasks
   listProjects,
   saveCwd,

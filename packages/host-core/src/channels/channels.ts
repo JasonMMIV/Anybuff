@@ -16,6 +16,8 @@ export const CHANNELS = [
   'getState',
   'saveSettings',
   'fetchModels',
+  // #15 /diagnostics — process snapshot (CPU/memory/uptime/children)
+  'getDiagnostics',
   // Projects & tasks
   'listProjects',
   'saveCwd',

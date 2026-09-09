@@ -62,6 +62,8 @@ const api = {
   },
 
   getState: () => ipcRenderer.invoke('AnyBuff:getState'),
+  /** #15 /diagnostics — host process snapshot (CPU/memory/uptime/children). */
+  getDiagnostics: () => ipcRenderer.invoke('AnyBuff:getDiagnostics'),
   /** Running app version (Electron, sourced from package.json). */
   getAppVersion: () => ipcRenderer.invoke('AnyBuff:getAppVersion'),
   /** Compare the running version against the latest GitHub release. */

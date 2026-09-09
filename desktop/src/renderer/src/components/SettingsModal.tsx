@@ -328,6 +328,8 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
 interface Props {
   onClose: () => void
   onCreateAgent: () => void
+  /** #15: open the standalone /diagnostics panel (closes Settings). */
+  onOpenDiagnostics: () => void
   onSaved?: (s: { hasProvider: boolean }) => void
   theme: 'dark' | 'light'
   /** #18 OS 深淺色自動跟隨：'system' follows the OS; dark/light pin it. */
@@ -422,6 +424,7 @@ function getNativeBridge(): AnyBuffNativeBridge | null {
 export default function SettingsModal({
   onClose,
   onCreateAgent,
+  onOpenDiagnostics,
   onSaved,
   theme,
   themeMode = 'system',
@@ -2851,6 +2854,21 @@ export default function SettingsModal({
                       {updater.status === 'checking' ? 'Checking…' : 'Check Update'}
                     </button>
                   )}
+                </div>
+
+                <div className="about-row">
+                  <div className="about-update-info">
+                    <span className="settings-field-label">System diagnostics</span>
+                    <span className="hint-inline">CPU, memory, uptime &amp; tool subprocesses</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={onOpenDiagnostics}
+                    title="Open the standalone diagnostics panel"
+                  >
+                    Diagnostics
+                  </button>
                 </div>
               </div>
             </div>

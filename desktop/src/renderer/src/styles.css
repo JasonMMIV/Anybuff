@@ -1304,6 +1304,155 @@ textarea {
   opacity: 0.92;
 }
 
+/* #15：/diagnostics 獨立診斷浮層面板。 */
+.diagnostics-backdrop {
+  z-index: 200;
+}
+
+.diagnostics-modal {
+  width: min(560px, calc(100vw - 48px));
+  gap: 14px;
+}
+
+.diagnostics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.diagnostics-title h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 2px 0 4px;
+}
+
+.diag-stat {
+  background: var(--bg-0, var(--bg-1));
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diag-stat strong {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+
+.diag-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.diag-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-strong);
+}
+
+.diag-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border-soft, var(--border-strong));
+  font-size: 12.5px;
+}
+
+.diag-row dt {
+  color: var(--text-secondary);
+}
+
+.diag-row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.diag-muted {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.diag-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.diag-dot.busy {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.diag-dot.idle {
+  background: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.diag-tools-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diag-tool-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-tool-list code {
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-0, var(--bg-1));
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+.diag-empty {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  padding: 6px 0;
+}
+
+.diagnostics-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border-strong);
+  padding-top: 10px;
+}
+
+.diagnostics-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
