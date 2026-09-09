@@ -34,16 +34,13 @@ provider，即可開始對話。
 
 ## 功能
 
+- **多智能體引擎（承襲 Freebuff）** —— Freebuff 以專門化智能體取代「把每個任務交給單一模型與單一 prompt」的做法：依任務不同，智能體會收集脈絡、規劃、編輯或研究、執行工具，並審查成果。AnyBuff 在本機完整執行這套引擎。
+- **BYOK（自帶金鑰）** —— 無後端、無訂閱：連接你自己的 OpenAI 相容／Anthropic 相容端點（雲端或全本地，如 Ollama、LM Studio、vLLM），直接向你的供應商付費。
 - **三種模式** —— Chat（輕量問答）、Build（完整檔案存取）、Plan（規劃不寫檔）；`@agent` 提及會在目前的 root 內 spawn 子代理。
 - **安全防線** —— 敏感檔案過濾（絕不讀取 `.env`、`*.pem`、`*.key`、`id_rsa`、`kubeconfig` 等）、終端指令核准閘門、執行中訊息佇列。
 - **Web 搜尋** —— 可切換 provider：DuckDuckGo（預設、免 key）、Firecrawl（免 key）、Tinyfish（需 API key）；provider 被限流時自動 fallback。
 - **MCP 伺服器** —— 於設定頁管理 stdio/http/sse 伺服器、`.agents/mcp.json` 三層掃描（專案 → 父目錄 → 家目錄）、per-server 目標 agent、行內 token 以 DPAPI 加密。
 - **上下文管理** —— 預防性壓縮加上反應式 overflow trim-retry、模型 failover 與快照 resume。
-- **Reasoning 檔位控制** —— 輸入框的選項來自 51 個現役模型的查證 effort
-  階梯（逐列註記查證日期與來源：vendor 文件 / models.dev），選單只提供你的
-  端點會接受的值，越階梯的請求送出前會被 clamp 到合法值。
-- **專案知識與診斷** —— `/init` 掃描專案並寫出 `knowledge.md`，讓 agent
-  一開始就掌握脈絡；`/diagnostics` 開啟即時的 host 健康面板。
 - **對話匯出** —— 從側邊欄選單即可將整段對話存成 Markdown 檔。
 - **檔案預覽與執行回饋** —— 點擊檔案即浮動預覽並附快速動作、執行中的任務
   顯示已耗時間、任務結束/暫停/中斷時播放輕柔提示音。

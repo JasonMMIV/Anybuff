@@ -39,6 +39,14 @@ Anthropic-compatible provider, and start chatting.
 
 ## Features
 
+- **Multi-agent engine (from Freebuff)** — Freebuff uses specialized agents
+  instead of sending every task through one model and one prompt: depending
+  on the task, agents gather context, plan, edit or research, run tools, and
+  review the result. AnyBuff runs this engine entirely in-process on your
+  machine.
+- **Bring your own key (BYOK)** — no hosted backend or subscriptions: connect
+  your own OpenAI-compatible or Anthropic-compatible endpoints — cloud or
+  fully local (Ollama, LM Studio, vLLM) — and pay your providers directly.
 - **Three modes** — Chat (lightweight Q&A), Build (full file access), Plan
   (planning without writes); `@agent` mentions spawn sub-agents inside the
   running root.
@@ -53,14 +61,6 @@ Anthropic-compatible provider, and start chatting.
   agents, DPAPI-encrypted inline tokens.
 - **Context management** — proactive compaction plus reactive overflow
   trim-retry, model failover, and snapshot resume.
-- **Reasoning effort control** — a per-model selector whose options come from
-  verified effort ladders for 51 current models (each entry carries its
-  verification date and source: vendor docs / models.dev), so the menu only
-  offers efforts your endpoint accepts and out-of-ladder requests are clamped
-  before sending.
-- **Project knowledge & diagnostics** — `/init` scans your project and writes
-  `knowledge.md` so agents start with context; `/diagnostics` opens a live
-  host health panel.
 - **Conversation export** — save the entire conversation as a Markdown file
   from the sidebar menu.
 - **File preview & run feedback** — click a file for a floating preview with
