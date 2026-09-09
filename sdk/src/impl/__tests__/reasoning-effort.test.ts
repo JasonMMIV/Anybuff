@@ -63,6 +63,36 @@ describe('VERIFIED_REASONING_EFFORTS (ADR-25 seed table)', () => {
     expect(findVerifiedReasoningLadder('gpt-9.9-turbo')).toBeUndefined()
   })
 
+  test('prefix fallback prefers the LONGEST matching seed key', () => {
+    // The dense seed set has overlapping prefixes (gpt-5.1, gpt-5.1-codex,
+    // gpt-5.1-codex-mini): a suffixed variant of the longer id must not land
+    // on the shorter prefix's ladder. gpt-5.1 includes `none`; the codex rows
+    // deliberately do not.
+    expect(
+      findVerifiedReasoningLadder('gpt-5.1-codex-spark')?.efforts,
+    ).toEqual(['low', 'medium', 'high'])
+    expect(
+      findVerifiedReasoningLadder('gpt-5.1-codex-mini:free')?.efforts,
+    ).toEqual(['low', 'medium', 'high'])
+    // An unknown suffix of the shortest key still resolves to it.
+    expect(findVerifiedReasoningLadder('gpt-5.1-extra')?.efforts).toEqual([
+      'none',
+      'low',
+      'medium',
+      'high',
+    ])
+  })
+
+  test('hy3 ladder reflects the serving opencode-go endpoint', () => {
+    // opencode-go (AnyBuff default route) declares [none, low, high]; the
+    // narrower official tencent-tokenhub row would clamp `low` down to `none`.
+    expect(findVerifiedReasoningLadder('hy3')?.efforts).toEqual([
+      'none',
+      'low',
+      'high',
+    ])
+  })
+
   test('getVerifiedReasoningLadders exposes bare-id keys for host menus', () => {
     expect(getVerifiedReasoningLadders()['deepseek-v4-flash']).toEqual(
       DEEPSEEK_LADDER,

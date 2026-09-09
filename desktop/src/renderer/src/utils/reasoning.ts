@@ -1,14 +1,14 @@
-import modelReasoningMap from './anybuff-models.json'
-
 /**
  * Per-model reasoning-effort options for the Composer and agent-routing menus.
  *
  * ADR-25: ladders resolved by the host (`getAppSettings().reasoningLadders` —
  * explicit anybuff.json `modelCapabilities` declarations first, then the
- * SDK-verified seed table) are authoritative: they describe what the endpoint
- * actually accepts. The static map below is the deprecated legacy tier (kept
- * only so models with no ladder anywhere keep their historical menu), and
- * the fallback offers only `low`/`high` — `medium` was dropped because
+ * SDK-verified seed table `VERIFIED_REASONING_EFFORTS`) are authoritative:
+ * they describe what the endpoint actually accepts. The former deprecated
+ * static map (`anybuff-models.json`) was deleted 2026-09-09 — the active
+ * model set now lives in the SDK seed table (verified against models.dev),
+ * and anything with no ladder anywhere gets the conservative fallback below.
+ * The fallback offers only `low`/`high` — `medium` was dropped because
  * DeepSeek-family endpoints have no distinct medium template and strict
  * gateways reject it with a 400.
  *
@@ -31,8 +31,6 @@ export function getReasoningOptionsForModel(
   let opts: string[] = []
   if (resolved?.length) {
     opts = resolved
-  } else if (bareModel in modelReasoningMap) {
-    opts = (modelReasoningMap as Record<string, string[]>)[bareModel]
   }
 
   if (opts.length > 1 || (opts.length === 1 && opts[0] !== 'default')) {
