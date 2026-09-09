@@ -1,6 +1,6 @@
 {
   "name": "anybuff-desktop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "AnyBuff Desktop — Windows GUI for the AnyBuff local-first BYOK coding agent",
   "author": "AnyBuff",
   "private": true,

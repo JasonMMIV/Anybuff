@@ -53,11 +53,24 @@ Anthropic-compatible provider, and start chatting.
   agents, DPAPI-encrypted inline tokens.
 - **Context management** — proactive compaction plus reactive overflow
   trim-retry, model failover, and snapshot resume.
+- **Reasoning effort control** — a per-model selector whose options come from
+  verified effort ladders for 51 current models (each entry carries its
+  verification date and source: vendor docs / models.dev), so the menu only
+  offers efforts your endpoint accepts and out-of-ladder requests are clamped
+  before sending.
+- **Project knowledge & diagnostics** — `/init` scans your project and writes
+  `knowledge.md` so agents start with context; `/diagnostics` opens a live
+  host health panel.
+- **Conversation export** — save the entire conversation as a Markdown file
+  from the sidebar menu.
+- **File preview & run feedback** — click a file for a floating preview with
+  quick actions, watch elapsed time on running tasks, and get a gentle
+  notification sound when a run finishes, pauses, or is interrupted.
 
 ## Quick start
 
 1. Download **`AnyBuff-Setup-<version>.exe`** (latest published release:
-   **v1.0.0**) from the
+   **v1.2.0**) from the
    [latest release](https://github.com/JasonMMIV/Anybuff/releases/latest) and
    run it. The installer is unsigned, so SmartScreen shows "Unknown publisher"
    — click *More info → Run anyway*. After installation, updates are detected
@@ -79,7 +92,7 @@ project you open.
 | Path                                 | Purpose                                                                                                                                                                     |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `desktop/`                           | Windows Electron app (React 19 renderer; thin main shell for window/dialog/updater/theme, business channels delegated to `packages/host-core` via `host-bridge.ts`)         |
-| `android/`                           | Android (arm64) Kotlin thin shell: WebView renderer + proot sandbox running Node 22 with the same host bundle, Keystore secret vault (Phase B, ADR-21)                      |
+| `android/`                           | Android (arm64) Kotlin thin shell: WebView renderer + proot sandbox running Node 22 with the same host bundle, Keystore secret vault (ADR-21)                              |
 | `packages/host-core`                 | `@codebuff/host-core` — Electron-free host business logic (run lifecycle, `AnyBuff:*` channels/WS, settings, secret-store seam) shared by desktop and Android (ADR-21)      |
 | `sdk/`                               | `@codebuff/sdk` — in-process agent runtime with the Anybuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
 | `packages/agent-runtime`             | Upstream step engine (two registered AnyBuff divergences: ADR-22, ADR-24)                                                                                                   |

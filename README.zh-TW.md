@@ -39,11 +39,19 @@ provider，即可開始對話。
 - **Web 搜尋** —— 可切換 provider：DuckDuckGo（預設、免 key）、Firecrawl（免 key）、Tinyfish（需 API key）；provider 被限流時自動 fallback。
 - **MCP 伺服器** —— 於設定頁管理 stdio/http/sse 伺服器、`.agents/mcp.json` 三層掃描（專案 → 父目錄 → 家目錄）、per-server 目標 agent、行內 token 以 DPAPI 加密。
 - **上下文管理** —— 預防性壓縮加上反應式 overflow trim-retry、模型 failover 與快照 resume。
+- **Reasoning 檔位控制** —— 輸入框的選項來自 51 個現役模型的查證 effort
+  階梯（逐列註記查證日期與來源：vendor 文件 / models.dev），選單只提供你的
+  端點會接受的值，越階梯的請求送出前會被 clamp 到合法值。
+- **專案知識與診斷** —— `/init` 掃描專案並寫出 `knowledge.md`，讓 agent
+  一開始就掌握脈絡；`/diagnostics` 開啟即時的 host 健康面板。
+- **對話匯出** —— 從側邊欄選單即可將整段對話存成 Markdown 檔。
+- **檔案預覽與執行回饋** —— 點擊檔案即浮動預覽並附快速動作、執行中的任務
+  顯示已耗時間、任務結束/暫停/中斷時播放輕柔提示音。
 
 ## 快速開始
 
 1. 從[最新 release](https://github.com/JasonMMIV/Anybuff/releases/latest)
-   下載 **`AnyBuff-Setup-<version>.exe`**（目前最新已發佈版本為 **v1.0.0**）
+   下載 **`AnyBuff-Setup-<version>.exe`**（目前最新已發佈版本為 **v1.2.0**）
    並執行。安裝包未簽章，SmartScreen 會顯示「不明發行者」——點選
    *更多資訊 → 仍要執行*。安裝後由 electron-updater（GitHub Releases
    provider）自動偵測並安裝更新。
@@ -62,8 +70,7 @@ provider，即可開始對話。
 
 | 路徑                                   | 用途                                                                                                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `desktop/`                           | Windows Electron 應用（React 19 renderer；main 為薄殼——視窗/對話框/updater/theme——業務頻道經 `host-bridge.ts` 委派 `packages/host-core`）                                  |
-| `android/`                           | Android（arm64）Kotlin 薄殼：WebView renderer + proot sandbox 內以 Node 22 執行同一份 host bundle、Keystore 金鑰保管（Phase B，ADR-21）                                    |
+| `desktop/`                           | Windows Electron 應用（React 19 renderer；main 為薄殼——視窗/對話框/updater/theme——業務頻道經 `host-bridge.ts` 委派 `packages/host-core`）                                  || `android/`                           | Android（arm64）Kotlin 薄殼：WebView renderer + proot sandbox 內以 Node 22 執行同一份 host bundle、Keystore 金鑰保管（ADR-21） |
 | `packages/host-core`                 | `@codebuff/host-core` —— 無 Electron 依賴的 host 業務邏輯（run 生命週期、`AnyBuff:*` 頻道/WS、設定、secret-store 接縫），桌面與 Android 共用（ADR-21）                                |
 | `sdk/`                               | `@codebuff/sdk` —— 內嵌 Anybuff BYOK 層的進程內 agent runtime（`provider-config.ts`、`impl/model-provider.ts`、failover/retry、followups policy、env sanitization） |
 | `packages/agent-runtime`             | 上游步驟引擎（兩處已登記的 AnyBuff 分歧：ADR-22、ADR-24）                                                                                                                |
