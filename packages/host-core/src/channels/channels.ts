@@ -54,6 +54,8 @@ export const CHANNELS = [
   'listFiles',
   'listDir',
   'readFile',
+  // Gap #14 floating preview: text ≤ 4MB, images ≤ 8MB (base64)
+  'readFileData',
   'pathInfo',
   'gitBranch',
   'gitDiff',

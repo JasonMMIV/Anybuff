@@ -1,15 +1,21 @@
 package com.anybuff.android.bridge
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
+import android.webkit.WebView
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
-import android.webkit.WebView
 import com.anybuff.android.crypto.KeyVault
 import com.anybuff.android.engine.EngineLog
 import org.json.JSONArray
@@ -173,6 +179,32 @@ class NativeBridge(
                         if (ok) "keys: deleted $providerId" else "keys: delete FAILED for $providerId",
                     )
                     post(id, replyProxy) { put("ok", ok) }
+                }
+                "openExternalFile" -> {
+                    // Gap #14 file menu "Open externally": ACTION_VIEW chooser on
+                    // a FileProvider URI (read-only grant). Runs on the main
+                    // thread — it only fires an intent, no I/O.
+                    val result = openExternalFile(msg.optString("path"))
+                    post(id, replyProxy) {
+                        put("ok", result.ok)
+                        result.error?.let { put("error", it) }
+                    }
+                }
+                "downloadFile" -> {
+                    // Gap #14 file menu "Download": copy into public
+                    // Downloads/AnyBuff via MediaStore. The copy runs off the
+                    // main thread; the reply must still be posted on the UI
+                    // thread (replyProxy contract).
+                    val guestPath = msg.optString("path")
+                    Thread {
+                        val result = downloadFile(guestPath)
+                        activity.runOnUiThread {
+                            post(id, replyProxy) {
+                                put("ok", result.ok)
+                                result.error?.let { put("error", it) }
+                            }
+                        }
+                    }.start()
                 }
                 else -> post(id, replyProxy) { put("ok", false); put("error", "unknown method $method") }
             }
@@ -390,6 +422,119 @@ class NativeBridge(
         null
     }
 
+    /* ── Gap #14 file actions (menu: Open externally / Download) ─────────── */
+
+    /** Result of a native file action (open externally / download). */
+    private data class FileActionResult(val ok: Boolean, val error: String? = null)
+
+    /**
+     * Map a GUEST path (what the renderer/host sees inside proot — e.g.
+     * /workspace/Proj/src/a.ts) to the host file on disk. ProotRunner binds
+     * filesDir/workspaces/{workspace,upload,skills} at /workspace, /upload and
+     * /skills; the host-absolute /data/user/0/... path does not exist inside
+     * the chroot and vice versa.
+     */
+    private fun guestToHost(guestPath: String): File? {
+        val roots = listOf(
+            "/workspace/" to File(activity.filesDir, "workspaces/workspace"),
+            "/upload/" to File(activity.filesDir, "workspaces/upload"),
+            "/skills/" to File(activity.filesDir, "workspaces/skills"),
+        )
+        for ((prefix, hostDir) in roots) {
+            if (guestPath.startsWith(prefix)) return File(hostDir, guestPath.removePrefix(prefix))
+        }
+        return null
+    }
+
+    /** MIME by file name — system map first, then AnyBuff fallbacks it misses. */
+    private fun mimeFor(fileName: String): String? {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        val system = if (ext.isEmpty()) null else MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+        if (system != null) return system
+        return when (ext) {
+            "svg" -> "image/svg+xml"
+            "md", "markdown" -> "text/markdown"
+            "ts", "tsx", "jsx", "mjs", "cjs" -> "text/plain"
+            else -> null
+        }
+    }
+
+    /**
+     * Open a sandbox file with an external app (FileProvider + ACTION_VIEW
+     * chooser). The grant is read-only — external apps can never mutate the
+     * workspace through this URI.
+     */
+    private fun openExternalFile(guestPath: String): FileActionResult {
+        val file = guestToHost(guestPath)
+        if (file == null || !file.isFile) {
+            EngineLog.append(activity, "file: openExternal rejected guest path $guestPath")
+            return FileActionResult(false, "file does not exist")
+        }
+        val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeFor(file.name) ?: "application/octet-stream")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return try {
+            activity.startActivity(Intent.createChooser(intent, "Open with"))
+            EngineLog.append(activity, "file: ACTION_VIEW ${file.name} ($guestPath)")
+            FileActionResult(true)
+        } catch (e: ActivityNotFoundException) {
+            EngineLog.append(activity, "file: no app handles ${file.name}")
+            FileActionResult(false, "no app on this device can open ${file.name}")
+        } catch (e: Exception) {
+            Log.e(TAG, "openExternalFile failed", e)
+            EngineLog.append(activity, "file: openExternal FAILED ${file.name} (${e.message})")
+            FileActionResult(false, e.message ?: "could not open the file")
+        }
+    }
+
+    /**
+     * Copy a sandbox file into the device's public Downloads/AnyBuff folder
+     * (MediaStore — no storage permission needed on modern Android). The file
+     * lands in the system Files app, visible to the user.
+     */
+    private fun downloadFile(guestPath: String): FileActionResult {
+        val file = guestToHost(guestPath)
+        if (file == null || !file.isFile) {
+            EngineLog.append(activity, "file: download rejected guest path $guestPath")
+            return FileActionResult(false, "file does not exist")
+        }
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeFor(file.name) ?: "application/octet-stream")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AnyBuff")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = activity.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return FileActionResult(false, "could not write to Downloads")
+            try {
+                activity.contentResolver.openOutputStream(uri)?.use { out ->
+                    file.inputStream().use { input -> input.copyTo(out) }
+                } ?: throw IllegalStateException("could not open Downloads output")
+            } catch (e: Exception) {
+                // Clean up the pending row — a failed copy must never leave an
+                // invisible IS_PENDING=1 orphan behind in MediaStore.
+                try {
+                    activity.contentResolver.delete(uri, null, null)
+                } catch (_: Exception) {
+                    // best-effort cleanup
+                }
+                throw e
+            }
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            activity.contentResolver.update(uri, values, null, null)
+            EngineLog.append(activity, "file: downloaded ${file.name} → Downloads/AnyBuff ($guestPath)")
+            FileActionResult(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "downloadFile failed", e)
+            EngineLog.append(activity, "file: download FAILED ${file.name} (${e.message})")
+            FileActionResult(false, e.message ?: "could not save the file")
+        }
+    }
+
     private fun openExternal(url: String) {
         // Only http(s) — never allow renderer content (model output, links) to
         // reach file:/intent:/… handlers on the device.
@@ -483,6 +628,10 @@ class NativeBridge(
             // page (§2.2 — the host rehydrates from Keystore at boot).
             saveKey: (providerId, apiKey) => send('saveKey', { providerId, apiKey }).then(r => r.ok),
             deleteKey: (providerId) => send('deleteKey', { providerId }).then(r => r.ok),
+            // Gap #14 file actions — sandbox GUEST paths; the shell maps them
+            // to host files (FileProvider ACTION_VIEW / MediaStore Downloads).
+            openExternalFile: (path) => send('openExternalFile', { path }).then(r => ({ ok: r.ok !== false, error: r.error || null })),
+            downloadFile: (path) => send('downloadFile', { path }).then(r => ({ ok: r.ok !== false, error: r.error || null })),
           };
         })();
         """.trimIndent()

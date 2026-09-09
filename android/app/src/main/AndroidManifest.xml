@@ -41,5 +41,18 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="On-device AI coding agent: runs a local sandboxed Node.js engine (proot) for user-initiated long-running tasks." />
         </service>
+
+        <!-- FileProvider: hands sandbox files to external apps (ACTION_VIEW
+             chooser, gap #14 file menu "Open externally"). Grants are
+             read-only and issued per intent (grantUriPermissions). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

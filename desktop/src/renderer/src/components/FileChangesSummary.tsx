@@ -1,9 +1,21 @@
 import { memo, useState } from 'react'
 import { ChevronDownIcon, FileIcon } from './Icons'
+import { createPressHandlers } from '../utils/press-menu'
 
 export interface FileChange {
   path: string
   action: 'create' | 'modify' | 'delete'
+}
+
+interface FileChangesSummaryProps {
+  files: FileChange[]
+  collapsed?: boolean
+  /** Gap #14: click a row → floating preview (paths are resolved by the caller). */
+  onPreviewFile?: (path: string, name: string) => void
+  /** Gap #14: right-click / long-press → file action menu. */
+  onMenuFile?: (path: string, name: string, x: number, y: number, longPress: boolean) => void
+  /** Android WebView / coarse pointers trigger the menu on long-press. */
+  longPressEnabled?: boolean
 }
 
 function actionIcon(action: FileChange['action']): string {
@@ -40,7 +52,13 @@ function dirnameOf(p: string): string {
   return parts.join('/') || '.'
 }
 
-export const FileChangesSummary = memo(function FileChangesSummary({ files, collapsed: initialCollapsed = false }: { files: FileChange[]; collapsed?: boolean }) {
+export const FileChangesSummary = memo(function FileChangesSummary({
+  files,
+  collapsed: initialCollapsed = false,
+  onPreviewFile,
+  onMenuFile,
+  longPressEnabled = false
+}: FileChangesSummaryProps) {
   const [collapsed, setCollapsed] = useState(initialCollapsed)
 
   if (!files || files.length === 0) return null
@@ -69,20 +87,35 @@ export const FileChangesSummary = memo(function FileChangesSummary({ files, coll
       </div>
       {!collapsed && (
         <ul className="file-changes-list">
-          {files.map((f, i) => (
-            <li key={i} className="file-changes-item">
-              <span className="file-changes-action-icon" style={{ color: actionColor(f.action) }}>
-                {actionIcon(f.action)}
-              </span>
-              <span className="file-changes-filepath" title={f.path}>
-                <span className="file-changes-dirname">{dirnameOf(f.path)}/</span>
-                <span className="file-changes-filename">{basenameOf(f.path)}</span>
-              </span>
-              <span className="file-changes-action-label" style={{ color: actionColor(f.action) }}>
-                {actionLabel(f.action)}
-              </span>
-            </li>
-          ))}
+          {files.map((f, i) => {
+            const name = basenameOf(f.path)
+            const interactive = Boolean(onPreviewFile || onMenuFile)
+            return (
+              <li
+                key={i}
+                className={`file-changes-item${interactive ? ' clickable' : ''}`}
+                title={interactive ? 'Click to preview — right-click or long-press for file actions' : f.path}
+                {...(interactive
+                  ? createPressHandlers({
+                      onActivate: () => onPreviewFile?.(f.path, name),
+                      onMenu: (x, y, longPress) => onMenuFile?.(f.path, name, x, y, longPress),
+                      longPressEnabled
+                    })
+                  : {})}
+              >
+                <span className="file-changes-action-icon" style={{ color: actionColor(f.action) }}>
+                  {actionIcon(f.action)}
+                </span>
+                <span className="file-changes-filepath" title={f.path}>
+                  <span className="file-changes-dirname">{dirnameOf(f.path)}/</span>
+                  <span className="file-changes-filename">{name}</span>
+                </span>
+                <span className="file-changes-action-label" style={{ color: actionColor(f.action) }}>
+                  {actionLabel(f.action)}
+                </span>
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>

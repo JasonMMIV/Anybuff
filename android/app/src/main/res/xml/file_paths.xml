@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider share roots (gap #14): the sandboxed workspace copies live
+     under filesDir/workspaces — bound at /workspace, /upload, /skills inside
+     the proot guest (see ProotRunner). One files-path covers all three. -->
+<paths>
+    <files-path name="workspaces" path="workspaces/" />
+</paths>

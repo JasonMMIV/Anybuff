@@ -29,7 +29,7 @@ import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } f
 import { runBashCommand } from '../run/bash-command'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
 import { listLocalAgents, listMentionAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
-import { listFiles, listDir, readFile, pathInfo, gitBranch, gitDiff, gitAccept, gitRevert, projectName } from './handlers-files'
+import { listFiles, listDir, readFile, readFileData, pathInfo, gitBranch, gitDiff, gitAccept, gitRevert, projectName } from './handlers-files'
 import { attachEventSink } from '../run/start-run'
 import { bridgeEventBus, type EventBus } from '../events'
 
@@ -89,6 +89,7 @@ const registry: Record<string, Handler> = {
   listFiles,
   listDir,
   readFile,
+  readFileData,
   pathInfo,
   gitBranch,
   gitDiff,

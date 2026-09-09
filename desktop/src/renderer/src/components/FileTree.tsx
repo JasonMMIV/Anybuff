@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from './Icons'
+import { createPressHandlers } from '../utils/press-menu'
 
 export interface TreeNode {
   name: string
@@ -11,7 +12,12 @@ export interface TreeNode {
 interface Props {
   root: string
   selectedPath: string | null
-  onSelect: (node: TreeNode) => void
+  /** File row click → floating preview (gap #14; the inline right-panel preview is gone). */
+  onPreviewFile: (node: TreeNode) => void
+  /** File row right-click / long-press → file action menu. */
+  onMenuFile?: (node: TreeNode, x: number, y: number, longPress: boolean) => void
+  /** Android WebView / coarse pointers trigger the menu on long-press. */
+  longPressEnabled?: boolean
 }
 
 interface DirRowProps {
@@ -21,18 +27,24 @@ interface DirRowProps {
   loading: Set<string>
   forceExpand: boolean
   onToggle: (path: string) => void
-  onSelect: (n: TreeNode) => void
+  onPreviewFile: (n: TreeNode) => void
+  onMenuFile?: (n: TreeNode, x: number, y: number, longPress: boolean) => void
+  longPressEnabled?: boolean
   selectedPath: string | null
 }
 
-function DirRow({ node, depth, expanded, loading, forceExpand, onToggle, onSelect, selectedPath }: DirRowProps) {
+function DirRow({ node, depth, expanded, loading, forceExpand, onToggle, onPreviewFile, onMenuFile, longPressEnabled, selectedPath }: DirRowProps) {
   if (node.type === 'file') {
     const isSelected = node.path === selectedPath
     return (
       <div
-        className={`tree-row ${isSelected ? 'selected' : ''}`}
+        className={`tree-row file-row ${isSelected ? 'selected' : ''}`}
         style={{ paddingLeft: depth * 14 + 10 }}
-        onClick={() => onSelect(node)}
+        {...createPressHandlers({
+          onActivate: () => onPreviewFile(node),
+          onMenu: (x, y, longPress) => onMenuFile?.(node, x, y, longPress),
+          longPressEnabled: longPressEnabled ?? false
+        })}
         title={node.path}
       >
         <FileIcon />
@@ -65,7 +77,9 @@ function DirRow({ node, depth, expanded, loading, forceExpand, onToggle, onSelec
             loading={loading}
             forceExpand={forceExpand}
             onToggle={onToggle}
-            onSelect={onSelect}
+            onPreviewFile={onPreviewFile}
+            onMenuFile={onMenuFile}
+            longPressEnabled={longPressEnabled}
             selectedPath={selectedPath}
           />
         ))}
@@ -111,7 +125,7 @@ const PREVIEW_TREE: TreeNode[] = [
   }
 ]
 
-export default function FileTree({ root, selectedPath, onSelect }: Props) {
+export default function FileTree({ root, selectedPath, onPreviewFile, onMenuFile, longPressEnabled }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([])
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -174,7 +188,7 @@ export default function FileTree({ root, selectedPath, onSelect }: Props) {
     [expanded]
   )
 
-  const select = useCallback((n: TreeNode) => onSelect(n), [onSelect])
+  const select = useCallback((n: TreeNode) => onPreviewFile(n), [onPreviewFile])
   const visible = useMemo(() => filterTree(tree, query), [tree, query])
   const forceExpand = query.trim().length > 0
 
@@ -200,7 +214,9 @@ export default function FileTree({ root, selectedPath, onSelect }: Props) {
             loading={loading}
             forceExpand={forceExpand}
             onToggle={toggle}
-            onSelect={select}
+            onPreviewFile={select}
+            onMenuFile={onMenuFile}
+            longPressEnabled={longPressEnabled}
             selectedPath={selectedPath}
           />
         ))}

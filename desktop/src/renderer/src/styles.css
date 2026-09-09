@@ -3555,30 +3555,8 @@ select option {
   min-height: 0;
 }
 
-.file-preview {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-1);
-}
-
-.file-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 12px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-}
-
-.file-preview-name {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--accent);
-  letter-spacing: -0.01em;
-}
+/* Gap #14: floating file preview — the right-panel inline <pre> is gone.
+   The modal itself lives near the other overlays; only its CSS is here. */
 
 .mini-btn {
   background: none;
@@ -3596,19 +3574,236 @@ select option {
   color: var(--text-0);
 }
 
-.file-preview-content {
-  font-family: inherit;
-  font-size: 13.5px;
-  line-height: 1.6;
-  padding: 12px 14px;
-  overflow-x: hidden;
-  overflow-y: auto;
+/* ─── Floating file preview modal (gap #14) ─────────────────────── */
+.file-preview-backdrop {
+  z-index: 140;
+  padding: 14px;
+}
+
+.file-preview-modal {
+  width: min(94vw, 980px);
+  height: min(88vh, 800px);
+  min-height: 360px;
   background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px var(--shadow);
+}
+
+/* Android WebView: the preview takes the whole screen (no window chrome). */
+.is-webview .file-preview-backdrop {
+  padding: 0;
+}
+
+.is-webview .file-preview-modal {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+}
+
+.file-preview-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.file-preview-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-preview-modal-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+  display: flex;
+}
+
+.file-preview-modal-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-0);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.file-preview-modal-path {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.file-preview-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-1);
+}
+
+/* Images: fit to page — the wrap fills the visible body (flex:1 within a
+   flex body) and the img caps at 100% both ways (contain, never upscaled). */
+.file-preview-modal-body.image-body {
+  display: flex;
+  overflow: hidden;
+}
+
+.preview-image-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+
+.preview-image {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.preview-loading {
+  height: 100%;
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.preview-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: preview-spin 0.8s linear infinite;
+}
+
+@keyframes preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.preview-code {
+  margin: 0;
+  padding: 14px 16px 18px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
   color: var(--text-0);
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.preview-md {
+  padding: 14px 20px 22px;
+}
+
+.preview-empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.preview-error {
+  padding: 48px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.preview-error-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 650;
+  color: var(--text-0);
+}
+
+.preview-error-title svg {
+  color: var(--red);
+  flex-shrink: 0;
+}
+
+.preview-error-hint {
+  color: var(--text-2);
+  font-size: 12px;
+  max-width: 440px;
+}
+
+/* File action context menu (right-click / long-press) — same look as the
+   sidebar task menu, slightly wider for the icon+label rows. */
+.file-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 190px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px var(--shadow), 0 1px 3px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: menu-fade-in 0.08s ease-out;
+}
+
+.file-context-menu .context-menu-item svg {
+  flex-shrink: 0;
+}
+
+.file-context-menu .context-menu-item span {
   flex: 1;
-  min-height: 0;
+  text-align: left;
+}
+
+/* File rows with click-to-preview + action-menu affordances */
+.tree-row.file-row {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.file-changes-item.clickable {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.file-changes-item.clickable:hover {
+  background: var(--bg-hover);
+  border-radius: 4px;
 }
 
 /* timeline */

@@ -65,6 +65,12 @@ export interface AnyBuffNativeBridge {
   logEvent?: (kind: string, detail: string) => void
   /** Android-only: pull a SAF folder staged while the page was (re)loading. */
   takeStagedFolder?(): Promise<string | null>
+  /** Android-only (gap #14): open a sandbox file with an external app
+   *  (FileProvider + ACTION_VIEW chooser); error when no handler exists. */
+  openExternalFile?(guestPath: string): Promise<{ ok: boolean; error?: string }>
+  /** Android-only (gap #14): copy a sandbox file into the device's public
+   *  Downloads/AnyBuff folder (MediaStore — no storage permission needed). */
+  downloadFile?(guestPath: string): Promise<{ ok: boolean; error?: string }>
   /** Android-only: persist a provider/search key into the device keychain
    *  (Keystore) — the durable store behind the host's memory-only
    *  keyPersistence seam (plan §2.2 / §4.0 deviation 3). Resolves false on a
@@ -506,6 +512,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     listFiles: (root: string) => call('listFiles', root),
     listDir: (dir: string) => call('listDir', dir),
     readFile: (path: string) => call('readFile', path),
+    /** Gap #14 floating preview: text ≤ 4MB / images ≤ 8MB base64. */
+    readFileData: (path: string) => call('readFileData', path),
     gitAccept: (payload: { cwd: string; file: string }) => call('gitAccept', payload),
     gitRevert: (payload: { cwd: string; file: string }) => call('gitRevert', payload),
     pathInfo: (path: string) => call('pathInfo', path),
@@ -582,6 +590,21 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
      *  (push can race React mount, so the page also pulls once it is ready). */
     takeStagedFolder: async (): Promise<string | null> =>
       native?.takeStagedFolder ? await native.takeStagedFolder() : null,
+    // Gap #14 file actions: the Electron shell serves them over IPC; Android
+    // serves them through the native bridge (openExternalFile / downloadFile,
+    // guest sandbox paths); the browser demo has neither. revealFile is
+    // deliberately NOT wired on Android — files live in the app-private
+    // sandbox copy with no user-visible location, so the UI hides the item
+    // until SAF (or equivalent) write-back lands (see the Android plan doc).
+    revealFile: async () => ({ ok: false, error: 'Not supported in this shell' }),
+    openPathExternal: async (path: string) =>
+      native?.openExternalFile
+        ? await native.openExternalFile(path)
+        : { ok: false, error: 'Not supported in this shell' },
+    saveFileCopy: async (payload: { path: string; defaultName?: string }) =>
+      native?.downloadFile
+        ? await native.downloadFile(payload.path)
+        : { ok: false, error: 'Not supported in this shell' },
   }
 
   return api as unknown as AnyBuffApi

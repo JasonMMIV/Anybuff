@@ -36,6 +36,8 @@ import {
   AppIcon,
   CheckCircleIcon,
   ChevronDownIcon,
+  DownloadIcon,
+  ExternalLinkIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
@@ -50,6 +52,7 @@ import {
   XIcon
 } from './components/Icons'
 import type { TreeNode } from './components/FileTree'
+import FilePreviewModal from './components/FilePreviewModal'
 import type { UiEvent } from '../../preload'
 
 interface UiSettings {
@@ -188,6 +191,16 @@ function absPath(cwd: string, rel: string): string {
 
 function basenameOf(p: string): string {
   return p.split(/[\\/]/).pop() ?? p
+}
+
+/**
+ * Gap #14: absolute project paths pass through unchanged; relative ones (e.g.
+ * file-changes rows, search results) resolve against the project folder.
+ */
+function resolveProjectPath(cwd: string | null, path: string): string {
+  if (!cwd) return path
+  if (path.startsWith('/') || path.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(path)) return path
+  return absPath(cwd, path)
 }
 
 /**
@@ -338,6 +351,15 @@ export default function App() {
   // hoisting evaluates App.tsx first), which sent the Android WebView into demo
   // mode (fake calculator.js attach, mocked state) even though a WS host existed.
   const [isPreview] = useState(() => typeof window.AnyBuff === 'undefined')
+  // Gap #14 platform flags for file-row interactions: Electron uses right-click;
+  // the Android WebView (native bridge injected) and any coarse-pointer device
+  // use long-press; the browser demo has neither a host nor real shell actions.
+  const isAndroidShell =
+    !isPreview &&
+    typeof (window as unknown as { __ANYBUFF_NATIVE__?: unknown }).__ANYBUFF_NATIVE__ === 'object'
+  const longPressEnabled =
+    isAndroidShell ||
+    (typeof window.matchMedia !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   // #18 OS 深淺色自動跟隨：'system' resolves live through matchMedia; legacy
   // 'AnyBuff-theme' values ('dark'/'light') migrate to the pinned modes.
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -379,7 +401,10 @@ export default function App() {
   const [prompt, setPrompt] = useState('')
   const [chatItems, setChatItems] = useState<ChatItem[]>([])
   const [events, setEvents] = useState<UiEvent[]>([])
-  const [selectedFile, setSelectedFile] = useState<{ path: string; content: string; name: string } | null>(null)
+  /** Gap #14 重新定案：檔案點擊預覽改為浮動視窗（取代右欄內嵌 <pre>）。 */
+  const [previewFile, setPreviewFile] = useState<{ path: string; name: string } | null>(null)
+  /** Gap #14：檔案列右鍵 / 長按的動作選單（Open folder / Open externally / Download）。 */
+  const [fileMenu, setFileMenu] = useState<{ path: string; name: string; x: number; y: number; longPress: boolean } | null>(null)
 
   const [settings, setSettings] = useState<UiSettings>({ providers: [], activeModel: '', reasoningEffort: 'default', approvalMode: 'balanced' })
   const [agentMode, setAgentMode] = useState<AgentMode>('default')
@@ -1918,24 +1943,109 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [pendingRevert])
 
-  const openFileByPath = useCallback(async (path: string, name: string) => {
-    if (isPreview) {
-      setSelectedFile({ path, content: '// simulated file content (preview mode)', name })
-      return
-    }
-    const result = (await window.AnyBuff.readFile(path)) as { ok: boolean; content?: string; error?: string }
-    if (result.ok) {
-      setSelectedFile({ path, content: result.content ?? '', name })
-    }
-  }, [])
-
-  const onSelectFile = useCallback(
-    (node: TreeNode) => {
-      if (node.type !== 'file') return
-      void openFileByPath(node.path, node.name)
+  /**
+   * Gap #14: open the floating preview for a file path. FileTree / activity
+   * panel pass absolute paths; file-changes rows / search results are relative
+   * and resolve against cwd.
+   */
+  const openPreviewByPath = useCallback(
+    (path: string, name?: string) => {
+      setPreviewFile({ path: resolveProjectPath(cwd, path), name: name ?? basenameOf(path) })
+      setFileMenu(null)
     },
-    [openFileByPath]
+    [cwd]
   )
+
+  /* ── Gap #14 檔案動作（浮動預覽標頭與右鍵/長按選單共用）── */
+
+  const doRevealFile = useCallback(
+    (path: string) => {
+      if (isPreview) {
+        setNotice('File actions are available in the app only.')
+        return
+      }
+      void window.AnyBuff.revealFile(path).then((res: { ok?: boolean; error?: string } | undefined) => {
+        if (!res?.ok) setNotice(res?.error ?? 'Could not reveal the file.')
+      })
+    },
+    [isPreview]
+  )
+
+  const doOpenExternal = useCallback(
+    (path: string) => {
+      if (isPreview) {
+        setNotice('File actions are available in the app only.')
+        return
+      }
+      void window.AnyBuff.openPathExternal(path).then((res: { ok?: boolean; error?: string } | undefined) => {
+        if (!res?.ok) setNotice(res?.error ?? 'Could not open the file externally.')
+      })
+    },
+    [isPreview]
+  )
+
+  const doDownload = useCallback(
+    (path: string, name: string) => {
+      if (isPreview) {
+        setNotice('File actions are available in the app only.')
+        return
+      }
+      void window.AnyBuff
+        .saveFileCopy({ path })
+        .then((res: { ok?: boolean; canceled?: boolean; path?: string; error?: string } | undefined) => {
+          if (!res?.ok) {
+            if (!res?.canceled) setNotice(res?.error ?? 'Failed to save the file.')
+            return
+          }
+          setNotice(
+            isAndroidShell ? `Saved to Downloads/AnyBuff/${name}` : `Saved a copy: ${res.path ?? name}`
+          )
+        })
+    },
+    [isPreview, isAndroidShell]
+  )
+
+  /** Open the file action menu at a screen position (menu state stores abs path). */
+  const openFileMenu = useCallback(
+    (path: string, name: string, x: number, y: number, longPress: boolean) => {
+      if (isPreview) return // demo mode has no real shell actions
+      setFileMenu({ path: resolveProjectPath(cwd, path), name, x, y, longPress })
+    },
+    [cwd, isPreview]
+  )
+
+  /**
+   * Menu item activation. After a long-press the finger-lift click lands on
+   * the item under the finger — swallow it (keep the menu open) so it can
+   * never trigger an action accidentally. Desktop right-click menus act at
+   * once.
+   */
+  const menuItemAction = useCallback(
+    (fn: () => void) => {
+      if (fileMenu?.longPress) {
+        setFileMenu({ ...fileMenu, longPress: false })
+        return
+      }
+      setFileMenu(null)
+      fn()
+    },
+    [fileMenu]
+  )
+
+  // Close the file action menu on an outside press or Escape.
+  useEffect(() => {
+    if (!fileMenu) return
+    const onDown = (): void => setFileMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setFileMenu(null)
+    }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [fileMenu])
 
   const handleCloseSettings = useCallback(() => {
     setShowSettings(false)
@@ -2251,7 +2361,8 @@ export default function App() {
       setAttachments([])
       setTokenUsage(null)
       setTotalCost(0)
-      setSelectedFile(null)
+      setPreviewFile(null)
+      setFileMenu(null)
       setHistoryTask(null)
       setResumeInfo(null)
       setViewTask(null)
@@ -2452,19 +2563,10 @@ export default function App() {
   const onSearchJump = useCallback(
     async (r: SearchResult) => {
       if (r.index < 0) {
-        // File result: open it in the file tree panel
+        // File result: open the floating preview (gap #14 — previously the
+        // right-panel inline preview).
         if (!cwd) return
-        const abs = absPath(cwd, r.text)
-        const name = basenameOf(r.text)
-        if (isPreview) {
-          setSelectedFile({ path: abs, content: '// simulated file content (preview mode)', name })
-        } else {
-          void window.AnyBuff.readFile(abs).then((res) => {
-            if (res.ok) setSelectedFile({ path: abs, content: res.content ?? '', name })
-          })
-        }
-        setRightOpen(true)
-        setRightTab('files')
+        openPreviewByPath(absPath(cwd, r.text), basenameOf(r.text))
         return
       }
 
@@ -2497,7 +2599,7 @@ export default function App() {
       el?.classList.add('search-flash')
       setTimeout(() => el?.classList.remove('search-flash'), 1500)
     },
-    [cwd, projects, onOpenTask]
+    [cwd, projects, onOpenTask, openPreviewByPath]
   )
 
   // Safe jump scrolling when loading a historical task from search
@@ -2867,7 +2969,12 @@ export default function App() {
                       if (item.kind === 'file-changes') {
                         return (
                           <div key={i} data-index={i} ref={setMsgRef}>
-                            <FileChangesSummary files={item.files} />
+                            <FileChangesSummary
+                              files={item.files}
+                              onPreviewFile={openPreviewByPath}
+                              onMenuFile={openFileMenu}
+                              longPressEnabled={longPressEnabled}
+                            />
                           </div>
                         )
                       }
@@ -3042,16 +3149,65 @@ export default function App() {
               tab={rightTab}
               onTab={onRightTab}
               cwd={cwd}
-              selectedFile={selectedFile}
-              onSelectFile={onSelectFile}
-              onOpenFile={(path) => void openFileByPath(path, basenameOf(path))}
+              selectedPath={previewFile?.path ?? null}
+              onPreviewFile={(node) => openPreviewByPath(node.path, node.name)}
+              onMenuFile={(node, x, y, longPress) => openFileMenu(node.path, node.name, x, y, longPress)}
+              longPressEnabled={longPressEnabled}
+              onOpenFile={(path) => openPreviewByPath(path)}
               events={events}
-              onCloseFile={() => setSelectedFile(null)}
               running={viewRunning}
             />
           </>
         )}
       </div>
+
+      {/* Gap #14: file action menu — right-click (desktop) / long-press (touch). */}
+      {fileMenu && (
+        <div
+          className="file-context-menu"
+          role="menu"
+          aria-label="File actions"
+          style={{
+            left: Math.min(fileMenu.x, Math.max(0, window.innerWidth - 200)),
+            top: Math.min(fileMenu.y, Math.max(0, window.innerHeight - (isAndroidShell ? 96 : 132)))
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {!isAndroidShell && (
+            <button
+              type="button"
+              className="context-menu-item"
+              role="menuitem"
+              onClick={() => menuItemAction(() => doRevealFile(fileMenu.path))}
+            >
+              <FolderOpenIcon size={14} />
+              <span>Open folder</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="context-menu-item"
+            role="menuitem"
+            onClick={() => menuItemAction(() => doOpenExternal(fileMenu.path))}
+          >
+            <ExternalLinkIcon size={14} />
+            <span>Open externally</span>
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            role="menuitem"
+            onClick={() => menuItemAction(() => doDownload(fileMenu.path, fileMenu.name))}
+          >
+            <DownloadIcon size={14} />
+            <span>Download</span>
+          </button>
+        </div>
+      )}
+
+      {/* Gap #14: floating file preview (was the right-panel inline preview).
+          File actions live on the row's right-click / long-press menu. */}
+      <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
 
       {pendingRevert && (
         <div className="modal-backdrop revert-modal-backdrop" onClick={() => setPendingRevert(null)}>

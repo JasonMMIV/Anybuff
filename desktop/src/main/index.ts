@@ -1,7 +1,7 @@
 import './env-shim'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen, shell } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { checkNow, initAutoUpdater, registerUpdaterIpc } from './updater'
 import { bindHostToWindow, registerHostIpc } from './host-bridge'
 import { isRunning } from '@codebuff/host-core'
@@ -291,6 +291,44 @@ function registerShellIpc(): void {
       }
     }
   )
+
+  // Gap #14 檔案選單（floating preview + file actions）— the Electron shell
+  // owns Explorer reveal / open-with-default-app / save-a-copy; Android gets
+  // the same three actions through its native bridge (host-ws.ts).
+  ipcMain.handle('AnyBuff:revealFile', (_e, path: string) => {
+    if (typeof path !== 'string' || !path || !existsSync(path)) {
+      return { ok: false, error: 'File does not exist' }
+    }
+    shell.showItemInFolder(path)
+    return { ok: true }
+  })
+
+  ipcMain.handle('AnyBuff:openPathExternal', async (_e, path: string) => {
+    if (typeof path !== 'string' || !path || !existsSync(path)) {
+      return { ok: false, error: 'File does not exist' }
+    }
+    const err = await shell.openPath(path)
+    if (err) return { ok: false, error: err }
+    return { ok: true }
+  })
+
+  ipcMain.handle('AnyBuff:saveFileCopy', async (_e, payload: { path?: string; defaultName?: string }) => {
+    const src = typeof payload?.path === 'string' ? payload.path : ''
+    if (!src || !existsSync(src)) return { ok: false, error: 'Source file does not exist' }
+    const name =
+      typeof payload?.defaultName === 'string' && payload.defaultName.trim() ? payload.defaultName : basename(src)
+    const result = await dialog.showSaveDialog({
+      title: 'Save a copy',
+      defaultPath: join(app.getPath('downloads'), name),
+    })
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+    try {
+      writeFileSync(result.filePath, readFileSync(src))
+      return { ok: true, path: result.filePath }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   ipcMain.on('AnyBuff:setTheme', (_e, theme: 'dark' | 'light') => {
     // The native title bar follows nativeTheme for dark/light mode

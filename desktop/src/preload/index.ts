@@ -89,6 +89,16 @@ const api = {
   /** #8 對話匯出：renderer serializes the conversation (Markdown), the shell saves it via the native dialog. */
   exportConversationFile: (payload: { content: string; defaultName: string; startDir?: string | null }) =>
     ipcRenderer.invoke('AnyBuff:exportConversationFile', payload),
+  /* Gap #14 檔案動作（floating preview + file action menu 的 shell 側） */
+  /** Reveal the file in Explorer (Open folder). */
+  revealFile: (path: string) => ipcRenderer.invoke('AnyBuff:revealFile', path),
+  /** Open the file with its default associated app. */
+  openPathExternal: (path: string) => ipcRenderer.invoke('AnyBuff:openPathExternal', path),
+  /** Save a copy of the file via the native save dialog (Download on desktop). */
+  saveFileCopy: (payload: { path: string; defaultName?: string }) =>
+    ipcRenderer.invoke('AnyBuff:saveFileCopy', payload),
+  /** Preview read: text ≤ 4 MB / images ≤ 8 MB (base64) — gap #14. */
+  readFileData: (path: string) => ipcRenderer.invoke('AnyBuff:readFileData', path),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
   /* MCP servers (Settings → MCP Tools) */
   listMcpServers: (cwd: string | null) => ipcRenderer.invoke('AnyBuff:listMcpServers', cwd),
