@@ -1293,6 +1293,17 @@ textarea {
   filter: drop-shadow(0 0 4px var(--accent-soft));
 }
 
+/* #22：執行中耗時讀數（頂欄 running-badge；純文字 m:ss，不帶圖示）。 */
+.run-elapsed {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  color: color-mix(in srgb, var(--accent) 85%, var(--text-secondary));
+  white-space: nowrap;
+  user-select: none;
+  opacity: 0.92;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

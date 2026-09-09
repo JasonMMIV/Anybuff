@@ -8,6 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
+import RunElapsed from './components/RunElapsed'
 import {
   buildInterviewPrompt,
   buildReviewPrompt,
@@ -452,8 +453,10 @@ export default function App() {
     headline?: string
     detail?: string
   } | null>(null)
-  /** Ticking clock so the retry strip shows a live countdown. */
+  /** Ticking clock so the retry strip + the #22 elapsed timer stay live. */
   const [nowTick, setNowTick] = useState(() => Date.now())
+  /** #22：目前 run 的啟動時間（頂欄 badge / Composer 的即時耗時由此推算）。 */
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
   const [approvalRequest, setApprovalRequest] = useState<{ message: string; raw?: unknown } | null>(null)
   // ask_user override: questions awaiting user answers (rendered as a banner)
   const [pendingAskUser, setPendingAskUser] = useState<Array<Record<string, any>> | null>(null)
@@ -651,6 +654,8 @@ export default function App() {
       setCwd(state.cwd)
       setRunning(state.running)
       setRunningTaskId((state as { runningTaskId?: string | null }).runningTaskId ?? null)
+      // #22：重新載入時若 run 仍在進行，以載入時間為近似起點。
+      setRunStartedAt(state.running ? Date.now() : null)
       setHasProvider(state.settings.hasProvider)
       setSettings({
         providers: state.settings.providers,
@@ -886,6 +891,8 @@ export default function App() {
   }, [])
 
   // Tick while an auto-retry countdown is visible so its seconds stay live.
+  // (The #22 elapsed timer is a self-contained component with its own 1s
+  // clock — it must not re-render the whole App every second.)
   useEffect(() => {
     if (!retryNotice) return
     const timer = setInterval(() => setNowTick(Date.now()), 500)
@@ -904,9 +911,13 @@ export default function App() {
         if (event.status === 'running') {
           setRunning(true)
           if (event.taskId) setRunningTaskId(event.taskId)
+          // #22：計時起點。同一 run 的後續 running 事件（L3 retry / resume）
+          // 保留第一個起點，避免重新計時。
+          setRunStartedAt((prev) => prev ?? Date.now())
         } else {
           setRunning(false)
           setRunningTaskId(null)
+          setRunStartedAt(null)
           // Notification cue: a terminal run transition the user may not be
           // watching — 'idle' = finished successfully, 'interrupted' = stopped/errored.
           if (event.status === 'interrupted') playRunInterruptedSound()
@@ -1581,6 +1592,8 @@ export default function App() {
       autoScrollRef.current = true
       setChatItems((prev) => [...prev, { kind: 'user', text, ts: Date.now() }, { kind: 'assistant', text: '' }])
       setRunning(true)
+      // #22：從送出瞬間開始計時（之後的 run_status running 只會保留這個起點）。
+      setRunStartedAt(Date.now())
       setNotice(null)
       setHistoryTask(null)
       setResumeInfo(null)
@@ -1607,6 +1620,7 @@ export default function App() {
             return next
           })
           setRunning(false)
+          setRunStartedAt(null)
           setStopping(false)
         } else {
           setChatItems((prev) => {
@@ -1651,6 +1665,8 @@ export default function App() {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
     } finally {
       setRunning(false)
+      // #22：run 已結束（成功/失敗/中斷皆然），清除計時起點。
+      setRunStartedAt(null)
       setStopping(false)
       setRetryNotice(null)
       setApprovalRequest(null)
@@ -1715,11 +1731,14 @@ export default function App() {
     if (!info || !cwd || running || !taskId) return
     setRunning(true)
     setRunningTaskId(taskId)
+    // #22：resume 時重新起算耗時。
+    setRunStartedAt(Date.now())
     setNotice(null)
     setResumeInfo(null)
     setChatItems((prev) => [...prev, { kind: 'assistant', text: '' }])
     if (isPreview) {
       setRunning(false)
+      setRunStartedAt(null)
       setStopping(false)
       setNotice('Resume is available in the Electron app (preview mode does not persist run state).')
       return
@@ -1745,6 +1764,8 @@ export default function App() {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
     } finally {
       setRunning(false)
+      // #22：run 已結束，清除計時起點。
+      setRunStartedAt(null)
       setStopping(false)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
@@ -2637,6 +2658,7 @@ export default function App() {
                       title={runningTaskId && runningTaskId !== currentTaskRef.current ? 'A task is running in another conversation' : undefined}
                     >
                       <span className="spinner-ring" /> {currentStage ?? 'Working'}
+                      {runStartedAt && <RunElapsed startedAt={runStartedAt} />}
                     </span>
                   )}
                 </div>
