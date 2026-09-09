@@ -15,6 +15,13 @@ import {
   type ReviewScope
 } from './utils/prompt-builders'
 import { formatBashContext, type BashCommandResult } from './utils/bash-context'
+import {
+  isNotificationSoundEnabled,
+  playRunFinishedSound,
+  playRunInterruptedSound,
+  playRunPausedSound,
+  setNotificationSoundEnabled
+} from './utils/notification-sounds'
 import { AssistantBubble, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
@@ -347,6 +354,11 @@ export default function App() {
     if (saved === ('grey' as unknown)) return 'default'
     return saved || 'default'
   })
+  /**
+   * Gentle notification sounds on run finish / interrupt / user-input pause
+   * (renderer-local; persisted under the 'AnyBuff-*' localStorage keys).
+   */
+  const [notificationSound, setNotificationSound] = useState<boolean>(() => isNotificationSoundEnabled())
   const [cwd, setCwd] = useState<string | null>(null)
   const [projectName, setProjectName] = useState('')
   const [branch, setBranch] = useState('')
@@ -605,6 +617,11 @@ export default function App() {
 
   // #18: 'system' | 'dark' | 'light' — the Settings modal offers all three.
   const selectThemeMode = useCallback((mode: ThemeMode) => setThemeMode(mode), [])
+
+  const selectNotificationSound = useCallback((on: boolean) => {
+    setNotificationSound(on)
+    setNotificationSoundEnabled(on)
+  }, [])
 
   /**
    * Cold-start state load (round 12): pulled out of the mount effect so the
@@ -890,6 +907,10 @@ export default function App() {
         } else {
           setRunning(false)
           setRunningTaskId(null)
+          // Notification cue: a terminal run transition the user may not be
+          // watching — 'idle' = finished successfully, 'interrupted' = stopped/errored.
+          if (event.status === 'interrupted') playRunInterruptedSound()
+          else playRunFinishedSound()
         }
         // Any run transition ends the current retry wait (a new attempt is
         // starting, or the run reached a terminal state).
@@ -899,6 +920,7 @@ export default function App() {
 
       // Approval requests pause the single active run wherever it is — always surface.
       if ((event as any).type === 'ask_user') {
+        playRunPausedSound()
         const qs = (event as any).raw
         setPendingAskUser(Array.isArray(qs) && qs.length > 0 ? qs : null)
         setAskSelections({})
@@ -907,6 +929,7 @@ export default function App() {
       }
 
       if (event.type === 'approval_request') {
+        playRunPausedSound()
         setApprovalRequest({ message: event.message ?? 'Permission requested', raw: event.raw })
         return
       }
@@ -2462,6 +2485,8 @@ export default function App() {
             onSelectThemeMode={selectThemeMode}
             colorTheme={colorTheme}
             onSelectColorTheme={setColorTheme}
+            notificationSound={notificationSound}
+            onSelectNotificationSound={selectNotificationSound}
             initialTab={settingsTab}
             cwd={cwd}
             maxAgentSteps={maxAgentSteps}

@@ -28,6 +28,7 @@ import {
   XIcon
 } from './Icons'
 import CustomSelect from './CustomSelect'
+import { previewNotificationSound } from '../utils/notification-sounds'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
 type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'about' | 'engine'
@@ -334,6 +335,9 @@ interface Props {
   onSelectThemeMode?: (mode: ThemeMode) => void
   colorTheme: ColorTheme
   onSelectColorTheme: (theme: ColorTheme) => void
+  /** Gentle notification sounds on run finish / interrupt / user-input pause. */
+  notificationSound?: boolean
+  onSelectNotificationSound?: (on: boolean) => void
   initialTab?: SettingsTab
   cwd?: string | null
   /** #17 run guardrails, edited here instead of the composer toolbar. */
@@ -424,6 +428,8 @@ export default function SettingsModal({
   onSelectThemeMode,
   colorTheme,
   onSelectColorTheme,
+  notificationSound = true,
+  onSelectNotificationSound,
   initialTab,
   cwd: propCwd,
   maxAgentSteps = 0,
@@ -2137,6 +2143,34 @@ export default function SettingsModal({
                     ]}
                   />
                   <p className="hint">Trade-off between thoroughness and token spend. Applies when no explicit @agent is picked; picked agents keep their own shape.</p>
+                </div>
+
+                <div className="settings-field-group">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <label className="settings-field-label" style={{ margin: 0 }}>Notification Sound</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <label
+                        className="mcp-server-toggle"
+                        title={notificationSound ? 'Mute notification sounds' : 'Enable notification sounds'}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={notificationSound}
+                          onChange={(e) => onSelectNotificationSound?.(e.target.checked)}
+                        />
+                        <span className="mcp-toggle-track" />
+                      </label>
+                      <button
+                        type="button"
+                        className="link-btn"
+                        onClick={() => previewNotificationSound()}
+                        title="Hear the finish chime"
+                      >
+                        Preview
+                      </button>
+                    </div>
+                  </div>
+                  <p className="hint">Play a gentle chime when a conversation finishes, is interrupted, or pauses to ask you a question or request command approval.</p>
                 </div>
               </div>
             </div>
