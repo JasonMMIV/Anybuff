@@ -67,7 +67,7 @@ provider，即可開始對話。
 
 | 路徑                                   | 用途                                                                                                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `desktop/`                           | Windows Electron 應用（React 19 renderer；main 為薄殼——視窗/對話框/updater/theme——業務頻道經 `host-bridge.ts` 委派 `packages/host-core`）                                  || `android/`                           | Android（arm64）Kotlin 薄殼：WebView renderer + proot sandbox 內以 Node 22 執行同一份 host bundle、Keystore 金鑰保管（ADR-21） |
+| `desktop/`                           | Windows Electron 應用（React 19 renderer；main 為薄殼——視窗/對話框/updater/theme——業務頻道經 `host-bridge.ts` 委派 `packages/host-core`）                                  |
 | `packages/host-core`                 | `@codebuff/host-core` —— 無 Electron 依賴的 host 業務邏輯（run 生命週期、`AnyBuff:*` 頻道/WS、設定、secret-store 接縫），桌面與 Android 共用（ADR-21）                                |
 | `sdk/`                               | `@codebuff/sdk` —— 內嵌 Anybuff BYOK 層的進程內 agent runtime（`provider-config.ts`、`impl/model-provider.ts`、failover/retry、followups policy、env sanitization） |
 | `packages/agent-runtime`             | 上游步驟引擎（兩處已登記的 AnyBuff 分歧：ADR-22、ADR-24）                                                                                                                |
@@ -77,31 +77,6 @@ provider，即可開始對話。
 | `agents/`                            | 上游 agent 模板；模型字串是經 anybuff.json 解析的*路由鍵*                                                                                                               |
 | `scripts/generate-desktop-agents.ts` | 從上游 `agents/` 重新產生 `packages/host-core/src/agents/bundled-agents.ts`（含 AnyBuff 修補；桌面 + Android 共用單一產物，ADR-21）                                          |
 | `cli/`                               | 上游 CLI 原始碼保留在磁碟但不在建置圖中（僅供歷史參考）                                                                                                                         |
-
-## 開發
-
-供貢獻者從原始碼建置（一般使用者只需安裝檔）：
-
-```powershell
-bun install                     # 變更 workspace/package.json 後執行
-bun run build:sdk               # 修改 sdk/、packages/、common/ 後重建 SDK
-bun run build:host-core         # 修改 packages/host-core/ 後重建 host-core
-bun run typecheck:host-core
-bun run typecheck:desktop
-bun run test:host-core          # host-core 頻道/WS 契約測試
-bun --cwd desktop test src/__tests__   # desktop renderer/main 測試
-bun run smoke:host-core         # 無頭冒煙測試（不需 Electron）
-cd sdk && bun test src/impl/__tests__ src/__tests__/followups-policy.test.ts
-bun run smoke:sdk               # 無頭端到端 BYOK 檢查（需真實 key）
-bun run dev                     # 桌面開發（經 dev launcher 啟動 electron-vite）
-bun run ci                      # 完整鏈：建置 + 型別檢查 + 測試
-```
-
-發佈 Release 時務必附上 `exe + .blockmap + latest.yml` 三個檔案——
-electron-updater 缺一即無法偵測更新（後兩者由 electron-builder 自動產生）。
-
-上游同步：內部套件刻意保留 `@codebuff/*` 名稱，使 `git merge`
-CodebuffAI/freebuff 保持可行。
 
 ## 授權
 

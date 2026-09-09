@@ -92,7 +92,7 @@ project you open.
 | Path                                 | Purpose                                                                                                                                                                     |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `desktop/`                           | Windows Electron app (React 19 renderer; thin main shell for window/dialog/updater/theme, business channels delegated to `packages/host-core` via `host-bridge.ts`)         |
-| `android/`                           | Android (arm64) Kotlin thin shell: WebView renderer + proot sandbox running Node 22 with the same host bundle, Keystore secret vault (ADR-21)                              |
+| `android/`                           | Android (arm64) Kotlin thin shell: WebView renderer + proot sandbox running Node 22 with the same host bundle, Keystore secret vault (ADR-21)                               |
 | `packages/host-core`                 | `@codebuff/host-core` — Electron-free host business logic (run lifecycle, `AnyBuff:*` channels/WS, settings, secret-store seam) shared by desktop and Android (ADR-21)      |
 | `sdk/`                               | `@codebuff/sdk` — in-process agent runtime with the Anybuff BYOK layer (`provider-config.ts`, `impl/model-provider.ts`, failover/retry, followups policy, env sanitization) |
 | `packages/agent-runtime`             | Upstream step engine (two registered AnyBuff divergences: ADR-22, ADR-24)                                                                                                   |
@@ -102,32 +102,6 @@ project you open.
 | `agents/`                            | Upstream agent templates; model strings are *routing keys* resolved through anybuff.json                                                                                    |
 | `scripts/generate-desktop-agents.ts` | Regenerates `packages/host-core/src/agents/bundled-agents.ts` from upstream `agents/` with AnyBuff patches baked in (single artifact shared by desktop + Android, ADR-21)   |
 | `cli/`                               | Upstream CLI source kept on disk but OUT of the build graph (historical reference only)                                                                                     |
-
-## Development
-
-For contributors building from source (end users only need the installer):
-
-```powershell
-bun install                     # after workspace/package.json changes
-bun run build:sdk               # rebuild SDK after touching sdk/, packages/, common/
-bun run build:host-core         # rebuild host-core after touching packages/host-core/
-bun run typecheck:host-core
-bun run typecheck:desktop
-bun run test:host-core          # host-core channel/WS contract tests
-bun --cwd desktop test src/__tests__   # desktop renderer/main tests
-bun run smoke:host-core         # headless smoke test (no Electron needed)
-cd sdk && bun test src/impl/__tests__ src/__tests__/followups-policy.test.ts
-bun run smoke:sdk               # headless end-to-end BYOK check (needs a real key)
-bun run dev                     # desktop dev (electron-vite via the dev launcher)
-bun run ci                      # full chain: builds + typechecks + tests
-```
-
-Releases: attach `exe + .blockmap + latest.yml` to the GitHub Release —
-electron-updater needs all three to detect an update (electron-builder
-produces the latter two).
-
-Upstream sync: internal packages keep their `@codebuff/*` names on purpose so
-`git merge` from CodebuffAI/freebuff stays viable.
 
 ## License
 
