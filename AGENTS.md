@@ -74,14 +74,19 @@ module body; an in-bundle shim cannot satisfy common/env validation).
 - `scripts/generate-desktop-agents.ts` — regenerates the bundled agents into
   `packages/host-core/src/agents/bundled-agents.ts` (ADR-21: single artifact
   consumed by desktop + Android); bakes tool-surface patches
-  (run_terminal_command/web_search/code_search/update_subgoal/think_deeply on
-  base family), prompt discipline, and the AnyBuff prompt scrub (gravity_index
+  (run_terminal_command/web_search/code_search on base family), prompt
+  discipline, and the AnyBuff prompt scrub (gravity_index
   copy + Codebuff/Freebuff meta removed, ADR-19). base-chat is re-bundled as
   the AnyBuff Chat root — UI mode 'chat' → AGENT_ID_FOR_MODE['chat'] =
   'base-chat' (see host-core/src/run/start-run.ts) — with a lightweight
   no-filesystem tool surface (web_search/read_url/render_ui/spawn_agents) and
   rewritten Buffy prompts (patch #7). Re-run it after every upstream agents/
   sync.
+  **Never graft think_deeply / update_subgoal onto any agent.** They are in
+  `TOOLS_WHICH_WONT_FORCE_NEXT_STEP`, so a lone call ends the turn (upstream
+  commit 97178a8d6) — that rule is upstream-intentional but the base family was
+  never given either tool, so grafting one strands the user mid-task. Upstream's
+  own agent definitions never grant them.
 
 ## Known debts (do not silently re-add)
 

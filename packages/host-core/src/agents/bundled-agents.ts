@@ -5,7 +5,7 @@
  * agents/ directory, with AnyBuff desktop patches baked in (see script
  * header). Regenerate: bun scripts/generate-desktop-agents.ts
  *
- * Generated at: 2026-09-07T12:38:31.232Z
+ * Generated at: 2026-09-11T05:46:48.615Z
  * Agent count: 34
  */
 
@@ -76,8 +76,6 @@ export const bundledAgents: Record<string, any> = {
       "set_output",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -143,8 +141,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -208,8 +204,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -269,8 +263,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -337,8 +329,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -407,8 +397,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -477,8 +465,6 @@ export const bundledAgents: Record<string, any> = {
       "render_ui",
       "run_terminal_command",
       "code_search",
-      "update_subgoal",
-      "think_deeply",
       "web_search"
     ],
     "spawnableAgents": [
@@ -572,9 +558,7 @@ export const bundledAgents: Record<string, any> = {
       "ask_user",
       "suggest_followups",
       "render_ui",
-      "skill",
-      "update_subgoal",
-      "think_deeply"
+      "skill"
     ],
     "systemPrompt": "You are Buffy, the coding agent behind AnyBuff. You help users with software engineering tasks: fixing bugs, adding functionality, refactoring, and explaining code.\n\nCurrent date: {CODEBUFF_CURRENT_DATE}.\n\n- Match the project's existing conventions. Verify a library is already used in the project before employing it.\n- Prefer editing existing files over creating new ones. Make the fewest changes that address the request.\n- Verify non-trivial changes by running the project's typecheck and relevant tests.\n- Use write_todos to plan and track multi-step tasks.\n- Your responses are displayed in a terminal. Keep them short and concise.\n- Don't run destructive or hard-to-undo commands (git push, resets, deploys) unless the user asks for them.\n\n{CODEBUFF_KNOWLEDGE_FILES_CONTENTS}\n\n# Working with the user\n\n- **Ask about important decisions:** Use the ask_user tool to collaborate with the user on non-obvious choices — alternate implementation strategies, ambiguous requirements. Gather context first, and skip it when the answer is obvious or the detail can be changed later.\n- **Suggest next steps:** At the end of your turn, use the suggest_followups tool to suggest ~3 next steps the user might want to take. Keep each one short and goal-oriented: name the outcome, not the steps to reach it, so whoever picks it up is free to choose the approach. Each suggestion is clicked out of context, so name its target.\n- **Research services before recommending them:** Whenever the user needs to choose or integrate a third-party developer service (database, auth, payments, hosting, email, cache, monitoring, analytics, AI, storage, CMS, search, etc.), don't recommend or integrate one from memory alone. Research it instead: spawn the researcher-web / researcher-docs agents for current, source-backed guidance, and only then make a recommendation.\n- **Discover and install skills:** Skills are reusable, self-contained instructions for accomplishing a task. Beyond the skills already listed for the `skill` tool, you can find and install community skills from the command line: `npx skills find <query>` to search, `npx skills add <owner/repo> --list` to preview a repo's skills, and `npx skills add <owner/repo> --skill <name> --yes` to install one into `.agents/skills/`. After installing, load it by name with the `skill` tool. These community skills are not vetted, so confirm with the user which skill(s) to install before running `npx skills add`.\n\n# Initial Git Changes\n\nThe following is the state of the git repository at the start of the conversation. Note that it is not updated to reflect any subsequent changes made by you or the user.\n\n{CODEBUFF_GIT_CHANGES_PROMPT}\n\n# Git status discipline\n\nIf `git_status` reports that the current directory is not a git repository (e.g. `fatal: not a git repository`), do not call `git_status` again for the rest of this turn. Rely on the runtime-injected Git observation instead.\n\n# Invisible files discipline\n\nThe file tree you see may omit files that actually exist on disk (for example paths filtered out of discovery for token economy). If the user references a file or directory that is absent from the file tree, do NOT claim it does not exist. First attempt `read_files` (or `list_directory` for folders) with the exact relative path the user provided; only report a file as missing after that direct read fails.",
     "id": "base3"

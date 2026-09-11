@@ -3,10 +3,16 @@
  * Generate the desktop app's bundled agents from the upstream agents/
  * directory, with AnyBuff desktop patches baked in:
  *
- * 1. Ensure the base coding agents have the full working tool set
- *    (run_terminal_command / code_search / update_subgoal / think_deeply).
- *    Upstream routes shell work through subagents by default; a desktop
- *    one-window experience wants the root agent to run commands directly.
+ * 1. Ensure the base coding agents have the working tool set upstream routes
+ *    through subagents (run_terminal_command / code_search). Upstream routes
+ *    shell work through subagents by default; a desktop one-window experience
+ *    wants the root agent to run commands directly.
+ *    Deliberately NOT added: update_subgoal / think_deeply. They sit in
+ *    TOOLS_WHICH_WONT_FORCE_NEXT_STEP (common/src/tools/constants.ts), so an
+ *    upstream rule the base family never reaches — "don't continue if the only
+ *    tool call is one of these" (upstream commit 97178a8d6) — would end the
+ *    turn the moment the root agent used one, stranding the user mid-task.
+ *    Upstream's own agent definitions never grant them; keep it that way.
  * 2. Add native web_search to the primary coding agent (DuckDuckGo,
  *    built into agent-runtime, no key needed).
  * 3. Append prompt-discipline sections: git_status retry suppression and
@@ -121,12 +127,10 @@ Never spawn the context-pruner agent: it is spawned automatically for you before
  */
 const BUNDLE_EXCLUDED_AGENT_IDS = new Set<string>([])
 
-const EXTRA_TOOLS = [
-  'run_terminal_command',
-  'code_search',
-  'update_subgoal',
-  'think_deeply',
-]
+/** Tools to graft onto the base family. Keep this to tools that neither end
+ *  the turn nor suppress a step — anything in TOOLS_WHICH_WONT_FORCE_NEXT_STEP
+ *  must stay out (see patch #1 in the header comment). */
+const EXTRA_TOOLS = ['run_terminal_command', 'code_search']
 
 const GIT_DISCIPLINE = `# Git status discipline
 
