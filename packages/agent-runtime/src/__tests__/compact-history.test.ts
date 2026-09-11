@@ -858,3 +858,104 @@ describe('P1.5 C1 budget scaling', () => {
     expect(result.stats.trigger_source).toBe('baked')
   })
 })
+
+describe('tail boundary keeps reasoning with its tool calls (ADR-26)', () => {
+  const assistantReasoning = (text: string): Message => ({
+    role: 'assistant',
+    content: [{ type: 'reasoning', text }],
+    sentAt: 1,
+  })
+
+  it('pulls a reasoning-led assistant run into the tail when the budget would split it', () => {
+    // The streamed shape: reasoning arrives as its own assistant message
+    // directly before the tool-call message (INCLUDE_REASONING_IN_MESSAGE_
+    // HISTORY). The huge reasoning block busts the 10k tail budget exactly
+    // at the reasoning message, so without the guard the tail would open on
+    // the bare tool-call message and the reasoning — which the head
+    // summarizer drops entirely — would be stripped from replay.
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistantReasoning(`PLAN_START ${'thinking '.repeat(5_000)} PLAN_END`),
+      assistantToolCall('read_files', { paths: ['a.ts'] }),
+      toolResult('read_files', { content: 'body' }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    const tail = result.messages.slice(1, -1)
+
+    // The whole run rides in the tail, in order, with the reasoning intact.
+    expect(tail.map((m) => m.role)).toEqual([
+      'assistant',
+      'assistant',
+      'tool',
+    ])
+    expect(JSON.stringify(tail[0].content)).toContain('PLAN_START')
+    expect(JSON.stringify(tail[1].content)).toContain('read_files')
+    // The tail overshot its budget by the run's cost — by design.
+    expect(result.stats.tail_tokens).toBeGreaterThan(10_000)
+  })
+
+  it('counts reasoning text toward the tail budget (wire-cost honest)', () => {
+    // Without the counter fix, a giant thinking block rode the tail for
+    // free — the walk thought the tail fit while it carried tens of
+    // thousands of wire tokens.
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistantReasoning('R'.repeat(40_000)),
+      assistantReasoning('R2'.repeat(1_000)),
+      assistantToolCall('read_files', { paths: ['a.ts'] }),
+      toolResult('read_files', { content: 'body' }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    // ~13.8k tokens of reasoning alone; the 10k budget cannot hold the
+    // whole history's reasoning, but the run must not split: the newest
+    // reasoning stays with the tool call and the oldest one…
+    const tail = result.messages.slice(1, -1)
+    expect(tail.some((m) => JSON.stringify(m.content).includes('R2'))).toBe(
+      true,
+    )
+    expect(tail.some((m) => JSON.stringify(m.content).includes('read_files')))
+      .toBe(true)
+    // The counter actually priced the reasoning in: ~14k accounted tail
+    // tokens (without it the tail would weigh ~700 — reasoning rode free).
+    expect(result.stats.tail_tokens).toBeGreaterThan(10_000)
+  })
+
+  it('does not pull a plain-prose run that carries no reasoning', () => {
+    // Text has no replay contract — the head summarizes it as prose — so
+    // the budget split stands and only the tool pair stays verbatim.
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistant(`note ${'x'.repeat(40_000)}`),
+      assistantToolCall('read_files', { paths: ['a.ts'] }),
+      toolResult('read_files', { content: 'body' }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    const tail = result.messages.slice(1, -1)
+
+    expect(tail.map((m) => m.role)).toEqual(['assistant', 'tool'])
+    // The prose survives (truncated) in the head summary.
+    expect(textOf(result.messages[0])).toContain('note')
+  })
+
+  it('keeps a reasoning run that already fits — no boundary in sight', () => {
+    const history = [
+      user('request', ['USER_PROMPT']),
+      assistantReasoning('small plan'),
+      assistantToolCall('read_files', { paths: ['a.ts'] }),
+      toolResult('read_files', { content: 'body' }),
+    ]
+
+    const result = compactMessages({ messages: history })
+    const tail = result.messages.slice(1, -1)
+
+    expect(tail.map((m) => m.role)).toEqual([
+      'assistant',
+      'assistant',
+      'tool',
+    ])
+    expect(JSON.stringify(tail[0].content)).toContain('small plan')
+  })
+})

@@ -136,10 +136,23 @@ export function setFreeModeCapacityDeferralListener(
   freeModeCapacityDeferralListener = listener
 }
 
+/**
+ * Phase-appropriate effort for an agent, used ONLY when `adaptiveReasoning:
+ * true` is explicitly declared in anybuff.json (ADR-26: strict opt-in —
+ * Default never sends).
+ *
+ * Layering: `supported === false` (an explicit "cannot reason" declaration)
+ * always wins and returns nothing. `efforts` is the caller-merged ladder —
+ * declared `modelCapabilities.reasoning.efforts` over the ADR-25 seed table
+ * — and the preferred rung is picked when the ladder allows it, otherwise
+ * the highest rung the ladder offers. With no ladder at all, a pick is made
+ * only when `supported === true` was explicitly declared: guessing a rung
+ * for an unknown model would be suppression's close cousin (ADR-10).
+ */
 export function selectAdaptiveReasoningEffort(params: {
   agentId?: string
   supported?: boolean
-  efforts?: AnybuffReasoningEffort[]
+  efforts?: readonly AnybuffReasoningEffort[]
 }): AnybuffReasoningEffort | undefined {
   if (params.supported === false) return undefined
   const id = (params.agentId ?? '').toLowerCase()
@@ -1062,23 +1075,40 @@ export async function getModelForRequest(
         loadedConfig: loadedProviderConfig,
       })
     : undefined
-  if (
-    reasoningEffort === undefined &&
-    loadedProviderConfig.config.adaptiveReasoning !== false
-  ) {
-    reasoningEffort = selectAdaptiveReasoningEffort({
-      agentId,
-      supported: resolvedCapabilities?.reasoning?.supported,
-      efforts: resolvedCapabilities?.reasoning?.efforts,
-    })
-  }
-
   if (!configuredProviderModel) {
     throw new Error(
       `AnyBuff could not route model '${effectiveModel}'${
         agentId ? ` for agent '${agentId}'` : ''
       }. Add a provider mapping in anybuff.json or set ${'ANYBUFF_PROVIDER_CONFIG'}.`,
     )
+  }
+
+  // ADR-25 seed ladder for the (possibly vision-rerouted) model, shared by
+  // the opt-in pick below and the clamp that follows.
+  const seed = findVerifiedReasoningLadder(effectiveModel)
+
+  // ADR-26: adaptive reasoning is a STRICT opt-in. Only an explicit
+  // `adaptiveReasoning: true` picks a phase-appropriate effort for requests
+  // carrying no explicit mode/agent/default effort; unset or false means
+  // Default never sends. Declaring `modelCapabilities.reasoning` (effort
+  // ladders, supported markers) routes and clamps explicit picks but must
+  // not flip Default from "send nothing" to "send a value" — the regression
+  // pushed every programmatic-subagent request on DeepSeek into thinking
+  // mode and then into the reasoning_content 400. When opted in, declared
+  // efforts win over the seed table and the pick flows through the same
+  // clamp below, so an illegal rung can never reach the wire.
+  if (
+    reasoningEffort === undefined &&
+    loadedProviderConfig.config.adaptiveReasoning === true
+  ) {
+    reasoningEffort = selectAdaptiveReasoningEffort({
+      agentId,
+      supported: resolvedCapabilities?.reasoning?.supported,
+      efforts:
+        resolvedCapabilities?.reasoning?.efforts?.length
+          ? resolvedCapabilities.reasoning.efforts
+          : seed?.efforts ?? undefined,
+    })
   }
 
   // ADR-25 request-time reasoning-effort clamp: declared capabilities win,
@@ -1088,7 +1118,6 @@ export async function getModelForRequest(
   // resolved this far is always a real rung — llm.ts's withConfiguredReasoningEffort
   // keeps the 'default' check for its own string-typed input.)
   if (reasoningEffort) {
-    const seed = findVerifiedReasoningLadder(effectiveModel)
     const ladder =
       resolvedCapabilities?.reasoning?.efforts?.length
         ? resolvedCapabilities.reasoning.efforts

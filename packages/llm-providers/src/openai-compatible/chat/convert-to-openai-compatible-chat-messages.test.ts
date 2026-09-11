@@ -1083,3 +1083,154 @@ describe('consecutive assistant messages', () => {
     ])
   })
 })
+
+describe('thinking-mode reasoning_content backfill (ADR-26)', () => {
+  // A programmatic-agent history: the runtime pushes the tool call as an
+  // assistant message with ONLY a tool-call part (no reasoning part), which
+  // is exactly the shape DeepSeek's thinking mode rejects with
+  // "The reasoning_content in the thinking mode must be passed back to the API".
+  const bareToolCallRun = [
+    {
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'Run it.' }],
+    },
+    {
+      role: 'assistant' as const,
+      content: [
+        {
+          type: 'tool-call' as const,
+          toolCallId: 'tc-1',
+          toolName: 'run_terminal_command',
+          input: { command: 'npm test' },
+        },
+      ],
+    },
+    {
+      role: 'tool' as const,
+      content: [
+        {
+          type: 'tool-result' as const,
+          toolCallId: 'tc-1',
+          toolName: 'run_terminal_command',
+          output: { type: 'json' as const, value: { stdout: 'ok' } },
+        },
+      ],
+    },
+  ]
+
+  it('backfills reasoning_content: "" on a bare tool-call assistant message', () => {
+    const result = convertToOpenAICompatibleChatMessages(bareToolCallRun, {
+      backfillReasoningContent: true,
+    })
+
+    expect(result[1]).toMatchObject({
+      role: 'assistant',
+      reasoning_content: '',
+    })
+    expect(Array.isArray((result[1] as any).tool_calls)).toBe(true)
+  })
+
+  it('leaves the field absent by default (option off)', () => {
+    const result = convertToOpenAICompatibleChatMessages(bareToolCallRun)
+
+    expect((result[1] as any).reasoning_content).toBeUndefined()
+  })
+
+  it('does not backfill over real reasoning text', () => {
+    const result = convertToOpenAICompatibleChatMessages(
+      [
+        bareToolCallRun[0],
+        {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'I should run the tests.' },
+            {
+              type: 'tool-call',
+              toolCallId: 'tc-1',
+              toolName: 'run_terminal_command',
+              input: { command: 'npm test' },
+            },
+          ],
+        },
+        bareToolCallRun[2],
+      ],
+      { backfillReasoningContent: true },
+    )
+
+    expect((result[1] as any).reasoning_content).toBe(
+      'I should run the tests.',
+    )
+  })
+
+  it('does not backfill over a reasoning_details replay', () => {
+    // OpenRouter-style: reasoning rides on reasoning_details; a backfilled
+    // reasoning_content on top would be noise, so the condition requires
+    // BOTH forms to be missing.
+    const details = [{ type: 'reasoning.text', text: 'x', signature: 's' }]
+    const result = convertToOpenAICompatibleChatMessages(
+      [
+        bareToolCallRun[0],
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'x',
+              providerOptions: { openaiCompatible: { reasoning_details: details } },
+            },
+          ],
+        },
+      ],
+      { backfillReasoningContent: true },
+    )
+
+    expect((result[1] as any).reasoning_details).toEqual(details)
+    expect((result[1] as any).reasoning_content).toBeUndefined()
+  })
+
+  it('also backfills a plain-text assistant turn (even turns without tool calls)', () => {
+    // The contract is scoped to "all previous turns", not just tool-call
+    // turns — a synthetic text-only assistant message (e.g. an error
+    // message) needs the field too.
+    const result = convertToOpenAICompatibleChatMessages(
+      [
+        bareToolCallRun[0],
+        { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+      ],
+      { backfillReasoningContent: true },
+    )
+
+    expect((result[1] as any).reasoning_content).toBe('')
+  })
+
+  it('merges a later reasoning run over an earlier backfilled one', () => {
+    // [A_tc][A_reason]: the bare call pushes with the backfilled '', then the
+    // adjacent reasoning merges into the SAME wire message and the
+    // concatenation replaces the placeholder with the real text.
+    const result = convertToOpenAICompatibleChatMessages(
+      [
+        bareToolCallRun[0],
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'tc-1',
+              toolName: 'run_command',
+              input: {},
+            },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'reasoning', text: 'late reasoning' }],
+        },
+      ],
+      { backfillReasoningContent: true },
+    )
+
+    expect(result).toHaveLength(2)
+    expect((result[1] as any).reasoning_content).toBe('late reasoning')
+    expect(Array.isArray((result[1] as any).tool_calls)).toBe(true)
+  })
+})

@@ -806,14 +806,30 @@ function renderSummaryText(entries: SummaryEntry[]): string {
 }
 
 /**
+ * True when an assistant message carries reasoning parts. Those must stay
+ * with the tool-call message they precede — see the boundary guard in
+ * `splitTail`.
+ */
+function hasReasoningParts(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    Array.isArray(message.content) &&
+    (message.content as Array<Record<string, unknown>>).some(
+      (part) => part.type === 'reasoning',
+    )
+  )
+}
+
+/**
  * P1.5 C4: walks the history newest-first and collects a verbatim tail —
  * whole tool-call/result pairs (plus any plain messages interleaved between
  * them) — stopping at `tailBudget` estimated tokens or `TAIL_MAX_PAIRS` pairs.
  *
  * The cut must be structurally legal: the boundary always lands on the start
  * of an assistant tool-call message (or the oldest collected plain message),
- * never mid-pair, so the retained slice reads as a normal conversation. The
- * summary is cut where the tail begins so nothing appears twice.
+ * never mid-pair, and never inside a reasoning-led assistant run (ADR-26),
+ * so the retained slice reads as a normal conversation. The summary is cut
+ * where the tail begins so nothing appears twice.
  */
 function splitTail(params: {
   /** The history that is a candidate for tail inclusion (mid-turn: all real history; otherwise minus the live prompt). */
@@ -861,6 +877,30 @@ function splitTail(params: {
     boundary++
   }
 
+  // ADR-10/ADR-26 boundary guard: never split a reasoning part from the
+  // tool-call message it precedes. The wire layer merges a run of adjacent
+  // assistant messages into one — the run's reasoning rides on the merged
+  // message alongside its tool_calls — while the head summarizer keeps
+  // prose and tool calls but DROPS reasoning parts. Leaving a
+  // reasoning-carrying assistant in the head while the rest of its run
+  // opens the tail would strip that step's reasoning_content on replay
+  // (DeepSeek thinking-mode 400; ADR-10's registered no-clear rule). When
+  // the tail opens on an assistant, scan the adjacent head-side run; if it
+  // carries reasoning, pull the whole run into the tail. The tail may
+  // overshoot tailBudget by the run's cost — bounded by one streamed step.
+  if (
+    boundary < messages.length &&
+    messages[boundary].role === 'assistant'
+  ) {
+    let runStart = boundary - 1
+    while (runStart >= 0 && messages[runStart].role === 'assistant') {
+      runStart--
+    }
+    if (messages.slice(runStart + 1, boundary).some(hasReasoningParts)) {
+      boundary = runStart + 1
+    }
+  }
+
   const tail = messages.slice(boundary)
   // A tail with no tool-call pair is pure prose the head would carry better —
   // keep the history intact instead of duplicating it verbatim.
@@ -899,7 +939,10 @@ function countTokensOfMessage(message: Message): number {
     chars = content.length
   } else if (Array.isArray(content)) {
     for (const part of content as Array<Record<string, unknown>>) {
-      if (part.type === 'text' && typeof part.text === 'string') {
+      if (
+        (part.type === 'text' || part.type === 'reasoning') &&
+        typeof part.text === 'string'
+      ) {
         chars += part.text.length
       } else if (part.type === 'tool-call') {
         try {

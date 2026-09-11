@@ -73,6 +73,15 @@ export type OpenAICompatibleChatConfig = {
 
 const TOOL_CALL_METADATA_KEYS = new Set(['index', 'id', 'type', 'function'])
 
+/**
+ * DeepSeek-family model ids. The vendor's own names (deepseek-chat,
+ * deepseek-reasoner, deepseek-v4-flash, …) and gateway spellings
+ * (deepseek/deepseek-v4.1-flash) all carry the vendor prefix — the same
+ * family the ADR-25 seed ladder table keys. Used to scope the ADR-26
+ * reasoning_content backfill to models that validate thinking-mode replay.
+ */
+const DEEPSEEK_MODEL_ID_RE = /deepseek/i
+
 function getToolCallProviderMetadata(
   toolCall: Record<string, unknown>,
 ): SharedV2ProviderMetadata | undefined {
@@ -286,6 +295,11 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
           providerOptionsName: this.providerOptionsName,
           modelId: this.modelId,
           stringifyTextContent: this.config.stringifyTextContent,
+          // ADR-26: DeepSeek thinking mode requires reasoning_content on
+          // every assistant message when the request carries tools.
+          backfillReasoningContent:
+            openaiTools !== undefined &&
+            DEEPSEEK_MODEL_ID_RE.test(this.modelId),
         }),
 
         // tools:

@@ -123,6 +123,13 @@ const assistant = (
   sentAt: 1,
 })
 
+/** ADR-26: the streamed shape — reasoning as its own assistant message. */
+const assistantReasoning = (text: string): Message => ({
+  role: 'assistant',
+  content: [{ type: 'reasoning' as const, text }],
+  sentAt: 1,
+})
+
 const toolMessage = (toolName: string, value: unknown): Message => ({
   role: 'tool',
   toolCallId: 'call-0',
@@ -213,6 +220,17 @@ const FIXTURES: Record<string, Message[]> = {
     toolMessage('read_files', { content: 'file body' }),
     assistant('', [{ toolName: 'str_replace', input: { path: 'a.ts' } }]),
     toolMessage('str_replace', { message: 'replaced 1 occurrence' }),
+  ],
+
+  // ADR-26: the streamed shape — reasoning as its own assistant message
+  // directly before the tool-call message — with a reasoning block big
+  // enough to bust the tail budget on both sides (runtime 10k, pruner 5k),
+  // so the boundary guard pulls the whole run into the tail identically.
+  'a reasoning run the tail budget would split': [
+    user('build it', ['USER_PROMPT']),
+    assistantReasoning(`PLAN ${'pondering '.repeat(5_000)}`),
+    assistant('', [{ toolName: 'read_files', input: { paths: ['a.ts'] } }]),
+    toolMessage('read_files', { content: 'file body' }),
   ],
 
   'failures, commands and todos': [

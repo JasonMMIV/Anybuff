@@ -195,7 +195,10 @@ const definition: AgentDefinition = {
         chars = content.length
       } else if (Array.isArray(content)) {
         for (const part of content as Array<Record<string, unknown>>) {
-          if (part.type === 'text' && typeof part.text === 'string') {
+          if (
+            (part.type === 'text' || part.type === 'reasoning') &&
+            typeof part.text === 'string'
+          ) {
             chars += (part.text as string).length
           } else if (part.type === 'tool-call') {
             try {
@@ -216,12 +219,29 @@ const definition: AgentDefinition = {
     }
 
     /**
+     * True when an assistant message carries reasoning parts. Those must
+     * stay with the tool-call message they precede — see the boundary guard
+     * in splitTail below. (Inlined twin of compact-history.ts; the parity
+     * test locks the two together.)
+     */
+    function hasReasoningParts(message: Message): boolean {
+      return (
+        message.role === 'assistant' &&
+        Array.isArray(message.content) &&
+        (message.content as Array<Record<string, unknown>>).some(
+          (part) => part.type === 'reasoning',
+        )
+      )
+    }
+
+    /**
      * P1.5 C4: walks the history newest-first and collects a verbatim tail —
      * whole tool-call/result pairs plus interleaved plain messages — stopping
-     * at `tailBudget` estimated tokens or TAIL_MAX_PAIRS pairs. Dangling tool
-     * results at the boundary are trimmed (a tail may not open on a result
-     * whose call stayed in the head), and a tail without any tool pair is
-     * discarded: pure prose belongs in the head.
+     * at `tailBudget` estimated tokens or TAIL_MAX_PAIRS pairs. Dangling
+     * tool results at the boundary are trimmed (a tail may not open on a
+     * result whose call stayed in the head), a reasoning-led assistant run
+     * is never split from the tool call it precedes (ADR-26), and a tail
+     * without any tool pair is discarded: pure prose belongs in the head.
      */
     function splitTail(p: {
       messages: Message[]
@@ -259,6 +279,31 @@ const definition: AgentDefinition = {
       // Drop dangling tool results at the start of the tail.
       while (boundary < messages.length && messages[boundary].role === 'tool') {
         boundary++
+      }
+
+      // ADR-10/ADR-26 boundary guard: never split a reasoning part from the
+      // tool-call message it precedes. The wire layer merges a run of
+      // adjacent assistant messages into one — the run's reasoning rides on
+      // the merged message alongside its tool_calls — while the head
+      // summarizer keeps prose and tool calls but DROPS reasoning parts.
+      // Leaving a reasoning-carrying assistant in the head while the rest
+      // of its run opens the tail would strip that step's reasoning_content
+      // on replay (DeepSeek thinking-mode 400; ADR-10's registered
+      // no-clear rule). When the tail opens on an assistant, scan the
+      // adjacent head-side run; if it carries reasoning, pull the whole run
+      // into the tail. The tail may overshoot tailBudget by the run's cost
+      // — bounded by one streamed step.
+      if (
+        boundary < messages.length &&
+        messages[boundary].role === 'assistant'
+      ) {
+        let runStart = boundary - 1
+        while (runStart >= 0 && messages[runStart].role === 'assistant') {
+          runStart--
+        }
+        if (messages.slice(runStart + 1, boundary).some(hasReasoningParts)) {
+          boundary = runStart + 1
+        }
       }
 
       const tail = messages.slice(boundary)

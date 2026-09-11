@@ -55,6 +55,21 @@ export function convertToOpenAICompatibleChatMessages(
     providerOptionsName?: string
     modelId?: string
     stringifyTextContent?: boolean
+    /**
+     * Backfill `reasoning_content: ''` on assistant wire messages that would
+     * otherwise carry neither reasoning_content nor reasoning_details.
+     * DeepSeek's thinking-mode contract (verified 2026-09-12,
+     * api-docs.deepseek.com/guides/thinking_mode) requires every assistant
+     * message in a request that carries `tools` to carry reasoning_content
+     * — "even for turns where the model did not perform a tool call" — and
+     * rejects the request with a 400 otherwise. Programmatic agent steps
+     * emit bare tool-call assistant messages with no reasoning part, so the
+     * caller (which knows whether the request carries tools and whether the
+     * model validates replay) enables this for exactly those requests. An
+     * empty string satisfies the check (LiteLLM PR #26660 ships the same
+     * backfill); real reasoning is never touched.
+     */
+    backfillReasoningContent?: boolean
   },
 ): OpenAICompatibleChatPrompt {
   const messages: OpenAICompatibleChatPrompt = []
@@ -227,11 +242,22 @@ export function convertToOpenAICompatibleChatMessages(
           break
         }
 
+        // ADR-26: with the backfill enabled, a run carrying no reasoning in
+        // either form still emits `reasoning_content: ''` — DeepSeek's
+        // thinking-mode replay contract requires the field on every
+        // assistant message of a tools-carrying request. A run with real
+        // reasoning (text or details) is never touched.
+        const backfillEmptyReasoningContent =
+          options?.backfillReasoningContent === true &&
+          reasoningDetails.length === 0 &&
+          reasoningContent.length === 0
+
         messages.push({
           role: 'assistant',
           content: text,
-          reasoning_content:
-            reasoningDetails.length === 0 && reasoningContent.length > 0
+          reasoning_content: backfillEmptyReasoningContent
+            ? ''
+            : reasoningDetails.length === 0 && reasoningContent.length > 0
               ? reasoningContent
               : undefined,
           reasoning_details:

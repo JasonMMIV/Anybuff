@@ -438,7 +438,14 @@ export const providerConfigFileSchema = z
     agentReasoningEfforts: z
       .record(z.string().min(1), reasoningEffortSchema)
       .optional(),
-    /** When enabled, choose a phase-appropriate reasoning effort only when no explicit mode/agent/default effort is configured. Model routing is never changed. */
+    /**
+     * Strict opt-in (ADR-26): only an explicit `true` enables the
+     * phase-appropriate effort pick for requests carrying no explicit
+     * mode/agent/default effort. Unset or `false` means Default never sends
+     * a reasoning effort. Model routing is never changed. Note: Desktop
+     * regenerates anybuff.json from its own settings on every run, so this
+     * flag currently reaches only hand-written/SDK-supplied configs.
+     */
     adaptiveReasoning: z.boolean().optional(),
     /** Local codebase indexing configuration. Enabled by default for metadata-only indexing. */
     indexing: indexingConfigSchema,
@@ -915,6 +922,7 @@ function mergeProviderConfigs(
       ...(base.agentReasoningEfforts ?? {}),
       ...(override.agentReasoningEfforts ?? {}),
     },
+    adaptiveReasoning: override.adaptiveReasoning ?? base.adaptiveReasoning,
     indexing: override.indexing ?? base.indexing,
     fileChangeHooks: mergeFileChangeHooks(
       base.fileChangeHooks,

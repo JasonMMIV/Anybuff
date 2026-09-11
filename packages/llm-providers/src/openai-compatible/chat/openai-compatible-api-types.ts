@@ -42,6 +42,8 @@ export interface OpenAICompatibleContentPartText extends JsonRecord {
 export interface OpenAICompatibleAssistantMessage extends JsonRecord<OpenAICompatibleMessageToolCall> {
   role: 'assistant'
   content?: string | null
+  /** Thinking-mode chain of thought (DeepSeek). Must ride back on replay when the request carries tools (ADR-26). */
+  reasoning_content?: string
   reasoning_details?: JSONValue[]
   tool_calls?: Array<OpenAICompatibleMessageToolCall>
 }
