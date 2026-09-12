@@ -16,6 +16,14 @@ export const CHANNELS = [
   'getState',
   'saveSettings',
   'fetchModels',
+  // ADR-27 model capabilities — user-maintained ladders + provenance listing
+  'listModelCapabilities',
+  'saveModelCapability',
+  'importModelCapabilities',
+  // ADR-27 MC-2.1 — interactive two-round reasoning-effort probe
+  'probeReasoningEffort',
+  'listProbeSamples',
+  'clearProbeSamples',
   // #15 /diagnostics — process snapshot (CPU/memory/uptime/children)
   'getDiagnostics',
   // Projects & tasks

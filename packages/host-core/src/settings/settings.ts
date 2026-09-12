@@ -399,6 +399,8 @@ export interface ReasoningLadderInfo {
     efforts?: string[]
     defaultEffort?: string
     supported?: boolean
+    /** ADR-27 (MC-1.5): declared per-model reasoning params. */
+    params?: Record<string, string | number | boolean>
   }
   /** The seed row this declaration overrides — present iff source ===
    * 'declared' AND a seed exists for the model (P1 "restore to seed"). */
@@ -444,6 +446,9 @@ export function buildReasoningLadderInfos(
             efforts: [...declaredEfforts],
             defaultEffort: cap?.reasoning?.defaultEffort,
             supported: cap?.reasoning?.supported,
+            ...(cap?.reasoning?.params !== undefined
+              ? { params: { ...cap.reasoning.params } }
+              : {}),
           },
           // The seed this declaration overrides (P1's "restore to seed"
           // button needs to know one exists underneath).
@@ -849,6 +854,239 @@ export function hasAnyApiKey(): boolean {
   if (Object.keys(hostKeyOverrides()).length > 0) return true
   const s = loadSettings()
   return Object.values(s.encryptedKeys ?? {}).some(Boolean)
+}
+
+/* ─── ADR-27 model-capability maintenance (MC-1.3) ─────────────────────── */
+
+/** A single capability declaration for one model on one provider. All fields
+ * optional — omitted fields simply don't change the stored entry. */
+export interface ModelCapabilityUpsert {
+  providerId: string
+  model: string
+  /** Explicit clear: delete the whole stored entry (the field-merge never
+   * clears on its own — an absent field means "keep", not "remove"). */
+  clear?: boolean
+  reasoning?: {
+    supported?: boolean
+    efforts?: string[]
+    defaultEffort?: string
+    params?: Record<string, string | number | boolean>
+  }
+  context?: { windowTokens?: number; outputTokens?: number }
+}
+
+/** Per-line validation result for the Import channel (§2.4: a bad line
+ * never blocks the good ones; each line reports independently). */
+export interface ModelCapabilityImportLine {
+  model: string
+  ok: boolean
+  error?: string
+}
+
+/** Normalize one upsert's fields; returns an error string for invalid
+ * shapes so callers can report per-line instead of throwing (§2.4). */
+function validateCapabilityUpsert(upsert: ModelCapabilityUpsert): string | undefined {
+  if (!upsert?.providerId || typeof upsert.providerId !== 'string') return 'missing providerId'
+  if (!upsert?.model || typeof upsert.model !== 'string') return 'missing model'
+  const reasoning = upsert.reasoning
+  if (reasoning !== undefined) {
+    if (typeof reasoning !== 'object' || Array.isArray(reasoning)) return 'reasoning must be an object'
+    if (
+      reasoning.supported !== undefined &&
+      typeof reasoning.supported !== 'boolean'
+    ) {
+      return 'reasoning.supported must be a boolean'
+    }
+    if (
+      reasoning.efforts !== undefined &&
+      (!Array.isArray(reasoning.efforts) ||
+        reasoning.efforts.some(
+          (e) => typeof e !== 'string' || e.length === 0 || e === 'default',
+        ))
+    ) {
+      return "reasoning.efforts must be non-empty strings ('default' is a menu sentinel, not a rung)"
+    }
+    if (
+      reasoning.defaultEffort !== undefined &&
+      (typeof reasoning.defaultEffort !== 'string' ||
+        reasoning.defaultEffort.length === 0 ||
+        reasoning.defaultEffort === 'default')
+    ) {
+      return 'reasoning.defaultEffort must be a non-empty string'
+    }
+    if (reasoning.params !== undefined) {
+      if (typeof reasoning.params !== 'object' || Array.isArray(reasoning.params)) {
+        return 'reasoning.params must be an object'
+      }
+      for (const [key, value] of Object.entries(reasoning.params)) {
+        if (
+          key.length === 0 ||
+          (typeof value !== 'string' &&
+            typeof value !== 'number' &&
+            typeof value !== 'boolean')
+        ) {
+          return 'reasoning.params values must be string/number/boolean with non-empty keys'
+        }
+      }
+    }
+  }
+  const context = upsert.context
+  if (context !== undefined) {
+    if (typeof context !== 'object' || Array.isArray(context)) return 'context must be an object'
+    if (
+      context.windowTokens !== undefined &&
+      (typeof context.windowTokens !== 'number' ||
+        !Number.isFinite(context.windowTokens) ||
+        context.windowTokens <= 0 ||
+        !Number.isInteger(context.windowTokens))
+    ) {
+      return 'context.windowTokens must be a positive integer'
+    }
+    if (
+      context.outputTokens !== undefined &&
+      (typeof context.outputTokens !== 'number' ||
+        !Number.isFinite(context.outputTokens) ||
+        context.outputTokens <= 0 ||
+        !Number.isInteger(context.outputTokens))
+    ) {
+      return 'context.outputTokens must be a positive integer'
+    }
+  }
+  return undefined
+}
+
+/**
+ * Merge one upsert into the provider's modelCapabilities (MC-1.3): a single
+ * model entry, field-by-field — never a wholesale provider overwrite. The
+ * whole resulting anybuff.json must still parse (MC-0.6 gate re-runs on the
+ * next run), and a save followed by a re-read keeps the declaration.
+ */
+export function saveModelCapability(upsert: ModelCapabilityUpsert): boolean {
+  const problem = validateCapabilityUpsert(upsert)
+  if (problem) throw new Error(problem)
+  try {
+    const s = loadSettings()
+    const provider = s.providers.find((p) => p.id === upsert.providerId)
+    if (!provider) return false
+    provider.modelCapabilities ??= {}
+    // Explicit clear (ADR-27 review round 1): the field-merge below preserves
+    // every stored field an upsert omits — "absent" means "keep", never
+    // "remove" — so deleting is an explicit opt-in, never an accident.
+    if (upsert.clear) {
+      delete provider.modelCapabilities[upsert.model]
+      saveSettings(s)
+      return true
+    }
+    const existing = provider.modelCapabilities[upsert.model]
+    const reasoning = { ...existing?.reasoning }
+    if (upsert.reasoning) {
+      if (upsert.reasoning.supported !== undefined) reasoning.supported = upsert.reasoning.supported
+      if (upsert.reasoning.efforts !== undefined) reasoning.efforts = [...upsert.reasoning.efforts]
+      if (upsert.reasoning.defaultEffort !== undefined) {
+        reasoning.defaultEffort = upsert.reasoning.defaultEffort
+      }
+      if (upsert.reasoning.params !== undefined) {
+        reasoning.params = { ...upsert.reasoning.params }
+      }
+    }
+    const context = { ...existing?.context }
+    if (upsert.context?.windowTokens !== undefined) context.windowTokens = upsert.context.windowTokens
+    if (upsert.context?.outputTokens !== undefined) context.outputTokens = upsert.context.outputTokens
+    const hasReasoning = Object.keys(reasoning).length > 0
+    const hasContext = Object.keys(context).length > 0
+    if (hasReasoning || hasContext) {
+      provider.modelCapabilities[upsert.model] = {
+        ...existing,
+        ...(hasReasoning ? { reasoning } : {}),
+        ...(hasContext ? { context } : {}),
+      }
+    }
+    saveSettings(s)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Import a JSON fragment of capability declarations (MC-1.4): every line is
+ * validated and applied INDEPENDENTLY — one bad line is reported, never
+ * blocking the rest (§2.4). Only the `modelCapabilities` subtree is
+ * touched; provider transport fields (baseURL/keys) are never writable here
+ * (§2.2: a rewritten baseURL would receive DPAPI-decrypted keys).
+ */
+export function importModelCapabilities(payload: {
+  providerId: string
+  models: Record<string, unknown>
+}): { ok: boolean; lines: ModelCapabilityImportLine[]; error?: string } {
+  if (!payload || typeof payload !== 'object') return { ok: false, lines: [], error: 'invalid payload' }
+  if (!payload.providerId || typeof payload.providerId !== 'string') {
+    return { ok: false, lines: [], error: 'missing providerId' }
+  }
+  if (!payload.models || typeof payload.models !== 'object' || Array.isArray(payload.models)) {
+    return { ok: false, lines: [], error: 'missing models map' }
+  }
+  const lines: ModelCapabilityImportLine[] = []
+  for (const [model, rawValue] of Object.entries(payload.models)) {
+    if (!model) {
+      lines.push({ model, ok: false, error: 'empty model id' })
+      continue
+    }
+    const entry =
+      rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+        ? (rawValue as Record<string, unknown>)
+        : {}
+    const hasNested = 'reasoning' in entry || 'context' in entry
+    const shorthand = !hasNested && looksLikeReasoningShorthand(entry)
+    const candidate: ModelCapabilityUpsert = hasNested
+      ? {
+          providerId: payload.providerId,
+          model,
+          ...(entry.reasoning !== undefined
+            ? { reasoning: entry.reasoning as ModelCapabilityUpsert['reasoning'] }
+            : {}),
+          ...(entry.context !== undefined
+            ? { context: entry.context as ModelCapabilityUpsert['context'] }
+            : {}),
+        }
+      : shorthand
+        ? {
+            providerId: payload.providerId,
+            model,
+            reasoning: entry as ModelCapabilityUpsert['reasoning'],
+          }
+        : { providerId: payload.providerId, model }
+    // Review round 1: an entry with no recognizable fields is a silent no-op
+    // otherwise — report it instead of claiming success (§2.5: the user
+    // must always know what actually happened).
+    if (
+      !hasNested &&
+      !shorthand &&
+      Object.keys(entry).length > 0 &&
+      !('clear' in entry)
+    ) {
+      lines.push({ model, ok: false, error: 'unrecognized entry shape (expected reasoning/context keys or a bare efforts ladder)' })
+      continue
+    }
+    const problem = validateCapabilityUpsert(candidate)
+    if (problem) {
+      lines.push({ model, ok: false, error: problem })
+      continue
+    }
+    const saved = saveModelCapability(candidate)
+    lines.push({ model, ok: saved, error: saved ? undefined : 'provider not found' })
+  }
+  return { ok: lines.every((l) => l.ok), lines }
+}
+
+/** Bare { efforts, defaultEffort, supported, params } at the model level is
+ * accepted as the reasoning block (the LLM-maintainer prompt emits this). */
+function looksLikeReasoningShorthand(entry: Record<string, unknown>): boolean {
+  return (
+    'efforts' in entry ||
+    'defaultEffort' in entry ||
+    ('supported' in entry && !('windowTokens' in entry) && !('outputTokens' in entry))
+  )
 }
 
 /** Generate the anybuff.json used by the SDK (provider config + routing); returns the file path */

@@ -16,6 +16,22 @@
  * are DIFFERENT wire literals sharing a rung — no layer may rewrite one into
  * the other; the equivalence is a display-only hint (§2.1).
  */
+/**
+ * Whether a KNOWN ladder (declared or seed) exists for this model — false
+ * means the menu is showing the conservative fallback (ADR-27 MC-1.6: the
+ * UI marks that case so users know the rungs are a guess, not vendor truth).
+ */
+export function hasKnownLadderForModel(
+  modelId: string | undefined,
+  ladders: Record<string, string[]> = {}
+): boolean {
+  if (!modelId) return false
+  const bareModel = modelId.split('/').pop() || ''
+  const resolved =
+    ladders[modelId] ?? ladders[bareModel] ?? ladders[bareModel.toLowerCase()]
+  return Boolean(resolved?.length)
+}
+
 export function getReasoningOptionsForModel(
   modelId: string | undefined,
   ladders: Record<string, string[]> = {}

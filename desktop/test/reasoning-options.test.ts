@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { getReasoningOptionsForModel } from '../src/renderer/src/utils/reasoning'
+import { getReasoningOptionsForModel, hasKnownLadderForModel } from '../src/renderer/src/utils/reasoning'
 
 /**
  * ADR-27 MC-0.2b: menu literals pass through VERBATIM. `xhigh` and
@@ -31,5 +31,14 @@ describe('getReasoningOptionsForModel (MC-0.2b: verbatim literals)', () => {
 
   test('fallback stays conservative for unknown models', () => {
     expect(getReasoningOptionsForModel('goat/m', {})).toEqual(['default', 'low', 'high'])
+  })
+
+  test('hasKnownLadderForModel distinguishes known ladders from fallback (MC-1.6)', () => {
+    const ladders = { 'goat/m': ['low', 'xhigh'] }
+    expect(hasKnownLadderForModel('goat/m', ladders)).toBe(true)
+    expect(hasKnownLadderForModel('goat/m', {})).toBe(false)
+    expect(hasKnownLadderForModel(undefined, ladders)).toBe(false)
+    // Seed-style bare-id ladders count as known for provider-qualified models
+    expect(hasKnownLadderForModel('goat/deepseek-v4-flash', { 'deepseek-v4-flash': ['low', 'high', 'max'] })).toBe(true)
   })
 })

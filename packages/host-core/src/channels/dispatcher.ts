@@ -13,6 +13,14 @@
 
 import { CHANNELS, type HostChannel } from './channels'
 import { getState, saveSettings, fetchModels } from './handlers-app'
+import {
+  listModelCapabilities,
+  saveModelCapabilityChannel,
+  importModelCapabilitiesChannel,
+  probeReasoningEffortChannel,
+  listProbeSamplesChannel,
+  clearProbeSamplesChannel,
+} from './handlers-capabilities'
 import { getDiagnostics } from '../diagnostics'
 import {
   listProjects,
@@ -51,6 +59,13 @@ const registry: Record<string, Handler> = {
   getState,
   saveSettings,
   fetchModels,
+  // ADR-27 model capabilities + probe
+  listModelCapabilities,
+  saveModelCapability: saveModelCapabilityChannel,
+  importModelCapabilities: importModelCapabilitiesChannel,
+  probeReasoningEffort: probeReasoningEffortChannel,
+  listProbeSamples: listProbeSamplesChannel,
+  clearProbeSamples: clearProbeSamplesChannel,
   // #15 /diagnostics — process snapshot
   getDiagnostics,
   // Projects & tasks

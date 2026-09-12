@@ -9,6 +9,7 @@ import {
   ChevronDownIcon,
   ChevronLeftIcon,
   EditIcon,
+  GaugeIcon,
   GitHubIcon,
   InfoIcon,
   LayersIcon,
@@ -28,10 +29,11 @@ import {
   XIcon
 } from './Icons'
 import CustomSelect from './CustomSelect'
+import ModelCapabilitiesPanel from './ModelCapabilitiesPanel'
 import { previewNotificationSound } from '../utils/notification-sounds'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'about' | 'engine'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'capabilities' | 'about' | 'engine'
 
 type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
 
@@ -1563,6 +1565,11 @@ export default function SettingsModal({
         icon: <ActivityIcon size={16} />
       },
       {
+        id: 'capabilities',
+        label: 'Capabilities',
+        icon: <GaugeIcon size={16} />
+      },
+      {
         id: 'agents',
         label: 'Custom Agents',
         icon: <SpecialistIcon size={16} />
@@ -1703,6 +1710,7 @@ export default function SettingsModal({
               {activeTab === 'general' && 'General'}
               {activeTab === 'theme' && 'Theme & Appearance'}
               {activeTab === 'routing' && 'Agent Routing'}
+              {activeTab === 'capabilities' && 'Model Capabilities'}
               {activeTab === 'agents' && 'Custom Agents'}
               {activeTab === 'search' && 'Web Search'}
               {activeTab === 'mcp' && 'MCP Tools'}
@@ -1719,6 +1727,8 @@ export default function SettingsModal({
                 'Customize the appearance mode and color scheme palette of AnyBuff.'}
               {activeTab === 'routing' &&
                 'Route specific agent roles to different models and customize reasoning effort per agent.'}
+              {activeTab === 'capabilities' &&
+                'Maintain per-model reasoning ladders and context windows. Values are sent verbatim — every row shows who says so: a verified seed, your declaration, or an unrecognized fallback.'}
               {activeTab === 'agents' &&
                 'Manage local agents loaded from .agents/ directories in your project or home.'}
               {activeTab === 'search' &&
@@ -2791,6 +2801,9 @@ export default function SettingsModal({
               )}
             </div>
           )}
+
+          {/* 7b. Model Capabilities Tab (ADR-27) */}
+          {activeTab === 'capabilities' && <ModelCapabilitiesPanel />}
 
           {/* 8. Engine Diagnostics Tab (Android: on-device ring-buffer log) */}
           {activeTab === 'engine' && <EngineDiagnostics />}

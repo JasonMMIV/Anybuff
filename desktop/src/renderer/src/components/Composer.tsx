@@ -90,7 +90,7 @@ interface ComposerProps {
   onInitKnowledge: () => void
 }
 
-import { getReasoningOptionsForModel } from '../utils/reasoning'
+import { getReasoningOptionsForModel, hasKnownLadderForModel } from '../utils/reasoning'
 
 const SLASH_COMMANDS: { id: string; label: string; description: string }[] = [
   { id: 'init', label: 'init', description: 'Analyze the project and create/update knowledge.md (project long-term memory)' },
@@ -801,11 +801,25 @@ export default function Composer(props: ComposerProps) {
             size="small"
             placement="top"
             className="reasoning-select"
-            options={getReasoningOptionsForModel(activeModel, reasoningLadders).map((r) => ({
-              value: r,
-              label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')
-            }))}
-            title="Reasoning level"
+            options={(() => {
+              const opts = getReasoningOptionsForModel(activeModel, reasoningLadders)
+              const known = hasKnownLadderForModel(activeModel, reasoningLadders)
+              // ADR-27 MC-1.6: when no known ladder exists for the model, the
+              // menu is a conservative guess — mark it so users know to declare
+              // verified rungs in Settings → Capabilities if they need more.
+              return opts.map((r) => ({
+                value: r,
+                label: r === 'default' ? 'Default' : r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' '),
+                ...(!known && r !== 'default'
+                  ? { description: 'No known ladder — conservative fallback' }
+                  : {})
+              }))
+            })()}
+            title={
+              hasKnownLadderForModel(activeModel, reasoningLadders)
+                ? 'Reasoning level'
+                : 'Reasoning level — no known ladder for this model; showing a conservative fallback. Declare verified rungs in Settings → Capabilities.'
+            }
           />
 
         </div>

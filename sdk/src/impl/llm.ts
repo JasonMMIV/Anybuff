@@ -138,21 +138,33 @@ function getModelProvider(model: LanguageModel): string {
  * resolved provider may read. The resolved provider's own namespace wins so
  * custom gateway ids (e.g. "deepseek") receive the effort, while the legacy
  * "openaiCompatible"/"openai" names stay covered for stock providers.
+ * ADR-27 (MC-1.5): per-model reasoning params (e.g. DashScope thinking_budget)
+ * ride along under the same namespaces — each param keeps its own name
+ * (keys pass through verbatim, no renaming to vendor-canonical spellings).
  */
 function withConfiguredReasoningEffort(
   providerOptions: ProviderMetadata | undefined,
   reasoningEffort: string | undefined,
   providerName: string | undefined,
+  reasoningParams?: Record<string, string | number | boolean>,
 ): ProviderMetadata | undefined {
   if (!reasoningEffort || reasoningEffort === 'default') return providerOptions
   const namespaces = new Set<string>(['openaiCompatible', 'openai'])
   if (providerName) namespaces.add(providerName)
+  // Review round 1: reserved option keys — a declared param with one of these
+  // names would clobber the option it collides with, so it is dropped here
+  // (fail-loud at the endpoint is better than a silently rewritten effort).
+  const reservedKeys = new Set(['reasoningEffort', 'enableThinking', 'thinkingBudget'])
+  const params = Object.fromEntries(
+    Object.entries(reasoningParams ?? {}).filter(([key]) => !reservedKeys.has(key)),
+  )
   const merged: ProviderMetadata = { ...(providerOptions ?? {}) }
   for (const ns of namespaces) {
     merged[ns] = {
       ...((merged[ns] as Record<string, JSONValue | undefined> | undefined) ??
         {}),
       reasoningEffort,
+      ...params,
     }
   }
   return merged
@@ -480,7 +492,7 @@ async function* streamOnce(
   const agentChunkMetadata =
     params.agentId != null ? { agentId: params.agentId } : undefined
 
-  const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
+  const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
     apiKey: params.apiKey,
     model: requestedModel ?? params.model,
     agentId: params.agentId,
@@ -521,6 +533,7 @@ async function* streamOnce(
       }),
       reasoningEffort,
       resolvedProviderName,
+      reasoningParams,
     ),
     // Handle tool call errors gracefully by passing them through to our validation layer
     // instead of throwing (which would halt the agent). The only special case is when
@@ -995,7 +1008,7 @@ export async function promptAiSdk(
   return runGenerationWithFailover(
     { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
     async ({ requestedModel, verbatim, messagesOverride }) => {
-    const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -1026,6 +1039,7 @@ export async function promptAiSdk(
         }),
         reasoningEffort,
         getModelProvider(aiSDKModel).split('.')[0].trim(),
+        reasoningParams,
       ),
     })
     emitCacheDebugProviderRequest({
@@ -1088,7 +1102,7 @@ export async function promptAiSdkStructured<T>(
   return runGenerationWithFailover(
     { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
     async ({ requestedModel, verbatim, messagesOverride }) => {
-    const { model: aiSDKModel, reasoningEffort, compatibility, pricing } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -1117,6 +1131,7 @@ export async function promptAiSdkStructured<T>(
         }),
         reasoningEffort,
         getModelProvider(aiSDKModel).split('.')[0].trim(),
+        reasoningParams,
       ),
     })
 

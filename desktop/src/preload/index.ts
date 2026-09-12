@@ -100,6 +100,14 @@ const api = {
   /** Preview read: text ≤ 4 MB / images ≤ 8 MB (base64) — gap #14. */
   readFileData: (path: string) => ipcRenderer.invoke('AnyBuff:readFileData', path),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
+  /* ADR-27 model capabilities (Settings → Capabilities) */
+  listModelCapabilities: () => ipcRenderer.invoke('AnyBuff:listModelCapabilities'),
+  saveModelCapability: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveModelCapability', payload),
+  importModelCapabilities: (payload: unknown) => ipcRenderer.invoke('AnyBuff:importModelCapabilities', payload),
+  /** ADR-27 MC-2.1 — interactive two-round reasoning-effort probe. */
+  probeReasoningEffort: (payload: unknown) => ipcRenderer.invoke('AnyBuff:probeReasoningEffort', payload),
+  listProbeSamples: () => ipcRenderer.invoke('AnyBuff:listProbeSamples'),
+  clearProbeSamples: () => ipcRenderer.invoke('AnyBuff:clearProbeSamples'),
   /* MCP servers (Settings → MCP Tools) */
   listMcpServers: (cwd: string | null) => ipcRenderer.invoke('AnyBuff:listMcpServers', cwd),
   saveMcpServer: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveMcpServer', payload),

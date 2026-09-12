@@ -115,6 +115,10 @@ export interface ModelResult {
   model: LanguageModel
   compatibility: ProviderCompatibility
   reasoningEffort?: AnybuffReasoningEffort
+  /** ADR-27 (MC-1.5/§3.2): per-model reasoning params (e.g. DashScope
+   * thinking_budget) declared alongside the ladder; merged into the
+   * provider-options namespaces by llm.ts when an effort is sent. */
+  reasoningParams?: Record<string, string | number | boolean>
   effectiveModel: string
   contextWindowTokens?: number
   pricing?: ModelPricing
@@ -1163,12 +1167,19 @@ export async function getModelForRequest(
 
   const contextWindowTokens = resolvedCapabilities?.context?.windowTokens
   const pricing = resolvedCapabilities?.pricing as ModelPricing | undefined
+  // ADR-27 (MC-1.5/§3.2): per-model reasoning params (e.g. DashScope
+  // thinking_budget) ride the effort pick onto the wire. Only scalar values
+  // are legal — the config schema enforces string/number/boolean, and an
+  // explicit value sent downstream (llm.ts merges) must never be silently
+  // dropped (ADR-10: only remove, never suppress).
+  const reasoningParams = resolvedCapabilities?.reasoning?.params
 
   if (configuredProviderModel.provider.type === 'anthropic-compatible') {
     return {
       model: createConfiguredAnthropicModel(configuredProviderModel),
       compatibility: configuredProviderModel.compatibility,
       reasoningEffort,
+      reasoningParams,
       effectiveModel,
       contextWindowTokens,
       pricing,
@@ -1179,6 +1190,7 @@ export async function getModelForRequest(
     model: createConfiguredOpenAICompatibleModel(configuredProviderModel),
     compatibility: configuredProviderModel.compatibility,
     reasoningEffort,
+    reasoningParams,
     effectiveModel,
     contextWindowTokens,
     pricing,
