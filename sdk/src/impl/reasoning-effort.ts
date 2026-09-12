@@ -518,3 +518,39 @@ export function getVerifiedReasoningLadders(): Record<
     ]),
   )
 }
+
+/**
+ * The full seed rows (efforts/defaultEffort/requestMap plus provenance:
+ * verifiedAt/source), keyed by bare model id. ADR-27 (MC-0.3): provenance
+ * must leave the SDK so hosts can badge every menu value with "who says
+ * so, and when" — the user-facing side of non-negotiable #5's freshness
+ * regime. Returns the same readonly table as VERIFIED_REASONING_EFFORTS;
+ * the named accessor exists so hosts don't reach into the raw export.
+ */
+export function getVerifiedReasoningLadderRows(): Readonly<
+  Record<string, VerifiedReasoningLadder>
+> {
+  return VERIFIED_REASONING_EFFORTS
+}
+
+/**
+ * Whether a value falls inside the shared effort vocabulary (the common
+ * constants list plus the SDK-config alias/none spellings). Values outside
+ * it are still legal (ADR-27 open domain) — this only lets a UI badge an
+ * unrecognized spelling as "possibly a new rung or a typo; sent verbatim".
+ */
+const KNOWN_EFFORT_SPELLINGS: ReadonlySet<string> = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'extra-high',
+  'max',
+  'ultra',
+  'none',
+])
+
+export function isKnownReasoningSpelling(value: string): boolean {
+  return KNOWN_EFFORT_SPELLINGS.has(value)
+}

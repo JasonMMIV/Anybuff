@@ -41,21 +41,28 @@ const positiveIntSchema = z.number().int().positive()
 const nonNegativeNumberSchema = z.number().nonnegative()
 const providerModeNames = ['default', 'plan', 'executePlan'] as const
 type ProviderModeName = (typeof providerModeNames)[number]
-export const reasoningEffortSchema = z.enum([
-  'high',
-  'extra-high',
-  'max',
-  'medium',
-  'low',
-  'minimal',
-  'none',
-])
+/**
+ * ADR-27 (MC-0.2): the effort value domain is OPEN — any non-empty string is
+ * a legal rung. A client enum cannot predict what an endpoint will accept
+ * (`xhigh`, `ultra`, vendor-specific names); unknown values are preserved
+ * verbatim and the endpoint fails loud (ADR-10). The single reserved value
+ * is the host-menu sentinel 'default', which must never reach a config as
+ * an actual effort (llm.ts keeps its own 'default' check for string input).
+ */
+export const reasoningEffortSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value !== 'default', {
+    message: "'default' is a host-menu sentinel, not a wire effort",
+  })
 export type AnybuffReasoningEffort = z.infer<typeof reasoningEffortSchema>
 const routableModelValueSchema = z.union([
   z.string().min(1),
   z.object({
     model: z.string().min(1),
-    reasoningEffort: reasoningEffortSchema.optional(),
+    // ADR-27 (MC-0.2): a malformed effort degrades to "no effort" instead of
+    // failing the whole config file (§2.4 — one typo used to 400 every run).
+    reasoningEffort: reasoningEffortSchema.optional().catch(undefined),
   }),
 ])
 const agentModelValueSchema = routableModelValueSchema
@@ -140,11 +147,57 @@ export const modelCapabilitiesSchema = z.object({
     .optional(),
   reasoning: z
     .object({
-      supported: z.boolean().optional(),
-      efforts: z.array(reasoningEffortSchema).optional(),
-      defaultEffort: reasoningEffortSchema.optional(),
+      supported: z.boolean().optional().catch(undefined),
+      // ADR-27 (MC-0.2): malformed entries (empty strings, non-strings, the
+      // 'default' sentinel) are dropped from the ladder — never a hard
+      // failure of the surrounding config file (§2.4).
+      efforts: z
+        .preprocess(
+          (v) =>
+            Array.isArray(v)
+              ? v.filter(
+                  (effort): effort is string =>
+                    typeof effort === 'string' &&
+                    effort.length > 0 &&
+                    effort !== 'default',
+                )
+              : v,
+          z.array(reasoningEffortSchema),
+        )
+        .optional()
+        .catch(undefined),
+      defaultEffort: reasoningEffortSchema.optional().catch(undefined),
+      /**
+       * ADR-27 (§3.2/MC-0.5): per-model non-enum reasoning params riding the
+       * effort pick (Anthropic-style thinking budgets, DashScope
+       * thinking_budget). Scalar values only — nested structures would need
+       * per-vendor validation we cannot verify (fail-loud beats guessing).
+       */
+      params: z
+        .preprocess(
+          (v) => {
+            if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+            return Object.fromEntries(
+              Object.entries(v).filter(
+                ([key, value]) =>
+                  typeof key === 'string' &&
+                  key.length > 0 &&
+                  ((typeof value === 'string' && value.length > 0) ||
+                    typeof value === 'number' ||
+                    typeof value === 'boolean'),
+              ),
+            )
+          },
+          z.record(
+            z.string().min(1),
+            z.union([z.string().min(1), z.number(), z.boolean()]),
+          ),
+        )
+        .optional()
+        .catch(undefined),
     })
-    .optional(),
+    .optional()
+    .catch(undefined),
   tools: z
     .object({
       supported: z.boolean().optional(),
@@ -190,10 +243,28 @@ export const modelCapabilitiesSchema = z.object({
     .optional(),
 })
 
-const modelCapabilitiesByModelSchema = z.record(
-  z.string().min(1),
-  modelCapabilitiesSchema,
-)
+// ADR-27 (MC-0.2/§2.4): garbage rows (non-object values, empty model ids)
+// are dropped instead of failing the whole config — the capability surface is
+// user-editable and one bad row must never 400 every request.
+const modelCapabilitiesByModelSchema = z
+  .preprocess(
+    (v) => {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+      return Object.fromEntries(
+        Object.entries(v).filter(
+          ([modelId, caps]) =>
+            typeof modelId === 'string' &&
+            modelId.length > 0 &&
+            caps !== null &&
+            typeof caps === 'object' &&
+            !Array.isArray(caps),
+        ),
+      )
+    },
+    z.record(z.string().min(1), modelCapabilitiesSchema),
+  )
+  .optional()
+  .catch(undefined)
 
 function isLocalHttpUrl(value: string): boolean {
   const url = new URL(value)
@@ -407,11 +478,11 @@ export const providerConfigFileSchema = z
     /** Model used for any agent without an explicit entry in `agents`. */
     defaultModel: routableModelValueSchema.optional(),
     /** Optional reasoning effort for the default fallback model. */
-    defaultReasoningEffort: reasoningEffortSchema.optional(),
+    defaultReasoningEffort: reasoningEffortSchema.optional().catch(undefined),
     /** Model used when the request contains image inputs and the selected model is not known to support them. */
     visionModel: routableModelValueSchema.optional(),
     /** Optional reasoning effort for the vision fallback model. */
-    visionReasoningEffort: reasoningEffortSchema.optional(),
+    visionReasoningEffort: reasoningEffortSchema.optional().catch(undefined),
     /**
      * Ordered list of model IDs to attempt as backup providers when the primary
      * model fails with an auth error (401/403) or a persistent 5xx after the
@@ -427,17 +498,35 @@ export const providerConfigFileSchema = z
     /** Optional reasoning efforts for built-in root modes. */
     modeReasoningEfforts: z
       .object({
-        default: reasoningEffortSchema.optional(),
-        plan: reasoningEffortSchema.optional(),
-        executePlan: reasoningEffortSchema.optional(),
+        default: reasoningEffortSchema.optional().catch(undefined),
+        plan: reasoningEffortSchema.optional().catch(undefined),
+        executePlan: reasoningEffortSchema.optional().catch(undefined),
       })
       .default({}),
     /** Per-agent requested model overrides. Keys are agent IDs; values are provider-resolvable model IDs. */
     agents: z.record(z.string().min(1), agentModelValueSchema).optional(),
     /** Optional per-agent reasoning efforts. Keys are agent IDs. */
+    // ADR-27 (MC-0.2): malformed entries are filtered instead of failing the
+    // whole file; a non-object value drops the map (never the config).
     agentReasoningEfforts: z
-      .record(z.string().min(1), reasoningEffortSchema)
-      .optional(),
+      .preprocess(
+        (v) => {
+          if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+          return Object.fromEntries(
+            Object.entries(v).filter(
+              ([agentId, effort]) =>
+                typeof agentId === 'string' &&
+                agentId.length > 0 &&
+                typeof effort === 'string' &&
+                effort.length > 0 &&
+                effort !== 'default',
+            ),
+          )
+        },
+        z.record(z.string().min(1), reasoningEffortSchema),
+      )
+      .optional()
+      .catch(undefined),
     /**
      * Strict opt-in (ADR-26): only an explicit `true` enables the
      * phase-appropriate effort pick for requests carrying no explicit
@@ -2195,10 +2284,13 @@ export function createProviderPresetConfig(
       presetConfig.agents?.[agentId] ?? defaultModel!,
     ]),
   )
+  const presetAgentEfforts = presetConfig.agentReasoningEfforts as
+    | Record<string, string | undefined>
+    | undefined
   const seededReasoning = Object.fromEntries(
     highReasoningAgents.map((agentId) => [
       agentId,
-      presetConfig.agentReasoningEfforts?.[agentId] ?? 'high',
+      presetAgentEfforts?.[agentId] ?? 'high',
     ]),
   )
   const config: ProviderConfigFileInput = {

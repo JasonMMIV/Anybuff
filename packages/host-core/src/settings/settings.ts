@@ -5,7 +5,9 @@ import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
 import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence } from '../env'
 import {
   findVerifiedReasoningLadder,
+  getVerifiedReasoningLadderRows,
   getVerifiedReasoningLadders,
+  providerConfigFileSchema,
 } from '@codebuff/sdk'
 
 /**
@@ -19,8 +21,12 @@ import {
  */
 
 export type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-/** ADR-25: 'extra-high' and 'max' are real SDK-schema menu/wire values — the
- * union previously lied about what can be persisted. */
+/**
+ * ADR-27 (MC-0.2b): the selected-effort domain is OPEN — any non-empty
+ * string a ladder declares is a legal pick ('xhigh', vendor-specific rungs).
+ * The literal members stay for autocomplete; 'default' remains the host-menu
+ * sentinel that is never sent on the wire (writeProviderConfigFile skips it).
+ */
 export type ReasoningEffort =
   | 'default'
   | 'high'
@@ -30,6 +36,7 @@ export type ReasoningEffort =
   | 'none'
   | 'extra-high'
   | 'max'
+  | (string & {})
 export type ApprovalMode = 'balanced' | 'strict' | 'allow-all'
 
 /** #17 run-options guardrails: max steps per run (loop fuse) and cost mode.
@@ -54,7 +61,14 @@ export interface ProviderConfig {
     context?: { windowTokens?: number; outputTokens?: number }
     /** ADR-25: declared reasoning ladders flow through to anybuff.json and
      * the Desktop menus (explicit declarations win over the SDK seed table). */
-    reasoning?: { supported?: boolean; efforts?: string[]; defaultEffort?: string }
+    reasoning?: {
+      supported?: boolean
+      efforts?: string[]
+      defaultEffort?: string
+      /** ADR-27 (§3.2/MC-0.5): per-model non-enum reasoning params riding
+       * the effort pick (e.g. DashScope thinking_budget). Mirrors the SDK slot. */
+      params?: Record<string, string | number | boolean>
+    }
   }>
 }
 
@@ -366,6 +380,96 @@ export function buildReasoningLadders(
   return ladders
 }
 
+/** ADR-27 (MC-0.4): provenance for a resolved ladder — every menu value must
+ * answer "who says so" (§2.5): verified seed (with verifiedAt/source), a
+ * user's explicit declaration, or unknown (no ladder anywhere — the Desktop
+ * menu shows its conservative fallback). */
+export type ReasoningLadderSource = 'verified' | 'declared' | 'unknown'
+
+export interface ReasoningLadderInfo {
+  /** Effective rungs, exactly what the menu shows. Empty for 'unknown'. */
+  efforts: string[]
+  /** Where the effective efforts came from. */
+  source: ReasoningLadderSource
+  /** Seed provenance — present iff source === 'verified'. */
+  verifiedAt?: string
+  verifiedBy?: string
+  /** The user's declaration — present iff source === 'declared'. */
+  declared?: {
+    efforts?: string[]
+    defaultEffort?: string
+    supported?: boolean
+  }
+  /** The seed row this declaration overrides — present iff source ===
+   * 'declared' AND a seed exists for the model (P1 "restore to seed"). */
+  overriddenSeed?: { efforts: string[]; verifiedAt: string }
+  /** Per-model context overrides when present in settings. */
+  context?: { windowTokens?: number; outputTokens?: number }
+  /** The declared or seed default rung, when one exists. */
+  defaultEffort?: string
+}
+
+/**
+ * The full capabilities listing surface for the P1 UI (§3.4): one row per
+ * configured provider model (plus the bare seed ids), each carrying its
+ * source badge and provenance. Effort literals pass through VERBATIM —
+ * `xhigh` and `extra-high` are different wire strings (§2.1).
+ */
+export function buildReasoningLadderInfos(
+  providers: ProviderConfig[]
+): Record<string, ReasoningLadderInfo> {
+  const infos: Record<string, ReasoningLadderInfo> = {}
+  for (const [bareModel, row] of Object.entries(
+    getVerifiedReasoningLadderRows()
+  )) {
+    infos[bareModel] = {
+      efforts: [...row.efforts],
+      source: 'verified',
+      verifiedAt: row.verifiedAt,
+      verifiedBy: row.source,
+      defaultEffort: row.defaultEffort,
+    }
+  }
+  for (const provider of providers) {
+    for (const model of provider.models ?? []) {
+      const cap = provider.modelCapabilities?.[model]
+      const declaredEfforts = cap?.reasoning?.efforts
+      const seed = findVerifiedReasoningLadder(model)
+      const key = `${provider.id}/${model}`
+      if (declaredEfforts?.length) {
+        infos[key] = {
+          efforts: [...declaredEfforts],
+          source: 'declared',
+          declared: {
+            efforts: [...declaredEfforts],
+            defaultEffort: cap?.reasoning?.defaultEffort,
+            supported: cap?.reasoning?.supported,
+          },
+          // The seed this declaration overrides (P1's "restore to seed"
+          // button needs to know one exists underneath).
+          ...(seed
+            ? { overriddenSeed: { efforts: [...seed.efforts], verifiedAt: seed.verifiedAt } }
+            : {}),
+          context: cap?.context,
+          defaultEffort: cap?.reasoning?.defaultEffort,
+        }
+      } else if (seed) {
+        infos[key] = {
+          efforts: [...seed.efforts],
+          source: 'verified',
+          verifiedAt: seed.verifiedAt,
+          verifiedBy: seed.source,
+          defaultEffort: cap?.reasoning?.defaultEffort ?? seed.defaultEffort,
+          context: cap?.context,
+        }
+      } else {
+        infos[key] = { efforts: [], source: 'unknown', context: cap?.context }
+      }
+    }
+  }
+  return infos
+}
+
 export function getAppSettings(): AppSettings {
   const s = loadSettings()
 
@@ -655,15 +759,37 @@ export function recordProviderModelCapability(params: {
   model: string
   windowTokens?: number
   outputTokens?: number
+  /**
+   * ADR-27 (MC-0.5): learned reasoning metadata — an efforts ladder and/or
+   * per-model reasoning params. Explicit declarations are never overridden
+   * (same rule as the A2 context write-back), and a learned context write
+   * never blocks a reasoning write (each field is guarded independently).
+   */
+  reasoning?: {
+    efforts?: string[]
+    params?: Record<string, string | number | boolean>
+  }
 }): void {
   try {
-    const { providerId: explicitProviderId, model, windowTokens, outputTokens } = params
-    if (
-      (windowTokens === undefined || !Number.isFinite(windowTokens) || windowTokens <= 0) &&
-      (outputTokens === undefined || !Number.isFinite(outputTokens) || outputTokens <= 0)
-    ) {
-      return
-    }
+    const { providerId: explicitProviderId, model, windowTokens, outputTokens, reasoning } = params
+    const validWindow = windowTokens !== undefined && Number.isFinite(windowTokens) && windowTokens > 0
+    const validOutput = outputTokens !== undefined && Number.isFinite(outputTokens) && outputTokens > 0
+    const efforts = reasoning?.efforts?.filter(
+      (effort) => typeof effort === 'string' && effort.length > 0 && effort !== 'default'
+    )
+    const reasoningParams = reasoning?.params
+      ? Object.fromEntries(
+          Object.entries(reasoning.params).filter(
+            ([key, value]) =>
+              key.length > 0 &&
+              (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+          )
+        )
+      : undefined
+    const hasReasoning =
+      (efforts !== undefined && efforts.length > 0) ||
+      (reasoningParams !== undefined && Object.keys(reasoningParams).length > 0)
+    if (!validWindow && !validOutput && !hasReasoning) return
     const s = loadSettings()
     // Resolve provider: explicit id first, then the routable prefix, then any
     // provider whose model list contains the bare model id.
@@ -683,19 +809,35 @@ export function recordProviderModelCapability(params: {
 
     provider.modelCapabilities ??= {}
     const existing = provider.modelCapabilities[modelId]
-    // Same write-back rule as A2: never override an explicit entry.
-    if (existing?.context?.windowTokens !== undefined && windowTokens !== undefined) return
+    // Same write-back rule as A2: never override an explicit entry — per
+    // field, so one guarded write never drops a learnable sibling field.
+    const context: { windowTokens?: number; outputTokens?: number } = {
+      ...existing?.context,
+    }
+    if (validWindow && existing?.context?.windowTokens === undefined) context.windowTokens = windowTokens
+    if (validOutput && existing?.context?.outputTokens === undefined) context.outputTokens = outputTokens
+    const nextReasoning: {
+      supported?: boolean
+      efforts?: string[]
+      defaultEffort?: string
+      params?: Record<string, string | number | boolean>
+    } = { ...existing?.reasoning }
+    if (efforts !== undefined && efforts.length > 0 && !existing?.reasoning?.efforts?.length) {
+      nextReasoning.efforts = [...efforts]
+    }
+    if (reasoningParams !== undefined && Object.keys(reasoningParams).length > 0) {
+      const mergedParams: Record<string, string | number | boolean> = {
+        ...existing?.reasoning?.params,
+      }
+      for (const [key, value] of Object.entries(reasoningParams)) {
+        if (mergedParams[key] === undefined) mergedParams[key] = value
+      }
+      if (Object.keys(mergedParams).length > 0) nextReasoning.params = mergedParams
+    }
     provider.modelCapabilities[modelId] = {
       ...existing,
-      context: {
-        ...existing?.context,
-        ...(windowTokens !== undefined && Number.isFinite(windowTokens) && windowTokens > 0
-          ? { windowTokens }
-          : {}),
-        ...(outputTokens !== undefined && Number.isFinite(outputTokens) && outputTokens > 0
-          ? { outputTokens }
-          : {}),
-      },
+      ...(Object.keys(context).length > 0 ? { context } : {}),
+      ...(Object.keys(nextReasoning).length > 0 ? { reasoning: nextReasoning } : {}),
     }
     saveSettings(s)
   } catch {
@@ -797,6 +939,36 @@ export function writeProviderConfigFile(): string {
     if (Object.keys(efforts).length > 0) config.agentReasoningEfforts = efforts
   }
   const file = join(hostPaths().dataDir, 'anybuff.json')
+  // ADR-27 (MC-0.6): validate against the SDK schema BEFORE replacing the
+  // file. A structurally-invalid anybuff.json fails at config load — every
+  // request, every run (§2.4) — so a rejected write keeps the previous file
+  // (writeFileAtomic never pre-deletes; ADR-13) and reports loudly. The old
+  // file stays self-consistent, so runs continue on the last valid settings.
+  // (With NO previous file — a first run — the SDK config loader then
+  // fail-louds on the missing path: preferable to a poisoned file.)
+  // safeParse can still THROW when a refinement itself crashes (e.g.
+  // new URL() on a garbage baseURL) — that is also a rejection, never a
+  // pass-through write.
+  let rejection: string | undefined
+  try {
+    const check = providerConfigFileSchema.safeParse(config)
+    if (!check.success) {
+      rejection = check.error.issues
+        .map(
+          (issue: { path: PropertyKey[]; message: string }) =>
+            `${issue.path.join('.') || '<root>'}: ${issue.message}`,
+        )
+        .join('; ')
+    }
+  } catch (error) {
+    rejection = error instanceof Error ? error.message : String(error)
+  }
+  if (rejection !== undefined) {
+    console.error(
+      `[anybuff-settings] rejected an invalid anybuff.json — kept the previous file (${rejection})`,
+    )
+    return file
+  }
   writeFileAtomic(file, JSON.stringify(config, null, 2))
   return file
 }

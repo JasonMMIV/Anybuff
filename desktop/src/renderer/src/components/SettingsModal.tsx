@@ -217,6 +217,19 @@ export interface LocalAgentItem {
   scope?: 'project' | 'parent' | 'home'
 }
 
+/** Per-model capability overrides (ADR-27 MC-0.1) — mirrors the host's
+ * ProviderConfig.modelCapabilities shape so declarations survive the
+ * draft→payload round-trip (the 2026-09 bug dropped them on every save). */
+interface ProviderModelCapabilities {
+  context?: { windowTokens?: number; outputTokens?: number }
+  reasoning?: {
+    supported?: boolean
+    efforts?: string[]
+    defaultEffort?: string
+    params?: Record<string, string | number | boolean>
+  }
+}
+
 interface ProviderDraft {
   id: string
   label: string
@@ -226,6 +239,7 @@ interface ProviderDraft {
   models: string[]
   enableThinking?: boolean
   customBody?: string
+  modelCapabilities?: Record<string, ProviderModelCapabilities>
 }
 
 interface ProviderPreset {
@@ -770,7 +784,10 @@ export default function SettingsModal({
           apiKeyEnv: p.apiKeyEnv || 'ANYBUFF_API_KEY',
           models: p.models,
           enableThinking: p.enableThinking,
-          customBody: p.customBody
+          customBody: p.customBody,
+          // ADR-27 MC-0.1: carry declarations through — dropping this field
+          // here erased every hand-written capability on each Settings save.
+          modelCapabilities: p.modelCapabilities
         })),
         activeModel: finalModel,
         reasoningEffort,

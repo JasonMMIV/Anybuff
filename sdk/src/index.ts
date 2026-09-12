@@ -77,6 +77,8 @@ export {
   clampReasoningEffortToLadder,
   findVerifiedReasoningLadder,
   getVerifiedReasoningLadders,
+  getVerifiedReasoningLadderRows,
+  isKnownReasoningSpelling,
 } from './impl/reasoning-effort'
 export type { VerifiedReasoningLadder } from './impl/reasoning-effort'
 

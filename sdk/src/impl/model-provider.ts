@@ -1109,6 +1109,19 @@ export async function getModelForRequest(
           ? resolvedCapabilities.reasoning.efforts
           : seed?.efforts ?? undefined,
     })
+    // ADR-27 (MC-0.7a): the opt-in pick still changes what goes on the wire,
+    // so it must be exactly as visible as every other compat decision
+    // (§2.6 guardrail 3 — a silent behavior change is suppression's cousin).
+    if (reasoningEffort !== undefined) {
+      logCompat(
+        'adaptive-reasoning-pick',
+        {
+          providerId: configuredProviderModel.providerId,
+          providerModel: configuredProviderModel.providerModel,
+        },
+        `agent '${agentId ?? '<root>'}' → '${reasoningEffort}' (opt-in)`,
+      )
+    }
   }
 
   // ADR-25 request-time reasoning-effort clamp: declared capabilities win,
