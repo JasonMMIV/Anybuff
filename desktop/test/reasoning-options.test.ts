@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import { getReasoningOptionsForModel, hasKnownLadderForModel } from '../src/renderer/src/utils/reasoning'
+import { buildMaintenancePrompt } from '../src/renderer/src/components/ModelCapabilitiesPanel'
 
 /**
  * ADR-27 MC-0.2b: menu literals pass through VERBATIM. `xhigh` and
@@ -40,5 +41,38 @@ describe('getReasoningOptionsForModel (MC-0.2b: verbatim literals)', () => {
     expect(hasKnownLadderForModel(undefined, ladders)).toBe(false)
     // Seed-style bare-id ladders count as known for provider-qualified models
     expect(hasKnownLadderForModel('goat/deepseek-v4-flash', { 'deepseek-v4-flash': ['low', 'high', 'max'] })).toBe(true)
+  })
+})
+
+/**
+ * MC-1.4: the Import card's copyable maintenance prompt — the §6 template
+ * now lives IN the UI (the docs reference was dangling). Lock its shape:
+ * wire-literal rungs (no alias rewrites), unverified-over-guessing, the
+ * JSON block template the importer parses, and the configured providers.
+ */
+describe('buildMaintenancePrompt (MC-1.4: prompt embedded in UI)', () => {
+  test('carries the §6 essentials: no-guessing, verbatim rungs, JSON shape, source URL', () => {
+    const prompt = buildMaintenancePrompt([{ id: 'goat', label: 'Goat' }])
+    expect(prompt).toContain('official documentation')
+    expect(prompt).toContain('unverified')
+    // §2.1: the prompt must instruct verbatim wire values, never alias rewrites.
+    expect(prompt).toContain('never rewrite it to "extra-high"')
+    expect(prompt).toContain('"providerId"')
+    expect(prompt).toContain('"windowTokens"')
+    expect(prompt).toContain('source URL')
+  })
+
+  test('lists the configured providers so the LLM can pick the right id', () => {
+    const prompt = buildMaintenancePrompt([
+      { id: 'goat', label: 'Goat' },
+      { id: 'ollama', label: 'Local' },
+    ])
+    expect(prompt).toContain('goat (Goat)')
+    expect(prompt).toContain('ollama (Local)')
+  })
+
+  test('survives an empty provider list', () => {
+    const prompt = buildMaintenancePrompt([])
+    expect(prompt).toContain('<none configured>')
   })
 })

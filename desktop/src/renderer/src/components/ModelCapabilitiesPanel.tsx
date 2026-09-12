@@ -113,6 +113,7 @@ export default function ModelCapabilitiesPanel() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [importOpen, setImportOpen] = useState(false)
+  const [promptCopied, setPromptCopied] = useState(false)
   const [importText, setImportText] = useState('')
   const [importResult, setImportResult] = useState<
     { ok: boolean; lines: Array<{ model: string; ok: boolean; error?: string }> } | null
@@ -432,9 +433,28 @@ export default function ModelCapabilitiesPanel() {
         <div className="settings-section-card cap-import-card">
           <div className="settings-section-head">
             <span>Import declarations</span>
+            <div className="settings-section-actions">
+              <button
+                type="button"
+                className="btn ghost small"
+                title="Copy the research prompt to hand to any LLM (AnyBuff itself or an external one). It asks for vendor-documented rungs — never guesses."
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(buildMaintenancePrompt(providers))
+                    setPromptCopied(true)
+                    window.setTimeout(() => setPromptCopied(false), 1800)
+                  } catch {
+                    setError('Could not write to the clipboard.')
+                  }
+                }}
+              >
+                <DownloadIcon size={13} /> {promptCopied ? 'Copied!' : 'Copy maintenance prompt'}
+              </button>
+            </div>
           </div>
           <p className="hint">
-            Paste the JSON block an LLM produced (from the maintenance prompt in the docs). Only{' '}
+            <strong>How to use:</strong> copy the maintenance prompt above, paste it into any LLM
+            (with the model id filled in), and paste the JSON block it produces below. Only{' '}
             <code>modelCapabilities</code> is importable — provider URLs and keys are never touched.
             Each line applies independently.
           </p>
@@ -508,6 +528,32 @@ export default function ModelCapabilitiesPanel() {
       )}
     </div>
   )
+}
+
+/**
+ * MC-1.4: the maintenance prompt handed to an LLM (AnyBuff itself or an
+ * external one) to research a model's rungs. Mirrors the §6 template in the
+ * plan: vendor docs first, "unverified" over guessing, wire-literal rungs
+ * (no xhigh→extra-high rewrites), omit-when-unsure, source URL last.
+ */
+export function buildMaintenancePrompt(providers: ProviderMeta[]): string {
+  const providerList = providers
+    .map((p) => `${p.id} (${p.label})`)
+    .join('\n  - ')
+  return `I use these OpenAI-compatible providers (id (label)):
+  - ${providerList || '<none configured>'}
+
+Please research the reasoning-effort values accepted by the model "<model id>" on the provider "<provider id>" above, plus any companion parameters.
+
+Requirements:
+1. Use the endpoint's official documentation as the primary source. If no official documentation exists, clearly say "unverified" — do not guess.
+2. Output exactly one JSON block and nothing else, in this shape:
+   { "providerId": "<provider id>", "models": { "<model id>": {
+       "reasoning": { "efforts": [...], "defaultEffort": "...", "params": { ... } },
+       "context": { "windowTokens": <number>, "outputTokens": <number> } } } }
+3. For efforts, list the literal wire values the endpoint accepts (if the endpoint wants "xhigh", write "xhigh" — never rewrite it to "extra-high").
+4. If you are not sure about windowTokens or outputTokens, omit that field rather than guessing.
+5. End with one line: the source URL you used.`
 }
 
 function probeVerdictMeta(verdict: ProbeRungResult['verdict']): { label: string; className: string; title: string } {
