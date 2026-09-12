@@ -66,6 +66,9 @@ Anthropic-compatible provider, and start chatting.
 - **File preview & run feedback** — click a file for a floating preview with
   quick actions, watch elapsed time on running tasks, and get a gentle
   notification sound when a run finishes, pauses, or is interrupted.
+- **Model capabilities & reasoning** — make every model work correctly,
+  even ones AnyBuff has never seen: probe the endpoint or paste in a report
+  from any LLM to discover what it truly supports.
 
 ## Quick start
 
