@@ -73,7 +73,7 @@ Anthropic-compatible provider, and start chatting.
 ## Quick start
 
 1. Download **`AnyBuff-Setup-<version>.exe`** (latest published release:
-   **v1.3.2**) from the
+   **v1.3.1**) from the
    [latest release](https://github.com/JasonMMIV/Anybuff/releases/latest) and
    run it. The installer is unsigned, so SmartScreen shows "Unknown publisher"
    — click *More info → Run anyway*. After installation, updates are detected
