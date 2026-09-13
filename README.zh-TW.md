@@ -49,7 +49,7 @@ provider，即可開始對話。
 ## 快速開始
 
 1. 從[最新 release](https://github.com/JasonMMIV/Anybuff/releases/latest)
-   下載 **`AnyBuff-Setup-<version>.exe`**（目前最新已發佈版本為 **v1.3.1**）
+   下載 **`AnyBuff-Setup-<version>.exe`**（目前最新已發佈版本為 **v1.3.2**）
    並執行。安裝包未簽章，SmartScreen 會顯示「不明發行者」——點選
    *更多資訊 → 仍要執行*。安裝後由 electron-updater（GitHub Releases
    provider）自動偵測並安裝更新。

@@ -619,14 +619,21 @@ export const UserBubble = memo(function UserBubble({ text, onRevert, ts }: { tex
         <div className="user-bubble">
           <span className="user-text">{text}</span>
         </div>
-        {(ts || onRevert) && (
+        {(ts || onRevert || text.trim()) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
             {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-            {onRevert && (
+            {(onRevert || text.trim()) && (
               <span className="msg-actions">
-                <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
-                  <UndoIcon size={12} />
-                </button>
+                {onRevert && (
+                  <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
+                    <UndoIcon size={12} />
+                  </button>
+                )}
+                {text.trim() && (
+                  <button className="mini-btn" title="Copy" onClick={() => copyText(text)}>
+                    <CopyIcon size={12} />
+                  </button>
+                )}
               </span>
             )}
           </span>

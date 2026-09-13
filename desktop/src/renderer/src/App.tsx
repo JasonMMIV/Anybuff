@@ -36,14 +36,18 @@ import {
   AppIcon,
   CheckCircleIcon,
   ChevronDownIcon,
+  CopyIcon,
   DownloadIcon,
+  EditIcon,
   ExternalLinkIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
   InfoIcon,
+  ListIcon,
   PanelLeftIcon,
   PanelRightIcon,
+  PaperclipIcon,
   UndoIcon,
   WindowMinimizeIcon,
   WindowMaximizeIcon,
@@ -405,6 +409,10 @@ export default function App() {
   const [previewFile, setPreviewFile] = useState<{ path: string; name: string } | null>(null)
   /** Gap #14：檔案列右鍵 / 長按的動作選單（Open folder / Open externally / Download）。 */
   const [fileMenu, setFileMenu] = useState<{ path: string; name: string; x: number; y: number; longPress: boolean } | null>(null)
+  /** 對話區右鍵的通用編輯選單（Select All / Copy [+ Cut/Paste in the composer]）。
+   *  `msgIndex` scopes Select All to the right-clicked message; `editable`
+   *  marks a right-click inside the composer (the only place Cut/Paste apply). */
+  const [editMenu, setEditMenu] = useState<{ x: number; y: number; editable: boolean; msgIndex: number | null } | null>(null)
 
   const [settings, setSettings] = useState<UiSettings>({ providers: [], activeModel: '', reasoningEffort: 'default', approvalMode: 'balanced' })
   const [agentMode, setAgentMode] = useState<AgentMode>('default')
@@ -573,7 +581,10 @@ export default function App() {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('AnyBuff-theme-mode', themeMode)
     localStorage.setItem('AnyBuff-theme', theme)
-    if (!isPreview) window.AnyBuff.setTheme(theme)
+    // Forward the raw MODE (not the resolved theme): 'system' keeps the shell's
+    // nativeTheme.themeSource tracking the OS setting, so Follow System works
+    // live on Windows too (Android's WS shim no-ops this either way).
+    if (!isPreview) window.AnyBuff.setTheme(themeMode)
   }, [theme, themeMode, isPreview])
 
   // Color theme switch
@@ -1277,9 +1288,11 @@ export default function App() {
     setShowAgentWizard(true)
   }, [cwd])
 
-  /** #15：開啟診斷面板（Settings → About「Diagnostics」快捷按鈕）。 */
+  /** #15：開啟診斷面板（Settings → About「Diagnostics」快捷按鈕）。
+   *  Settings stays mounted underneath — the diagnostics modal (z-index 200)
+   *  layers over it, so closing it returns to the About tab instead of the
+   *  main page. */
   const openDiagnostics = useCallback(() => {
-    setShowSettings(false)
     setShowAgentWizard(false)
     setShowDiagnostics(true)
   }, [])
@@ -1820,9 +1833,46 @@ export default function App() {
     setResumeInfo(null)
   }, [])
 
+  /**
+   * #7 對話框草稿記憶: the composer text survives switching conversations or
+   * pages and comes back when the user returns — but never leaks into another
+   * conversation's input box.
+   *
+   * Drafts are keyed by conversation id; the fresh-conversation view uses a
+   * project-scoped `__new__:<cwd>` key so a new conversation's draft does not
+   * follow the user into another project either. The sync effect below mirrors
+   * the live prompt into the current key on every render and swaps in the
+   * target conversation's draft whenever the view changes — the prompt state
+   * read during the swap still belongs to the OLD view (the restore happens
+   * inside the same effect run), which is exactly what stashing needs.
+   */
+  const draftsRef = useRef<Map<string, string>>(new Map())
+  const promptRef = useRef(prompt)
+  promptRef.current = prompt
+  /** The draft key the prompt currently belongs to ('' until first mount). */
+  const draftKeyRef = useRef('')
+
+  useEffect(() => {
+    const key = activeViewTaskId ?? `__new__:${cwdRef.current ?? ''}`
+    const prevKey = draftKeyRef.current
+    draftKeyRef.current = key
+    if (prevKey && prevKey !== key) {
+      // View switch: stash the old view's text, restore the new view's draft.
+      if (promptRef.current) draftsRef.current.set(prevKey, promptRef.current)
+      else draftsRef.current.delete(prevKey)
+      setPrompt(draftsRef.current.get(key) ?? '')
+    } else if (prevKey === key) {
+      // Same view: keep the stored draft in lockstep with the composer.
+      if (promptRef.current) draftsRef.current.set(key, promptRef.current)
+      else draftsRef.current.delete(key)
+    }
+  })
+
   const newTask = useCallback(() => {
     // Only resets the VIEW — any active run keeps going in the background and
     // its conversation stays fully persisted in the main-process session store.
+    // The prompt is NOT cleared here: the draft-sync effect stashes the old
+    // view's text and restores the fresh-conversation draft for this project.
     setChatItems([])
     autoScrollRef.current = true
     setEvents([])
@@ -1832,7 +1882,6 @@ export default function App() {
     setTokenUsage(null)
     setTotalCost(0)
     setFollowups([])
-    setPrompt('')
     setHistoryTask(null)
     setResumeInfo(null)
     setViewTask(null)
@@ -2046,6 +2095,81 @@ export default function App() {
       window.removeEventListener('keydown', onKey)
     }
   }, [fileMenu])
+
+  /* ── 對話區右鍵編輯選單（Select All / Copy / Cut / Paste）── */
+
+  const openEditMenu = useCallback(
+    (x: number, y: number, target?: { editable?: boolean; msgIndex?: number | null }) => {
+      setFileMenu(null)
+      setEditMenu({ x, y, editable: target?.editable ?? false, msgIndex: target?.msgIndex ?? null })
+    },
+    []
+  )
+
+  /** Run an edit-menu command. Select All scopes to the menu's target: the
+   *  right-clicked message when one was under the cursor, else the composer
+   *  input. Cut/Paste only operate on editable targets (the composer). */
+  const runEditCommand = useCallback(
+    (cmd: 'copy' | 'cut' | 'paste' | 'selectAll') => {
+      const target = editMenu
+      setEditMenu(null)
+      const active = document.activeElement
+      const activeIsEditable =
+        active instanceof HTMLElement && (active.matches('textarea, input') || active.isContentEditable)
+      if ((cmd === 'cut' || cmd === 'paste') && !activeIsEditable) return
+      if (cmd === 'paste') {
+        void navigator.clipboard
+          ?.readText()
+          .then((t) => document.execCommand('insertText', false, t))
+          .catch(() => {})
+        return
+      }
+      if (cmd === 'cut') {
+        document.execCommand('cut')
+        return
+      }
+      if (cmd === 'selectAll') {
+        const idx = target?.msgIndex
+        if (idx != null) {
+          // Scope the selection to the right-clicked message row only — not
+          // the whole document (which dragged in the title bar, sidebar, …).
+          const el = msgRefs.current[idx]
+          if (el) {
+            const range = document.createRange()
+            range.selectNodeContents(el)
+            const sel = window.getSelection()
+            sel?.removeAllRanges()
+            sel?.addRange(range)
+          }
+          return
+        }
+        // Menu opened over the composer: select its text.
+        const ta = document.querySelector('textarea')
+        if (ta) {
+          ta.focus()
+          ta.select()
+        }
+        return
+      }
+      document.execCommand(cmd)
+    },
+    [editMenu]
+  )
+
+  // Close the edit menu on an outside press or Escape.
+  useEffect(() => {
+    if (!editMenu) return
+    const onDown = (): void => setEditMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setEditMenu(null)
+    }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [editMenu])
 
   const handleCloseSettings = useCallback(() => {
     setShowSettings(false)
@@ -2353,6 +2477,10 @@ export default function App() {
       // Switching projects only changes the view — a running task keeps going
       // in the background and its history stays persisted in the main process.
       setCwd(path)
+      // Persist the new project as the last-used one so a restart reopens it
+      // instead of a stale/deleted folder (see the host-side cwd self-heal).
+      void window.AnyBuff.saveCwd(path)
+      void window.AnyBuff.touchProject(path)
       autoScrollRef.current = true
       setChatItems([])
       setEvents([])
@@ -2384,7 +2512,8 @@ export default function App() {
         setViewTask(task.id)
         setChatItems((task.messages ?? []) as ChatItem[])
         setHistoryTask({ id: task.id, prompt: task.prompt })
-        setPrompt('')
+        // No setPrompt('') — the draft-sync effect restores this
+        // conversation's saved draft (and stashes the previous view's text).
         return
       }
       setHistoryTask({ id: task.id, prompt: task.prompt })
@@ -2428,7 +2557,8 @@ export default function App() {
         setViewTask(task.id)
         setResumeInfo(null)
       }
-      setPrompt('')
+      // No setPrompt('') — the draft-sync effect swaps in this conversation's
+      // draft when the view id flips (per-conversation composer memory).
     },
     [onOpenProject, setViewTask]
   )
@@ -2727,25 +2857,31 @@ export default function App() {
             }}
           />
         ) : showSettings ? (
-          <SettingsModal
-            onClose={handleCloseSettings}
-            onCreateAgent={openAgentWizard}
-            onOpenDiagnostics={openDiagnostics}
-            onSaved={onSettingsSaved}
-            theme={theme}
-            themeMode={themeMode}
-            onSelectThemeMode={selectThemeMode}
-            colorTheme={colorTheme}
-            onSelectColorTheme={setColorTheme}
-            notificationSound={notificationSound}
-            onSelectNotificationSound={selectNotificationSound}
-            initialTab={settingsTab}
-            cwd={cwd}
-            maxAgentSteps={maxAgentSteps}
-            onSelectMaxAgentSteps={onMaxAgentStepsChange}
-            costMode={costMode}
-            onSelectCostMode={onCostModeChange}
-          />
+          <>
+            <SettingsModal
+              onClose={handleCloseSettings}
+              onCreateAgent={openAgentWizard}
+              onOpenDiagnostics={openDiagnostics}
+              onSaved={onSettingsSaved}
+              theme={theme}
+              themeMode={themeMode}
+              onSelectThemeMode={selectThemeMode}
+              colorTheme={colorTheme}
+              onSelectColorTheme={setColorTheme}
+              notificationSound={notificationSound}
+              onSelectNotificationSound={selectNotificationSound}
+              initialTab={settingsTab}
+              cwd={cwd}
+              maxAgentSteps={maxAgentSteps}
+              onSelectMaxAgentSteps={onMaxAgentStepsChange}
+              costMode={costMode}
+              onSelectCostMode={onCostModeChange}
+            />
+            {/* Layered over Settings (z-index 200 vs 100): closing the
+                diagnostics modal returns to the Settings → About tab that
+                launched it, instead of dropping back to the main page. */}
+            {showDiagnostics && <DiagnosticsModal onClose={() => setShowDiagnostics(false)} />}
+          </>
         ) : (
           <>
             {reviewScopeOpen && (
@@ -2786,7 +2922,23 @@ export default function App() {
               />
             )}
 
-            <main className="main">
+            <main
+              className="main"
+              onContextMenu={(e) => {
+                // Right-click anywhere in the chat area: offer the generic
+                // edit menu. Rows that carry their own action menu (file
+                // trees / changes / preview) stopPropagation in their own
+                // contextmenu handler, so those menus never double-open.
+                e.preventDefault()
+                const t = e.target instanceof HTMLElement ? e.target : null
+                const editable = Boolean(t?.closest('textarea, input, [contenteditable="true"]'))
+                // Select All scope: the message row under the cursor, or the
+                // composer when the right-click landed there.
+                const row = editable ? null : t?.closest('[data-index]')
+                const msgIndex = row && row instanceof HTMLElement && row.dataset.index != null ? Number(row.dataset.index) : null
+                openEditMenu(e.clientX, e.clientY, { editable, msgIndex })
+              }}
+            >
               <header className="topbar">
                 <div className="topbar-left">
                   <button
@@ -3160,6 +3312,45 @@ export default function App() {
           </>
         )}
       </div>
+
+      {/* 對話區右鍵編輯選單：Select All / Copy / Cut / Paste（對 File 選單的
+          Edit 群組同一組 execCommand，作用在當下聚焦/選取的元素上）。 */}
+      {editMenu && (
+        <div
+          className="file-context-menu slim"
+          role="menu"
+          aria-label="Edit actions"
+          style={{
+            left: Math.min(editMenu.x, Math.max(0, window.innerWidth - 170)),
+            top: Math.min(editMenu.y, Math.max(0, window.innerHeight - 180))
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button type="button" className="context-menu-item" role="menuitem" onClick={() => runEditCommand('selectAll')}>
+            <ListIcon size={14} />
+            <span>Select All</span>
+          </button>
+          <button type="button" className="context-menu-item" role="menuitem" onClick={() => runEditCommand('copy')}>
+            <CopyIcon size={14} />
+            <span>Copy</span>
+          </button>
+          {/* Cut / Paste only make sense in the composer (the editable target);
+              right-clicking messages offers just Select All / Copy. */}
+          {editMenu.editable && (
+            <button type="button" className="context-menu-item" role="menuitem" onClick={() => runEditCommand('cut')}>
+              <EditIcon size={14} />
+              <span>Cut</span>
+            </button>
+          )}
+          {editMenu.editable && (
+            <button type="button" className="context-menu-item" role="menuitem" onClick={() => runEditCommand('paste')}>
+              <PaperclipIcon size={14} />
+              <span>Paste</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Gap #14: file action menu — right-click (desktop) / long-press (touch). */}
       {fileMenu && (

@@ -494,6 +494,20 @@ export function getAppSettings(): AppSettings {
   }
   if (dirty) saveSettings(s)
 
+  // Last-used-project self-heal: a persisted cwd that no longer resolves to a
+  // known project (removed, or a legacy dangling entry) would otherwise make
+  // the app boot into a deleted project forever. Point cwd at the most recent
+  // project instead; with no projects at all it resets to null (welcome
+  // screen). Mirrors the models/-prefix self-heal above.
+  if (s.cwd) {
+    const known = (s.projects ?? []).some((p) => p.path === s.cwd)
+    if (!known) {
+      const latest = (s.projects ?? [])[0]
+      s.cwd = latest?.path ?? null
+      saveSettings(s)
+    }
+  }
+
   const activeProviderId = s.activeModel.split('/')[0] ?? ''
   const activeProvider = s.providers.find((p) => p.id === activeProviderId) ?? s.providers[0]
   const hasKey = activeProvider ? getProviderApiKey(activeProvider.id) !== undefined : false
@@ -1488,8 +1502,14 @@ export function touchProject(cwd: string): void {
   if (existing) {
     s.projects = s.projects.filter((p) => p.path !== cwd)
     s.projects.unshift(existing)
-    saveSettings(s)
+  } else {
+    // Upsert a picked-but-never-run folder so the persisted cwd always
+    // resolves to a known project across restarts (the cwd self-heal in
+    // getAppSettings would otherwise drop it on the next boot).
+    const name = cwd.split(/[\\/]/).pop() || cwd
+    s.projects.unshift({ path: cwd, name, tasks: [] })
   }
+  saveSettings(s)
 }
 
 /** Remove a project and all its task files from history. */
@@ -1504,6 +1524,11 @@ export function removeProject(projectPath: string): boolean {
   }
   const s2 = loadSettings()
   s2.projects = (s2.projects ?? []).filter((p) => p.path !== projectPath)
+  // Never leave the removed project as the persisted last-used cwd — the app
+  // would boot straight back into a deleted project on the next launch.
+  if (s2.cwd === projectPath) {
+    s2.cwd = (s2.projects ?? [])[0]?.path ?? null
+  }
   saveSettings(s2)
   return true
 }

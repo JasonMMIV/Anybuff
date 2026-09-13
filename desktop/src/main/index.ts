@@ -330,9 +330,11 @@ function registerShellIpc(): void {
     }
   })
 
-  ipcMain.on('AnyBuff:setTheme', (_e, theme: 'dark' | 'light') => {
-    // The native title bar follows nativeTheme for dark/light mode
-    nativeTheme.themeSource = theme
+  ipcMain.on('AnyBuff:setTheme', (_e, theme: 'dark' | 'light' | 'system') => {
+    // 'system' keeps the native title bar (and the renderer's
+    // prefers-color-scheme) tracking the OS setting live — pinning it to a
+    // resolved 'dark'/'light' froze Follow System on Windows.
+    nativeTheme.themeSource = theme === 'system' ? 'system' : theme
   })
 
   ipcMain.handle('AnyBuff:getAppVersion', () => {

@@ -170,7 +170,11 @@ const api = {
   projectName: (cwd: string) => ipcRenderer.invoke('AnyBuff:projectName', cwd),
   fetchModels: (payload: { baseURL: string; apiKey?: string; providerType?: string; providerId?: string }) =>
     ipcRenderer.invoke('AnyBuff:fetchModels', payload),
-  setTheme: (theme: 'dark' | 'light') => ipcRenderer.send('AnyBuff:setTheme', theme),
+  /** Pass the raw mode so 'system' keeps nativeTheme.themeSource = 'system' —
+   *  the native title bar (and Chromium's prefers-color-scheme) then keep
+   *  following the OS setting live on Windows instead of freezing at whatever
+   *  resolved theme was sent. */
+  setTheme: (theme: 'dark' | 'light' | 'system') => ipcRenderer.send('AnyBuff:setTheme', theme),
   /** Android-only: on-device engine diagnostics log (always null on desktop). */
   readEngineLog: async (): Promise<string | null> => null,
   /** Android-only: pull a SAF folder staged while this page was (re)loading —

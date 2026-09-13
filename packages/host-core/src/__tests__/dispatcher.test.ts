@@ -64,6 +64,9 @@ describe('read-only round-trips', () => {
   })
 
   test('saveCwd persists the cwd and getState reflects it', async () => {
+    // touchProject upserts a record so the persisted cwd resolves to a known
+    // project — getAppSettings self-heals unknown cwds away on next read.
+    expect((await host.dispatch('touchProject', ['/tmp/example-project'])).ok).toBe(true)
     const save = await host.dispatch('saveCwd', ['/tmp/example-project'])
     expect(save.ok).toBe(true)
     const state = (await host.dispatch('getState', [])) as {
@@ -72,6 +75,19 @@ describe('read-only round-trips', () => {
     }
     expect(state.result.cwd).toBe('/tmp/example-project')
     expect((await host.dispatch('saveCwd', [''])).ok).toBe(false)
+  })
+
+  test('a saved cwd without a matching project self-heals to a known project', async () => {
+    // Last-used-project restart fix: a dangling cwd (removed project, legacy
+    // bare saveCwd) must never survive a getState — it is replaced by the
+    // most recent project, or null when none remain.
+    expect((await host.dispatch('saveCwd', ['/tmp/ghost-project'])).ok).toBe(true)
+    const state = (await host.dispatch('getState', [])) as {
+      ok: true
+      result: { cwd: string | null; settings: { projects: { path: string }[] } }
+    }
+    const known = state.result.settings.projects.some((p) => p.path === state.result.cwd)
+    expect(state.result.cwd === null || known).toBe(true)
   })
 
   test('touchProject round-trips without throwing for an unknown project', async () => {

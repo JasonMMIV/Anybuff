@@ -580,7 +580,10 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       ok: false,
       error: 'Conversation export is not supported on this device yet.',
     }),
-    setTheme: shellNoOps,
+    // Android's prefers-color-scheme is pinned to the Activity theme (round
+    // 12); the renderer follows the shell-injected system theme instead, so
+    // this stays a no-op — it just accepts the new 'system' mode arg.
+    setTheme: (_theme: 'dark' | 'light' | 'system') => {},
     getZoomFactor: () => 1,
     setZoomFactor: shellNoOps,
     /** Android-only: on-device engine diagnostics log (null elsewhere). */

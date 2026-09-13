@@ -53,8 +53,11 @@ export function createPressHandlers(opts: {
     },
     onContextMenu(e) {
       // Desktop right-click; also blocks the WebView's native menu when a
-      // contextmenu event ever fires on touch.
+      // contextmenu event ever fires on touch. stopPropagation keeps rows
+      // that carry their own action menu from ALSO triggering the chat
+      // area's generic edit menu (App's chat-scroll onContextMenu).
       e.preventDefault()
+      e.stopPropagation()
       if (e.button === 2) onMenu(e.clientX, e.clientY, false)
     },
     onPointerDown(e) {
