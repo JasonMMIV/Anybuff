@@ -39,6 +39,8 @@ export const createReviewer = (
 ${PLACEHOLDER.USER_INPUT_PROMPT}
 </user_message>
 
+NOTE: The conversation history is intentionally curated for review. The author's internal reasoning/thinking is omitted; user requests, visible actions, tool results, and file changes are shown as they happened.
+
 # Task
 
 Your task is to provide helpful critical feedback on the last file changes made by the assistant. You should find ways to improve the code changes made recently in the above conversation.
@@ -64,7 +66,56 @@ Before providing your review, use <think></think> tags to think through the code
 
 Be extremely concise.`,
 
-  handleSteps: function* ({ agentState, params }) {
+  // ADR-28: blind to the author's monologue, not to the facts. Before the
+  // first STEP, replace this subagent's own messageHistory with a curated
+  // copy that strips `reasoning` parts from assistant messages — the
+  // reviewer then judges user requests, visible text, tool calls and tool
+  // results (diffs, test output) rather than the author's self-narrative.
+  // The last assistant run stays verbatim: the wire layer merges adjacent
+  // assistant messages and the latest turn's thinking blocks must replay
+  // unmodified (Claude 400s otherwise — same boundary semantics as
+  // splitTail's ADR-26 guard). Message objects are shared with the parent's
+  // replay, so edits rebuild new objects on a fresh array; never mutate in
+  // place — the parent line keeps its reasoning (ADR-26 governs the parent
+  // line, not this child-side curation). A reasoning-only turn drops
+  // entirely: an empty assistant content array is a wire hazard.
+  // The stale contextTokenCount after the shrink is harmless for a
+  // one-step no-tool reviewer, but re-estimate it if this agent ever
+  // gains tools or multi-step handleSteps.
+  handleSteps: function* ({ agentState }) {
+    const history = agentState.messageHistory
+    // The final assistant run = the last assistant message plus any
+    // immediately-preceding contiguous assistant messages (they merge into
+    // one wire message, so the replay unit is the whole run).
+    let lastRunEnd = -1
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'assistant') {
+        lastRunEnd = i
+        break
+      }
+    }
+    let lastRunStart = lastRunEnd
+    while (
+      lastRunStart > 0 &&
+      history[lastRunStart - 1].role === 'assistant'
+    ) {
+      lastRunStart--
+    }
+    agentState.messageHistory = history.flatMap((message, i) => {
+      if (
+        message.role !== 'assistant' ||
+        i >= lastRunStart ||
+        !Array.isArray(message.content)
+      ) {
+        return [message]
+      }
+      const content = message.content.filter(
+        (part) => part.type !== 'reasoning',
+      )
+      if (content.length === message.content.length) return [message]
+      if (content.length === 0) return []
+      return [{ ...message, content }]
+    })
     yield 'STEP'
   },
 })
