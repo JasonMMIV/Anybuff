@@ -8138,6 +8138,8 @@ select option {
 
 .right-panel-tabs .tabs-left {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 4px;
 }
 
