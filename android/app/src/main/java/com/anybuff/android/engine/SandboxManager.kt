@@ -95,6 +95,18 @@ class SandboxManager private constructor(context: Context) {
     @Volatile
     private var starting = false
 
+    /** Live host OR boot in flight — EngineService's headless-boot gate (M-B4).
+     *
+     * The "boot in flight" half is load-bearing: on a normal cold start the
+     * activity's bootEngine() wins the single-flight race; if this only
+     * checked host liveness, the service's later onStartCommand would pass
+     * the gate, queue a listener, and steal primaryListener (the auto-reboot
+     * re-point target) from the live activity — every subsequent background
+     * auto-reboot would then boot headless while the page waits forever.
+     */
+    fun isHostAliveOrBooting(): Boolean =
+        host.get()?.process?.isAlive == true || starting
+
     /** Listeners awaiting a boot that is already in flight (recreated Activity). */
     private val pendingListeners = java.util.concurrent.ConcurrentLinkedQueue<Listener>()
 

@@ -55,11 +55,50 @@ class EngineService : Service() {
         return START_STICKY
     }
 
-    /** Boot the engine if it is not already running (M-B1 filled in). */
+    /** Boot the engine headless when neither the host nor a boot is live (M-B4).
+     *
+     * Two reach paths: (a) START_STICKY restart after Android killed the whole
+     * process — the service comes back with a null intent (no activity, no
+     * primaryListener) and NOTHING else would boot the engine until the user
+     * reopened the app; (b) any other onStartCommand delivery while the host
+     * is dead (e.g. the notification's open tap after a crash).
+     *
+     * The gate MUST accept "boot in flight" as well as "host alive": on a
+     * normal cold start MainActivity.onCreate runs startEngineService() then
+     * bootEngine() — the service's onStartCommand lands on the main thread
+     * AFTER the activity's onCreate, so SandboxManager.start is already
+     * single-flight. If the gate only checked liveness, the service would
+     * queue a second listener and — worse — start() unconditionally assigns
+     * primaryListener, hijacking the auto-reboot re-point target from the
+     * live activity's listener to this headless one. Then every subsequent
+     * background auto-reboot would boot headless while the live page waits
+     * forever for a re-point that never comes. Gating on alive-OR-booting
+     * keeps primaryListener ownership with the activity on the normal path.
+     */
     private fun ensureEngineRunning() {
-        // The actual boot is owned by MainActivity (it needs the WebView to
-        // publish the WS URL to). The service's job is lifecycle + notification
-        // only; if the activity is gone there is nothing to boot for.
+        val sandbox = SandboxManager.get(this)
+        if (sandbox.isHostAliveOrBooting()) return
+        EngineLog.append(this, "service: booting sandbox headless (no activity)")
+        sandbox.start(
+            object : SandboxManager.Listener {
+                override fun onStage(stage: String) { /* headless — no progress UI */ }
+                override fun onHostReady(wsUrl: String) {
+                    // No page to inject into; the next MainActivity's start()
+                    // replays this URL (host alive path). Log the port only —
+                    // the URL carries the session token.
+                    EngineLog.append(
+                        this@EngineService,
+                        "service: headless host ready ${wsUrl.substringBefore('?')}",
+                    )
+                }
+                override fun onError(error: String) {
+                    EngineLog.append(this@EngineService, "service: headless boot FAILED: $error")
+                    // The notification must not claim a running engine over a
+                    // dead host — stop the service; the next app open re-boots.
+                    stopSelf()
+                }
+            },
+        )
     }
 
     private fun stopEngine() {

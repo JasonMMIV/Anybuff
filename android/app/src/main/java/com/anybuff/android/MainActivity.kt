@@ -38,7 +38,24 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var bridge: NativeBridge
     private lateinit var vault: KeyVault
-    private var booted = false
+    /**
+     * Boot-injection state (M-B4). The old `booted` boolean latch dropped the
+     * FRESH wsUrl when the exit-monitor auto-rebooted the host while this
+     * activity (and its page) were still alive: start() replayed
+     * onHostReady(newUrl) into injectAndLoad, which returned early on
+     * `booted` — the page kept reconnecting to the DEAD host's URL forever.
+     * Now: URL-generation equality decides no-op vs. re-point. A reboot
+     * always publishes a new dynamic port + token, so a different URL ⇒ swap
+     * the document-start script (remove the old handler, register the fresh
+     * one, reload the page — the renderer's WS shim reads the injected
+     * __ANYBUFF_WS_URL__ at mount, so reload is the only re-point mechanism).
+     * Same URL (activity recreation against a live host) ⇒ no-op.
+     */
+    private var injectedUrl: String? = null
+    /** Handle of the currently-registered document-start script (remove = handler.remove()). */
+    private var startScriptHandler: androidx.webkit.ScriptHandler? = null
+    /** True while the WebView shows the inline boot-error page (loadDataWithBaseURL) — see showBootError. */
+    private var onErrorPage = false
     /** True once the appassets page finished loading (pending-folder push gate). */
     private val pageReady = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -178,20 +195,40 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** Inject the WS/native globals then (re)load the app. Only once. */
+    /**
+     * Inject the WS/native globals then (re)load the app. Idempotent per
+     * URL-generation (M-B4 — see the injectedUrl field doc): a different
+     * URL (engine reboot: new port + token) swaps the document-start script
+     * and reloads the live page onto the fresh host; the same URL (activity
+     * recreation against a live host) is a no-op. The error-page escape hatch
+     * (onErrorPage) covers boot-error + retry-after-auto-reboot interplay —
+     * retry must reload even when the URL happens to match.
+     */
     private fun injectAndLoad(wsUrl: String) {
         runOnUiThread {
             // A background auto-reboot can finish after the activity was
             // destroyed (system killed the app while rebooting) — loadUrl on a
             // destroyed WebView throws; skip and let the next creation boot.
             if (isFinishing || isDestroyed) return@runOnUiThread
-            if (booted) return@runOnUiThread
-            booted = true
-            WebViewCompat.addDocumentStartJavaScript(
+            if (injectedUrl == wsUrl && !onErrorPage) return@runOnUiThread
+            startScriptHandler?.let { old ->
+                try {
+                    old.remove()
+                } catch (_: Exception) {
+                    // Removing is best-effort: if the device WebView does not
+                    // support it, the stale generation stays registered and
+                    // runs first (registration order), while the fresh script
+                    // still overwrites the globals — correct, one bounded leak.
+                }
+            }
+            val script = bridge.bootstrapJs(wsUrl, systemTheme)
+            startScriptHandler = WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                bridge.bootstrapJs(wsUrl, systemTheme),
+                script,
                 setOf(APPASSETS_ORIGIN),
             )
+            injectedUrl = wsUrl
+            onErrorPage = false
             webView.loadUrl(APPASSETS_ORIGIN + "/assets/www/index.html")
         }
     }
@@ -204,10 +241,11 @@ class MainActivity : ComponentActivity() {
      */
     fun restartEngine() {
         EngineLog.append(this, "engine restart requested (renderer overlay)")
-        // booted flips on the UI thread; the stop itself can block several
-        // seconds (process waitFor + tree kill) — keep it off the UI thread
-        // or every restart stutters/ANRs the activity.
-        runOnUiThread { booted = false }
+        // No latch reset needed (M-B4): the reboot publishes a fresh dynamic
+        // port + token, so injectAndLoad sees a different URL generation and
+        // re-points the page. The stop itself can block several seconds
+        // (process waitFor + tree kill) — keep it off the UI thread or every
+        // restart stutters/ANRs the activity.
         Thread {
             SandboxManager.get(this).stop()
             runOnUiThread { bootEngine() }
@@ -216,6 +254,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showBootError(error: String) {
         runOnUiThread {
+            onErrorPage = true
             // Inline error page (renderer may not be reachable). The retry
             // button calls back into the activity via the JS bridge object —
             // location.reload() cannot re-run the Kotlin boot path.
@@ -234,13 +273,11 @@ class MainActivity : ComponentActivity() {
     private inner class BootErrorJs(private val onRetry: () -> Unit) {
         @android.webkit.JavascriptInterface
         fun retry() {
-            // The error page can appear after a successful boot (crash-loop
-            // guard); clear the latch so injectAndLoad re-injects + reloads
-            // instead of no-op'ing on the already-true booted flag.
-            runOnUiThread {
-                booted = false
-                onRetry()
-            }
+            // No latch reset needed (M-B4): onErrorPage tracks the state the
+            // old booted flag existed for — retry reloads even when the URL
+            // generation happens to match (e.g. auto-reboot succeeded while
+            // the error page was showing, so start() replayed the same URL).
+            runOnUiThread { onRetry() }
         }
     }
 
