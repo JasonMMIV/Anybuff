@@ -421,6 +421,18 @@ function urlError(url: string): string | null {
   try {
     const u = new URL(trimmed)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'Base URL must start with http:// or https://'
+    // Mirror the SDK schema refine ("http baseURL is only allowed for local
+    // providers"): a remote http entry is dropped at engine-config write
+    // time, so catch it here — on the Model & Provider page — instead of
+    // letting auto-save persist a provider the engine will refuse. IPv6
+    // literals keep brackets in URL.hostname; strip them so '[::1]' matches
+    // the loopback allowlist exactly like the SDK does.
+    if (
+      u.protocol === 'http:' &&
+      !['localhost', '127.0.0.1', '::1'].includes(u.hostname.replace(/^\[|\]$/g, ''))
+    ) {
+      return 'http is only allowed for local endpoints (localhost / 127.0.0.1 / ::1)'
+    }
     return null
   } catch {
     return 'Invalid URL — expected e.g. https://api.openai.com/v1'
@@ -553,6 +565,10 @@ export default function SettingsModal({
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<{ id: string; text: string; ok: boolean } | null>(null)
   const [isLoaded, setIsLoaded] = useState(false)
+  /** Engine-config health from the host (dropped provider entries / whole-file
+   *  rejection) — surfaced on the Providers tab so a degraded write is never
+   *  console-only (2026-09-15 frozen-anybuff.json incident). */
+  const [configHealth, setConfigHealth] = useState<{ dropped?: string[]; rejection?: string } | null>(null)
   const [appVersion, setAppVersion] = useState('')
   // electron-updater lifecycle (#3 自動更新)；dev/unpackaged 走舊的 GitHub API 比對。
   const [updater, setUpdater] = useState<UpdaterUiState>({ status: 'idle', version: '', percent: 0, message: '' })
@@ -669,6 +685,7 @@ export default function SettingsModal({
       if (s?.reasoningEffort) setReasoningEffort(s.reasoningEffort); if (s?.reasoningLadders) setReasoningLadders(s.reasoningLadders)
       if (s?.approvalMode) setApprovalMode(s.approvalMode)
       setProviderHasKey(s?.providerHasKey ?? {})
+      setConfigHealth((state as { configHealth?: { dropped?: string[]; rejection?: string } }).configHealth ?? null)
       setAgentRouting(
         Object.fromEntries(
           Object.entries(s?.agentRouting ?? {}).map(([id, r]) => [id, { model: r.model, reasoningEffort: r.reasoningEffort ?? 'default' }])
@@ -699,8 +716,15 @@ export default function SettingsModal({
     if (!isLoaded || providers.length === 0) return
 
     for (const p of providers) {
-      if (urlError(p.baseURL)) {
-        return // skip auto-saving if invalid URL while typing
+      const ue = urlError(p.baseURL)
+      if (ue) {
+        // A blocked save must be visible. One offending provider pauses the
+        // whole auto-save (the payload is all-or-nothing), so name it here —
+        // the provider's own detail view shows the field error, but the list
+        // view would otherwise see the pause with no reason (the same
+        // silent-no-op class as the 2026-09-15 frozen-anybuff.json incident).
+        setError(`Settings not saved — "${p.label || p.id}" has an invalid Base URL: ${ue}`)
+        return
       }
     }
 
@@ -805,6 +829,7 @@ export default function SettingsModal({
       })) as {
         ok?: boolean
         keyErrors?: string[]
+        configHealth?: { dropped?: string[]; rejection?: string }
         settings?: { hasProvider?: boolean; providerHasKey?: Record<string, boolean>; webSearchHasKey?: Record<string, boolean> }
         error?: string
       }
@@ -817,6 +842,9 @@ export default function SettingsModal({
       }
       const allKeyErrors = [...(result.keyErrors ?? []), ...keyErrors]
       setError(allKeyErrors.length > 0 ? `Saved, but some keys failed: ${allKeyErrors.join(' ')}` : null)
+      // Refresh the engine-config health banner from the save round-trip so a
+      // dropped provider entry or a rejected write shows up immediately.
+      setConfigHealth(result.configHealth ?? null)
       // Reflect key presence immediately from the host round-trip — covers
       // both the native Keystore path and the desktop DPAPI path, saves and
       // deletes alike (drives the "Key Set" badges and placeholders).
@@ -1748,6 +1776,21 @@ export default function SettingsModal({
           {/* 1. Providers Tab */}
           {activeTab === 'providers' && (
             <div className="settings-tab-content">
+              {configHealth && (
+                <div className="settings-config-health-banner" role="alert">
+                  {configHealth.rejection ? (
+                    <>
+                      <strong>Engine config rejected — the previous file is still in effect.</strong>{' '}
+                      <span>{configHealth.rejection}</span>
+                    </>
+                  ) : (
+                    <>
+                      <strong>Some provider entries were dropped from the engine config</strong>{' '}
+                      <span>(other providers still work): {configHealth.dropped?.join(' · ')}</span>
+                    </>
+                  )}
+                </div>
+              )}
               {!editingProviderId || !selectedProvider ? (
                 /* View 1: Provider Cards / List */
                 <div className="provider-list-view">
@@ -1914,6 +1957,9 @@ export default function SettingsModal({
                           {testingId === selectedProvider.id ? 'Testing…' : 'Test Connection'}
                         </button>
                       </div>
+                      {urlError(selectedProvider.baseURL) && (
+                        <div className="test-msg fail">{urlError(selectedProvider.baseURL)}</div>
+                      )}
                       {testMsg?.id === selectedProvider.id && (
                         <div className={`test-msg ${testMsg.ok ? 'ok' : 'fail'}`}>{testMsg.text}</div>
                       )}

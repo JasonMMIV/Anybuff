@@ -9,6 +9,7 @@ import { bundledAgents } from '../agents/bundled-agents'
 import {
   getAppSettings,
   getProviderApiKey,
+  getProviderConfigHealth,
   saveProviderApiKey,
   updateProviders,
   updateAgentRouting,
@@ -41,6 +42,14 @@ export interface SaveSettingsPayload {
   costMode?: RunCostMode
 }
 
+/** Shape the config-health field shared by getState and saveSettings. Only
+ *  present when something is actually wrong — a clean config adds nothing. */
+function configHealthField(): { configHealth: ReturnType<typeof getProviderConfigHealth> } | {} {
+  const configHealth = getProviderConfigHealth()
+  if (configHealth.dropped.length === 0 && configHealth.rejection === undefined) return {}
+  return { configHealth }
+}
+
 /** AnyBuff:getState */
 export function getState(): unknown {
   const settings = getAppSettings()
@@ -50,6 +59,7 @@ export function getState(): unknown {
     running: isRunning(),
     runningTaskId: getRunningTaskId(),
     agentIds: Object.keys(bundledAgents).sort(),
+    ...configHealthField(),
   }
 }
 
@@ -104,7 +114,14 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
       keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  return { ok: true, ...(keyErrors.length > 0 ? { keyErrors } : {}), settings: getAppSettings() }
+  return {
+    ok: true,
+    ...(keyErrors.length > 0 ? { keyErrors } : {}),
+    // A rejected or degraded engine-config write must never be console-only:
+    // the renderer surfaces this on the Model & Provider page (2026-09-15).
+    ...configHealthField(),
+    settings: getAppSettings()
+  }
 }
 
 export async function fetchModels(payload: {

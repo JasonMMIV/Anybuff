@@ -1103,8 +1103,21 @@ function looksLikeReasoningShorthand(entry: Record<string, unknown>): boolean {
   )
 }
 
-/** Generate the anybuff.json used by the SDK (provider config + routing); returns the file path */
-export function writeProviderConfigFile(): string {
+/** Health report for the anybuff.json the host generates for the SDK. */
+export interface ProviderConfigHealth {
+  /** Invalid provider entries dropped from the generated file, as
+   *  `id: reason` strings. Per-entry isolation (2026-09-15): one bad
+   *  provider must never freeze routing for every other provider — the
+   *  rest of the config still writes through. */
+  dropped: string[]
+  /** Set when the whole write is refused and the previous file is kept.
+   *  Only structural failures OUTSIDE the providers record land here
+   *  (ADR-27 MC-0.6 semantics, narrowed 2026-09-15). */
+  rejection?: string
+}
+
+/** Build the anybuff.json object the SDK reads (provider config + routing). */
+function buildProviderConfigObject(): Record<string, unknown> {
   const s = loadSettings()
   const providers: Record<string, unknown> = {}
   for (const p of s.providers) {
@@ -1190,38 +1203,124 @@ export function writeProviderConfigFile(): string {
     )
     if (Object.keys(efforts).length > 0) config.agentReasoningEfforts = efforts
   }
-  const file = join(hostPaths().dataDir, 'anybuff.json')
-  // ADR-27 (MC-0.6): validate against the SDK schema BEFORE replacing the
-  // file. A structurally-invalid anybuff.json fails at config load — every
-  // request, every run (§2.4) — so a rejected write keeps the previous file
-  // (writeFileAtomic never pre-deletes; ADR-13) and reports loudly. The old
-  // file stays self-consistent, so runs continue on the last valid settings.
-  // (With NO previous file — a first run — the SDK config loader then
-  // fail-louds on the missing path: preferable to a poisoned file.)
-  // safeParse can still THROW when a refinement itself crashes (e.g.
-  // new URL() on a garbage baseURL) — that is also a rejection, never a
-  // pass-through write.
-  let rejection: string | undefined
+  return config
+}
+
+/** Run the SDK schema over a generated config; returns raw issues (with a
+ *  synthetic root issue when validation itself throws). */
+function validateProviderConfigIssues(
+  config: Record<string, unknown>,
+): { path: PropertyKey[]; message: string }[] {
   try {
     const check = providerConfigFileSchema.safeParse(config)
     if (!check.success) {
-      rejection = check.error.issues
-        .map(
-          (issue: { path: PropertyKey[]; message: string }) =>
-            `${issue.path.join('.') || '<root>'}: ${issue.message}`,
-        )
-        .join('; ')
+      return check.error.issues.map(
+        (issue: { path: PropertyKey[]; message: string }) => ({
+          path: issue.path,
+          message: issue.message,
+        }),
+      )
     }
   } catch (error) {
-    rejection = error instanceof Error ? error.message : String(error)
+    return [{ path: [], message: error instanceof Error ? error.message : String(error) }]
   }
-  if (rejection !== undefined) {
+  return []
+}
+
+function formatConfigIssues(
+  issues: { path: PropertyKey[]; message: string }[],
+): string {
+  return issues
+    .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+    .join('; ')
+}
+
+/**
+ * Per-entry isolation (2026-09-15): drop provider entries that fail the SDK
+ * schema instead of refusing the whole file. A drop is load-bearing — it
+ * removes that provider's models from routing — so it must never happen
+ * silently: the writer logs each drop and getProviderConfigHealth surfaces
+ * the list to the UI. Issues rooted anywhere else (defaultModel, agents…)
+ * are untouched here; the caller treats those as a whole-file rejection.
+ */
+function dropInvalidProviderEntries(
+  config: Record<string, unknown>,
+): { config: Record<string, unknown>; dropped: string[] } {
+  const issues = validateProviderConfigIssues(config)
+  const badIds = new Set<string>()
+  for (const issue of issues) {
+    if (issue.path[0] === 'providers' && typeof issue.path[1] === 'string') {
+      badIds.add(issue.path[1])
+    }
+  }
+  if (badIds.size === 0) return { config, dropped: [] }
+  const providers = config.providers as Record<string, unknown>
+  const dropped: string[] = []
+  for (const id of [...badIds].sort()) {
+    // Union schemas emit one issue per member plus entry-level ones; the
+    // field paths are the actionable signal, so dedupe them and fall back to
+    // '<entry>' only when nothing more specific exists.
+    const fieldReasons = [
+      ...new Set(
+        issues
+          .filter((issue) => issue.path[0] === 'providers' && issue.path[1] === id)
+          .map((issue) => issue.path.slice(2).join('.'))
+          .filter(Boolean),
+      ),
+    ]
+    dropped.push(`${id}: ${fieldReasons.join('; ') || '<entry>'}`)
+    delete providers[id]
+  }
+  return { config, dropped }
+}
+
+/** Inspect the config the writer WOULD generate, without writing. The
+ *  saveSettings/getState channels surface this so an invalid provider entry
+ *  is visible on the Model & Provider page instead of only in console logs
+ *  (the 2026-09-15 frozen-anybuff.json incident: a rejected write kept a
+ *  days-old file while the UI reported every save as successful). */
+export function getProviderConfigHealth(): ProviderConfigHealth {
+  const { config: writable, dropped } = dropInvalidProviderEntries(
+    buildProviderConfigObject(),
+  )
+  const issues = validateProviderConfigIssues(writable)
+  if (issues.length > 0) {
+    return { dropped, rejection: formatConfigIssues(issues) }
+  }
+  return { dropped }
+}
+
+/** Generate the anybuff.json used by the SDK (provider config + routing); returns the file path */
+export function writeProviderConfigFile(): string {
+  const file = join(hostPaths().dataDir, 'anybuff.json')
+  const { config: writable, dropped } = dropInvalidProviderEntries(
+    buildProviderConfigObject(),
+  )
+  // ADR-27 (MC-0.6): validate against the SDK schema BEFORE replacing the
+  // file, narrowed 2026-09-15 to per-entry isolation — a structurally-invalid
+  // PROVIDER entry is dropped (loudly, below) while the rest of the config
+  // still writes through; only a failure OUTSIDE the providers record
+  // refuses the whole write and keeps the previous file (writeFileAtomic
+  // never pre-deletes; ADR-13). The old file stays self-consistent, so runs
+  // continue on the last valid settings. (With NO previous file — a first
+  // run — the SDK config loader then fail-louds on the missing path:
+  // preferable to a poisoned file.)
+  const issues = validateProviderConfigIssues(writable)
+  if (issues.length > 0) {
     console.error(
-      `[anybuff-settings] rejected an invalid anybuff.json — kept the previous file (${rejection})`,
+      `[anybuff-settings] rejected an invalid anybuff.json — kept the previous file (${formatConfigIssues(issues)})`,
     )
     return file
   }
-  writeFileAtomic(file, JSON.stringify(config, null, 2))
+  // Logged only after the whole-file gate: a rejected write drops nothing
+  // (the previous file is kept verbatim), so "dropped" lines must never
+  // appear for a write that did not happen.
+  for (const entry of dropped) {
+    console.error(
+      `[anybuff-settings] dropped invalid provider entry from anybuff.json (${entry})`,
+    )
+  }
+  writeFileAtomic(file, JSON.stringify(writable, null, 2))
   return file
 }
 

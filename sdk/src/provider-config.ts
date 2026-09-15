@@ -266,11 +266,24 @@ const modelCapabilitiesByModelSchema = z
   .optional()
   .catch(undefined)
 
+/**
+ * Protocol policy (maintainer decision, 2026-09-15): http is allowed for
+ * loopback providers only — including with an apiKeyEnv, since local LLM
+ * servers behind a key-checking proxy are a real setup. The former separate
+ * "apiKeyEnv requires https" refine was removed: it rejected even loopback
+ * http, which made one local provider freeze every regeneration of the
+ * engine config file (see guide ADR-27, item 10). Remote http stays
+ * rejected — cleartext beyond the loopback interface is not a supported
+ * endpoint shape.
+ */
 function isLocalHttpUrl(value: string): boolean {
   const url = new URL(value)
+  // IPv6 literals keep their brackets in URL.hostname ('[::1]'); strip them
+  // so the literal loopback form matches alongside localhost / 127.0.0.1.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '')
   return (
     url.protocol === 'http:' &&
-    ['localhost', '127.0.0.1', '::1'].includes(url.hostname)
+    ['localhost', '127.0.0.1', '::1'].includes(hostname)
   )
 }
 
@@ -281,8 +294,15 @@ const openAICompatibleProviderSchema = z
       .string()
       .url()
       .refine((value) => {
-        const protocol = new URL(value).protocol
-        return protocol === 'https:' || protocol === 'http:'
+        // A garbage URL must surface as a clean validation issue, never as a
+        // thrown TypeError — a throw escapes safeParse and turns one bad
+        // provider into a whole-config failure (see dropInvalidProviderEntries).
+        try {
+          const protocol = new URL(value).protocol
+          return protocol === 'https:' || protocol === 'http:'
+        } catch {
+          return false
+        }
       }, 'baseURL must use http or https'),
     apiKeyEnv: envVarNameSchema.optional(),
     models: z.union([z.array(z.string().min(1)), modelMapSchema]),
@@ -306,14 +326,18 @@ const openAICompatibleProviderSchema = z
     customBody: z.record(z.string(), z.unknown()).optional(),
   })
   .refine(
-    (provider) =>
-      !provider.apiKeyEnv || new URL(provider.baseURL).protocol === 'https:',
-    'Providers with apiKeyEnv must use https baseURL',
-  )
-  .refine(
-    (provider) =>
-      new URL(provider.baseURL).protocol !== 'http:' ||
-      isLocalHttpUrl(provider.baseURL),
+    (provider) => {
+      try {
+        return (
+          new URL(provider.baseURL).protocol !== 'http:' ||
+          isLocalHttpUrl(provider.baseURL)
+        )
+      } catch {
+        // Unparseable URLs are already failed at field level; never let a
+        // throw escape safeParse (it would break per-entry isolation).
+        return false
+      }
+    },
     'http baseURL is only allowed for local providers',
   )
 
@@ -340,8 +364,14 @@ const anthropicProviderSchema = z
       .string()
       .url()
       .refine((value) => {
-        const protocol = new URL(value).protocol
-        return protocol === 'https:' || protocol === 'http:'
+        // Same garbage-URL guard as the OpenAI-compatible schema: a throw
+        // here escapes safeParse and breaks per-entry isolation.
+        try {
+          const protocol = new URL(value).protocol
+          return protocol === 'https:' || protocol === 'http:'
+        } catch {
+          return false
+        }
       }, 'baseURL must use http or https')
       .default('https://api.anthropic.com'),
     apiKeyEnv: envVarNameSchema.optional(),
@@ -359,14 +389,18 @@ const anthropicProviderSchema = z
     modelCapabilities: modelCapabilitiesByModelSchema.optional(),
   })
   .refine(
-    (provider) =>
-      !provider.apiKeyEnv || new URL(provider.baseURL).protocol === 'https:',
-    'Providers with apiKeyEnv must use https baseURL',
-  )
-  .refine(
-    (provider) =>
-      new URL(provider.baseURL).protocol !== 'http:' ||
-      isLocalHttpUrl(provider.baseURL),
+    (provider) => {
+      try {
+        return (
+          new URL(provider.baseURL).protocol !== 'http:' ||
+          isLocalHttpUrl(provider.baseURL)
+        )
+      } catch {
+        // Unparseable URLs are already failed at field level; never let a
+        // throw escape safeParse (it would break per-entry isolation).
+        return false
+      }
+    },
     'http baseURL is only allowed for local providers',
   )
 

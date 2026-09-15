@@ -8,9 +8,11 @@
  *   without ever overriding an explicit declaration; learned context and
  *   reasoning writes are guarded per field.
  * MC-0.6: writeProviderConfigFile validates the generated anybuff.json
- *   against the SDK schema BEFORE replacing the file — a rejected write
- *   keeps the previous file (ADR-13: never pre-delete), so one bad value can
- *   never break every run (§2.4).
+ *   against the SDK schema BEFORE replacing the file — per-entry isolation
+ *   (2026-09-15): an invalid PROVIDER entry is dropped (loudly, and surfaced
+ *   via getProviderConfigHealth) while the rest still writes through; only a
+ *   failure outside the providers record rejects the whole write and keeps
+ *   the previous file (ADR-13: never pre-delete).
  *
  * NOTE: each test pins its own host env at the top of its body (same
  * discipline as settings-keys.test.ts — bun:test may interleave other
@@ -21,9 +23,12 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { installHostEnv } from '../env'
+import { createHost } from '../index'
 import { noEncryptionSecrets } from './helpers'
 import {
+  getProviderConfigHealth,
   loadSettings,
+  saveSettings,
   updateProviders,
   recordProviderModelCapability,
   writeProviderConfigFile,
@@ -189,23 +194,97 @@ describe('writeProviderConfigFile (MC-0.6: validate before write)', () => {
     }
   })
 
-  test('a structurally-invalid config keeps the previous anybuff.json', () => {
+  test('an invalid provider entry is dropped while the rest writes through', () => {
+    const dataDir = pinEnv()
+    try {
+      // Two providers: one healthy, one with a structurally broken baseURL
+      // (the simplest field the host does not sanitize). Per-entry isolation
+      // (2026-09-15): the broken entry is dropped, the healthy one — and the
+      // routing it carries — still writes through.
+      updateProviders(
+        [
+          providerWith(),
+          { ...providerWith(), id: 'broken', label: 'Broken', baseURL: 'not-a-url' },
+        ],
+        'p/fresh-model',
+        'default',
+        'balanced'
+      )
+      const file = writeProviderConfigFile()
+      const cfg = JSON.parse(readFileSync(file, 'utf-8'))
+      expect(cfg.providers.p).toBeTruthy()
+      expect(cfg.providers.broken).toBeUndefined()
+      expect(cfg.defaultModel).toBe('p/fresh-model')
+      // The drop is surfaced, never console-only (2026-09-15 incident).
+      const health = getProviderConfigHealth()
+      expect(health.rejection).toBeUndefined()
+      expect(health.dropped.some((entry) => entry.startsWith('broken:'))).toBe(true)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a failure outside the providers record keeps the previous anybuff.json', () => {
     const dataDir = pinEnv()
     try {
       updateProviders([providerWith()], 'p/fresh-model', 'default', 'balanced')
       const first = writeProviderConfigFile()
       const firstBody = readFileSync(first, 'utf-8')
       expect(JSON.parse(firstBody).providers).toBeTruthy()
-      // Corrupt the provider so the generated config fails schema validation
-      // (baseURL is the simplest field the host does not sanitize).
-      updateProviders(
-        [{ ...providerWith(), baseURL: 'not-a-url' }],
-        'p/fresh-model',
-        'default',
-        'balanced'
-      )
+      // Corrupt a NON-provider field. activeModel is self-healed at load
+      // (empty falls back to the previous value) and provider entries are
+      // dropped per-entry, so use approvalMode: it rides through loadSettings
+      // unvalidated but the SDK schema pins it to an enum — the writer must
+      // fail loud on such a corrupted/hand-edited store (whole-file
+      // rejection, ADR-27 MC-0.6).
+      const corrupted = loadSettings()
+      ;(corrupted as unknown as Record<string, unknown>).approvalMode = 'bogus'
+      saveSettings(corrupted)
       const second = writeProviderConfigFile()
       expect(readFileSync(second, 'utf-8')).toBe(firstBody) // unchanged — rejected
+      expect(getProviderConfigHealth().rejection).toBeTruthy()
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('configHealth channel contract (MC-0.6 surface)', () => {
+  test('a dropped provider entry rides the saveSettings envelope and getState', async () => {
+    const dataDir = pinEnv()
+    try {
+      const host = createHost()
+      const save = (await host.dispatch('saveSettings', [
+        {
+          providers: [
+            providerWith(),
+            { ...providerWith(), id: 'broken', label: 'Broken', baseURL: 'not-a-url' },
+          ],
+          activeModel: 'p/fresh-model',
+          reasoningEffort: 'default',
+          approvalMode: 'balanced',
+        },
+      ])) as {
+        ok: boolean
+        configHealth?: { dropped: string[]; rejection?: string }
+      }
+      // saveSettings is an envelope handler: its own `{ok, …}` object passes
+      // through dispatch untouched (no `.result` nesting).
+      expect(save.ok).toBe(true)
+      expect(save.configHealth?.rejection).toBeUndefined()
+      expect(
+        save.configHealth?.dropped.some((entry) => entry.startsWith('broken:')),
+      ).toBe(true)
+      // getState surfaces the same health so the Model & Provider page banner
+      // is populated on load, not only right after a save.
+      const state = (await host.dispatch('getState', [])) as {
+        ok: boolean
+        result?: { configHealth?: { dropped: string[] } }
+      }
+      expect(state.ok).toBe(true)
+      expect(
+        state.result?.configHealth?.dropped.some((entry) => entry.startsWith('broken:')),
+      ).toBe(true)
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }
