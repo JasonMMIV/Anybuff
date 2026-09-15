@@ -177,6 +177,13 @@ const api = {
   setTheme: (theme: 'dark' | 'light' | 'system') => ipcRenderer.send('AnyBuff:setTheme', theme),
   /** Android-only: on-device engine diagnostics log (always null on desktop). */
   readEngineLog: async (): Promise<string | null> => null,
+  /** Android-only: hand the full engine log to the Android share sheet as a
+   *  .txt file (bug-report export). Desktop has no share sheet — always an
+   *  error envelope so callers can show a notice instead of hanging. */
+  shareEngineLog: async (): Promise<{ ok: boolean; error?: string }> => ({
+    ok: false,
+    error: 'Engine log sharing is not supported on desktop.',
+  }),
   /** Android-only: pull a SAF folder staged while this page was (re)loading —
    *  single-shot (clears the shell-side holder); always null on desktop. */
   takeStagedFolder: async (): Promise<string | null> => null,

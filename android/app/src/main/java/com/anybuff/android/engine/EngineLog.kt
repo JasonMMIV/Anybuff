@@ -58,6 +58,25 @@ object EngineLog {
         }
     }
 
+    /**
+     * Full log content (live file + rotation tail, no truncation) — used by
+     * the share/export path so bug reports carry everything the ring buffer
+     * still holds. Bounded by construction (≤ ~640KB).
+     */
+    fun readAll(context: Context): String {
+        return try {
+            synchronized(lock) {
+                val f = file(context)
+                val main = if (f.exists()) f.readText() else ""
+                val older = File(f.parentFile, "host.log.1")
+                val head = if (older.exists()) older.readText() else ""
+                head + main
+            }
+        } catch (e: Exception) {
+            "(failed to read engine log: ${e.message})"
+        }
+    }
+
     /** Newest [maxBytes] of the log (plus the rotation's tail) for display. */
     fun readTail(context: Context, maxBytes: Int = 96_000): String {
         return try {

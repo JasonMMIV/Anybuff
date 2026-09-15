@@ -12,6 +12,7 @@ import {
   GaugeIcon,
   GitHubIcon,
   InfoIcon,
+  ClipboardIcon,
   LayersIcon,
   MonitorIcon,
   MoonIcon,
@@ -21,6 +22,7 @@ import {
   RefreshIcon,
   SearchIcon,
   ServerIcon,
+  ShareIcon,
   SettingsIcon,
   SparklesIcon,
   SpecialistIcon,
@@ -3560,6 +3562,8 @@ function McpKvEditor({
 function EngineDiagnostics() {
   const [log, setLog] = useState<string>('')
   const [loading, setLoading] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [shareError, setShareError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -3577,6 +3581,35 @@ function EngineDiagnostics() {
     }
   }, [])
 
+  /** Copy the loaded log tail to the clipboard (bug-report export). */
+  const copyLog = useCallback(async () => {
+    if (!log) return
+    try {
+      await navigator.clipboard.writeText(log)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard can be unavailable in WebView contexts — the Share button
+      // (native share sheet) is the dependable path; surface that hint.
+      setShareError('Copy failed — use Share Log instead.')
+      setTimeout(() => setShareError(null), 4000)
+    }
+  }, [log])
+
+  /** Hand the FULL log (not just the loaded tail) to the Android share
+   *  sheet as a .txt file — the reliable export path (M-B4 diagnostics). */
+  const shareLog = useCallback(async () => {
+    setShareError(null)
+    try {
+      const res = await window.AnyBuff.shareEngineLog?.()
+      if (!res?.ok) {
+        setShareError(res?.error ?? 'Sharing is not supported in this shell.')
+      }
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
   useEffect(() => {
     void refresh()
   }, [refresh])
@@ -3586,6 +3619,24 @@ function EngineDiagnostics() {
       <div className="settings-section-head">
         <span>Engine Log</span>
         <div className="settings-section-actions">
+          <button
+            className="btn ghost small"
+            onClick={() => void copyLog()}
+            disabled={!log || loading}
+            title="Copy the displayed log to the clipboard"
+          >
+            <ClipboardIcon size={12} />
+            {copied ? 'Copied!' : 'Copy Log'}
+          </button>
+          <button
+            className="btn ghost small"
+            onClick={() => void shareLog()}
+            disabled={loading}
+            title="Share the full engine log as a .txt file (most reliable for bug reports)"
+          >
+            <ShareIcon size={12} />
+            Share Log
+          </button>
           <button
             className="btn ghost small"
             onClick={() => void refresh()}
@@ -3599,9 +3650,10 @@ function EngineDiagnostics() {
       </div>
       <p className="hint">
         Ring buffer of engine boot stages, host output (incl. crash lines), unexpected process exits, auto-reboots and
-        WebSocket reconnects. If the connection keeps dropping, this is the first place to look — screenshot it when
-        reporting an issue.
+        WebSocket reconnects. If the connection keeps dropping, this is the first place to look — use Share Log or
+        Copy Log when reporting an issue.
       </p>
+      {shareError && <p className="hint" style={{ color: 'var(--error, #ef4444)' }}>{shareError}</p>}
       <pre className="engine-log-box">{log || '…'}</pre>
     </div>
   )

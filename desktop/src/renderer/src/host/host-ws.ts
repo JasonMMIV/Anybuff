@@ -71,6 +71,11 @@ export interface AnyBuffNativeBridge {
   /** Android-only (gap #14): copy a sandbox file into the device's public
    *  Downloads/AnyBuff folder (MediaStore — no storage permission needed). */
   downloadFile?(guestPath: string): Promise<{ ok: boolean; error?: string }>
+  /** Android-only: hand the FULL engine diagnostics log to the Android share
+   *  sheet as a .txt file (FileProvider + ACTION_SEND) — the dependable export
+   *  path for bug reports; the WebView clipboard is unreliable on many OEM
+   *  WebViews. Resolves {ok, error?}; never rejects. */
+  shareEngineLog?: () => Promise<{ ok: boolean; error?: string }>
   /** Android-only: persist a provider/search key into the device keychain
    *  (Keystore) — the durable store behind the host's memory-only
    *  keyPersistence seam (plan §2.2 / §4.0 deviation 3). Resolves false on a
@@ -589,6 +594,14 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     /** Android-only: on-device engine diagnostics log (null elsewhere). */
     readEngineLog: async (): Promise<string | null> =>
       native?.readEngineLog ? await native.readEngineLog() : null,
+    /** Android-only: share the full engine log as a .txt via the system share
+     *  sheet (bug-report export; clipboard is the unreliable path on OEM
+     *  WebViews). No-op returning an error envelope when the native bridge is
+     *  absent (desktop / browser preview). */
+    shareEngineLog: async (): Promise<{ ok: boolean; error?: string }> =>
+      native?.shareEngineLog
+        ? await native.shareEngineLog()
+        : { ok: false, error: 'Not supported in this shell' },
     /** Android-only: pull a SAF folder staged while this page was (re)loading
      *  (push can race React mount, so the page also pulls once it is ready). */
     takeStagedFolder: async (): Promise<string | null> =>

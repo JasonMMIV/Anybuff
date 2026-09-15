@@ -158,6 +158,28 @@ class NativeBridge(
                     )
                     post(id, replyProxy) { put("ok", true) }
                 }
+                "shareLog" -> {
+                    // Diagnostics export: hand the FULL ring buffer (not the
+                    // display tail) to the Android share sheet as a .txt file
+                    // via FileProvider. The WebView clipboard is unreliable on
+                    // many OEM WebViews (and <120KB text can also hit clipboard
+                    // size caps) — the share sheet is the dependable export
+                    // path for bug reports (M-B4 diagnostics round).
+                    // The file I/O (readAll takes the EngineLog lock — the host
+                    // stdout drainer appends under it, and the log is exactly
+                    // busiest during a reconnect storm) runs OFF the main
+                    // thread, mirroring downloadFile; the reply is posted back
+                    // on the UI thread (replyProxy contract).
+                    Thread {
+                        val ok = shareEngineLog()
+                        activity.runOnUiThread {
+                            post(id, replyProxy) {
+                                put("ok", ok)
+                                if (!ok) put("error", "could not share the engine log")
+                            }
+                        }
+                    }.start()
+                }
                 "saveKey" -> {
                     // { providerId, apiKey } → Keystore encrypt → filesDir.
                     val providerId = msg.optString("providerId")
@@ -490,6 +512,38 @@ class NativeBridge(
     }
 
     /**
+     * Hand the full engine diagnostics log (EngineLog ring buffer, main +
+     * rotation tail — NOT the trimmed display tail) to the Android share
+     * sheet as anybuff-engine-log.txt. Caller runs this off the main thread
+     * (readAll holds the EngineLog lock; writeText is ~640KB of disk I/O) —
+     * startActivity + createChooser are safe from any thread.
+     */
+    private fun shareEngineLog(): Boolean = try {
+        val log = EngineLog.readAll(activity)
+        val dir = File(activity.cacheDir, "shared").apply { mkdirs() }
+        val out = File(dir, "anybuff-engine-log.txt")
+        out.writeText(log)
+        val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", out)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        // Belt-and-suspenders for OEM chooser quirks: propagate the grant
+        // flag onto the chooser intent too (modern Android copies it from
+        // the target, but some OEM variants have broken that plumbing).
+        val chooser = Intent.createChooser(send, "Share engine log")
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        activity.startActivity(chooser)
+        EngineLog.append(activity, "log: shared engine log (${log.length} chars)")
+        true
+    } catch (e: Exception) {
+        Log.e(TAG, "shareEngineLog failed", e)
+        EngineLog.append(activity, "log: share FAILED (${e.message})")
+        false
+    }
+
+    /**
      * Copy a sandbox file into the device's public Downloads/AnyBuff folder
      * (MediaStore — no storage permission needed on modern Android). The file
      * lands in the system Files app, visible to the user.
@@ -632,6 +686,8 @@ class NativeBridge(
             // to host files (FileProvider ACTION_VIEW / MediaStore Downloads).
             openExternalFile: (path) => send('openExternalFile', { path }).then(r => ({ ok: r.ok !== false, error: r.error || null })),
             downloadFile: (path) => send('downloadFile', { path }).then(r => ({ ok: r.ok !== false, error: r.error || null })),
+            // Diagnostics export: full engine log → Android share sheet (.txt).
+            shareEngineLog: () => send('shareLog').then(r => ({ ok: r.ok !== false, error: r.error || null })),
           };
         })();
         """.trimIndent()
