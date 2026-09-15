@@ -8194,17 +8194,16 @@ select option {
   /* Push panels (Windows parity — 2026-09 device feedback): on phones the
      layout reuses the desktop flex behavior — the sidebar and right panel
      are normal flow items that PUSH the main column; nothing overlays it
-     and nothing dims. Widths stay touch-friendly. Opening is INSTANT
-     (transition: none): animating width reflows the whole main column on
-     every frame, and Android caps the conversation at 300 items
-     (MAX_MOBILE_CHAT_ITEMS) precisely because that DOM is expensive.
+     and nothing dims. Widths stay touch-friendly. Open/close animates
+     width exactly like the desktop base rules (0.22s) — restored
+     2026-09-15: the earlier `transition: none` reflow-perf mitigation
+     made panels snap open instantly.
      Closed state falls through to the base `.sidebar.closed` (width: 0). */
   .sidebar {
     width: min(300px, 84vw);
     /* Above the transparent .drawer-backdrop tap-catcher (z-index 120) so
        the panel's own contents stay tappable while it is open. */
     z-index: 130;
-    transition: none;
   }
 
   .sidebar-mobile-header {
@@ -8248,7 +8247,6 @@ select option {
        through to the .drawer-backdrop catcher and close it. */
     position: relative;
     z-index: 130;
-    transition: none;
   }
 
   /* Transparent tap-catcher (2026-09 device feedback): tapping the
