@@ -8861,6 +8861,83 @@ select option {
     flex-shrink: 0;
   }
 
+  /* Subpages — ADR-27 Model Capabilities */
+  /* Row head restacks into a 2×2 grid: model id and its ladder on top,
+     badge + probe button below. The desktop row is a single nowrap flex
+     line — on a 360px phone that truncates the model id to nothing and
+     pushes the probe button out of reach. */
+  .cap-row-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 10px 12px;
+    /* Touch target: rows toggle the editor — give the whole head some
+       vertical presence and drop the hover-only affordance. */
+    min-height: 44px;
+  }
+
+  .cap-row-model {
+    /* Own the full first line so long ids (deepseek/deepseek-v4.1-flash)
+       wrap instead of ellipsizing into nothing next to the badges. */
+    flex: 1 1 100%;
+    white-space: normal;
+    word-break: break-all;
+    font-size: 12.5px;
+  }
+
+  .cap-row-ladder {
+    flex: 1 1 auto;
+  }
+
+  .cap-probe-btn {
+    /* Standalone tap target on the second line (next to the badge). */
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+
+  .cap-filter-input {
+    min-width: 0;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .cap-import-line,
+  .cap-probe-result-row {
+    flex-wrap: wrap;
+  }
+
+  .cap-import-line-model,
+  .cap-probe-body {
+    /* Bodies/ids may take a full line — never force a nowrap ellipsis
+       contest against the status chip. */
+    flex: 1 1 100%;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .cap-probe-rung {
+    min-width: 54px;
+  }
+
+  .cap-import-textarea {
+    /* ≥16px on iOS prevents the focus zoom-jump; Android WebViews get a
+       comfortable typing size. (The desktop 12px is unreadably small on
+       a phone anyway.) */
+    font-size: 16px;
+    line-height: 1.4;
+  }
+
+  .cap-row-actions {
+    flex-wrap: wrap;
+  }
+
+  .cap-row-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-width: 120px;
+    /* Primary tap targets ≥40px tall. */
+    min-height: 36px;
+  }
+
   /* Routing rules */
   .route-row {
     flex-direction: column;

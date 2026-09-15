@@ -528,6 +528,19 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     fetchModels: (payload: { baseURL: string; apiKey?: string; providerType?: string; providerId?: string }) =>
       call('fetchModels', payload),
 
+    // ── ADR-27 model capabilities (Settings → Capabilities) ────────────
+    // Business channels registered in host-core CHANNELS, so the WS server
+    // already dispatches them — only the renderer shim was missing (the
+    // Android Capabilities tab 500'd with "window.AnyBuff.listModelCapabilities
+    // is not a function"). Keep in lockstep with the preload's invoke list.
+    listModelCapabilities: () => call('listModelCapabilities'),
+    saveModelCapability: (payload: unknown) => call('saveModelCapability', payload),
+    importModelCapabilities: (payload: unknown) => call('importModelCapabilities', payload),
+    /** ADR-27 MC-2.1 — interactive two-round reasoning-effort probe. */
+    probeReasoningEffort: (payload: unknown) => call('probeReasoningEffort', payload),
+    listProbeSamples: () => call('listProbeSamples'),
+    clearProbeSamples: () => call('clearProbeSamples'),
+
     // ── Events (WS pushed frames) ──────────────────────────────────────
     onEvent: (callback: (event: unknown) => void) => {
       eventListeners.add(callback)
