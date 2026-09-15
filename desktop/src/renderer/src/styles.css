@@ -3593,15 +3593,17 @@ select option {
   box-shadow: 0 20px 60px var(--shadow);
 }
 
-/* Android WebView: the preview takes the whole screen (no window chrome). */
+/* Android WebView: the preview fills the safe-area backdrop — the backdrop is
+   inset by env(safe-area-inset-*) (see "Overlay safe-area discipline" in the
+   WebView overrides section). Never size it with 100vw/100vh: on the
+   edge-to-edge screen those units span behind the status bar and gesture bar. */
 .is-webview .file-preview-backdrop {
   padding: 0;
 }
 
 .is-webview .file-preview-modal {
-  width: 100vw;
-  height: 100vh;
-  max-height: none;
+  width: 100%;
+  height: 100%;
   border: none;
   border-radius: 0;
 }
@@ -5474,7 +5476,6 @@ select option {
 /* ─── Preset Picker Modal ────────────────────────────── */
 .preset-modal-backdrop {
   z-index: 120;
-  animation: wizard-backdrop-in 0.15s ease-out;
 }
 
 .preset-modal-dialog {
@@ -5488,7 +5489,6 @@ select option {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: wizard-panel-in 0.18s cubic-bezier(.2,.8,.2,1);
 }
 
 .preset-modal-header {
@@ -7903,6 +7903,30 @@ select option {
 .is-webview .app-body {
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Overlay safe-area discipline (edge-to-edge): every full-screen scrim/overlay
+   lives INSIDE the safe area — the status bar and gesture bar are never
+   covered, dimmed, or tap-intercepted. 100vw/100vh span the whole edge-to-edge
+   screen (including behind the system bars), so overlays must size against
+   this inset box instead. */
+.is-webview .modal-backdrop,
+.is-webview .engine-down-overlay {
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+
+/* Dialogs cap against the inset backdrop, not the raw vh/dvh viewport. */
+.is-webview .modal-backdrop > *,
+.is-webview .engine-down-overlay > * {
+  max-height: 100%;
+}
+
+/* The ≤640px preset override caps at `max-height: 88dvh !important`; on the
+   WebView, dvh includes the space behind the system bars, so re-cap the dialog
+   inside the safe-area backdrop. */
+.is-webview .preset-modal-dialog {
+  max-height: 100% !important;
 }
 
 /* Android WebView toolbar selects: icon-only when collapsed, enlarged ~50% for touch */
