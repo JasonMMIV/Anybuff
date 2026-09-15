@@ -8167,27 +8167,20 @@ select option {
 
 /* ─── Mobile / WebView Portrait Optimization (<= 640px) ───── */
 @media (max-width: 640px) {
-  /* Off-canvas Drawers: Left Sidebar & Right Panel */
+  /* Push panels (Windows parity — 2026-09 device feedback): on phones the
+     layout reuses the desktop flex behavior — the sidebar and right panel
+     are normal flow items that PUSH the main column; nothing overlays it
+     and nothing dims. Widths stay touch-friendly. Opening is INSTANT
+     (transition: none): animating width reflows the whole main column on
+     every frame, and Android caps the conversation at 300 items
+     (MAX_MOBILE_CHAT_ITEMS) precisely because that DOM is expensive.
+     Closed state falls through to the base `.sidebar.closed` (width: 0). */
   .sidebar {
-    position: fixed !important;
-    top: env(safe-area-inset-top, 0px);
-    bottom: env(safe-area-inset-bottom, 0px);
-    left: 0;
-    width: min(300px, 84vw) !important;
-    max-width: 84vw;
-    height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    width: min(300px, 84vw);
+    /* Above the transparent .drawer-backdrop tap-catcher (z-index 120) so
+       the panel's own contents stay tappable while it is open. */
     z-index: 130;
-    transform: translateX(0);
-    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
-    border-right: 1px solid var(--border);
-  }
-
-  .sidebar.closed {
-    transform: translateX(-105%) !important;
-    width: min(300px, 84vw) !important;
-    box-shadow: none !important;
-    pointer-events: none;
+    transition: none;
   }
 
   .sidebar-mobile-header {
@@ -8224,37 +8217,31 @@ select option {
   }
 
   .activity-panel.right-content-panel {
-    position: fixed !important;
-    top: env(safe-area-inset-top, 0px);
-    bottom: env(safe-area-inset-bottom, 0px);
-    right: 0;
-    width: min(320px, 88vw) !important;
-    max-width: 88vw;
-    height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    width: min(320px, 88vw);
+    /* The base right panel is position: static — z-index is ignored on
+       static elements, so promote it (the .sidebar base is already
+       position: relative) or every tap inside this panel would fall
+       through to the .drawer-backdrop catcher and close it. */
+    position: relative;
     z-index: 130;
-    transform: translateX(0);
-    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
-    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.6);
-    border-left: 1px solid var(--border);
+    transition: none;
   }
 
-  .activity-panel.right-content-panel.closed {
-    transform: translateX(105%) !important;
-    width: min(320px, 88vw) !important;
-    box-shadow: none !important;
-    pointer-events: none;
-  }
-
-  /* Drawer Backdrop */
+  /* Transparent tap-catcher (2026-09 device feedback): tapping the
+     squeezed main column closes the open panel — the same muscle memory
+     as the old dark scrim, but NOTHING is dimmed. Fully transparent fixed
+     layer at z-index 120, below the panels (z-index 130) so the panels
+     stay tappable, and inset to the safe areas so the Android status bar
+     and gesture bar are never covered or dimmed. (Also drops the old
+     `animation: fadeIn` — no @keyframes fadeIn exists in this file.) */
   .drawer-backdrop {
     display: block;
     position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    top: env(safe-area-inset-top, 0px);
+    bottom: env(safe-area-inset-bottom, 0px);
+    left: 0;
+    right: 0;
     z-index: 120;
-    animation: fadeIn 0.15s ease-out;
   }
 
   /* Topbar Layout */
