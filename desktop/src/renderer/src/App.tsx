@@ -1996,11 +1996,20 @@ export default function App() {
    * Gap #14: open the floating preview for a file path. FileTree / activity
    * panel pass absolute paths; file-changes rows / search results are relative
    * and resolve against cwd.
+   *
+   * Mobile (≤640px): collapse the right panel when a preview opens. While the
+   * panel is showing, the squeezed main column sits under the transparent
+   * tap-catcher, so a preview fired now can only have come from inside that
+   * panel — closing it hands the full width back to the preview/conversation.
+   * Desktop keeps the panel docked (Windows parity).
    */
   const openPreviewByPath = useCallback(
     (path: string, name?: string) => {
       setPreviewFile({ path: resolveProjectPath(cwd, path), name: name ?? basenameOf(path) })
       setFileMenu(null)
+      if (typeof window.matchMedia !== 'undefined' && window.matchMedia('(max-width: 640px)').matches) {
+        setRightOpen(false)
+      }
     },
     [cwd]
   )
