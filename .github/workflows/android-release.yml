@@ -136,7 +136,15 @@ jobs:
         env:
           ANYBUFF_KEYSTORE_BASE64: ${{ secrets.ANYBUFF_KEYSTORE_BASE64 }}
           ANYBUFF_KEYSTORE_PASSWORD: ${{ secrets.ANYBUFF_KEYSTORE_PASSWORD }}
+          PUBLISH: ${{ steps.ver.outputs.publish }}
         run: |
+          # Publishing (v* tag push / dispatch with tag) must never ship a
+          # debug-signed APK: once installed, the future release-signed build
+          # can never update over it (signature mismatch → forced uninstall).
+          if [ "$PUBLISH" = "true" ] && [ -z "$ANYBUFF_KEYSTORE_BASE64" ]; then
+            echo "::error::Publishing requires the release signing secrets (ANYBUFF_KEYSTORE_BASE64 + ANYBUFF_KEYSTORE_PASSWORD/ALIAS/KEY_PASSWORD). Configure them in repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
           if [ -n "$ANYBUFF_KEYSTORE_BASE64" ] && [ -z "$ANYBUFF_KEYSTORE_PASSWORD" ]; then
             echo "::error::ANYBUFF_KEYSTORE_BASE64 is set but ANYBUFF_KEYSTORE_PASSWORD is missing — partial secrets would silently produce a DEBUG-signed release APK."
             exit 1
