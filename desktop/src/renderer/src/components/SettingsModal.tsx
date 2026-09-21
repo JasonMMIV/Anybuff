@@ -384,6 +384,14 @@ interface UpdateCheckResult {
   latestVersion?: string
   url?: string
   error?: string
+  /** host-ws shim only: no update repo is configured (pre-first-APK-release
+   *  side-load period) — NOT a failed check. Android renders a friendly
+   *  "disabled" note for this instead of the failure message. */
+  status?: 'disabled'
+  /** host-ws shim only: the webview shell cannot download updates itself —
+   *  "update available" must surface the release page, not the desktop
+   *  background-download flow. Electron IPC results never set this. */
+  updateDownloadSupported?: boolean
 }
 
 type UpdaterStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
@@ -572,6 +580,7 @@ export default function SettingsModal({
   const [appVersion, setAppVersion] = useState('')
   // electron-updater lifecycle (#3 自動更新)；dev/unpackaged 走舊的 GitHub API 比對。
   const [updater, setUpdater] = useState<UpdaterUiState>({ status: 'idle', version: '', percent: 0, message: '' })
+  const [updateCheckDisabled, setUpdateCheckDisabled] = useState(false)
   const [pendingUpdate, setPendingUpdate] = useState<{ latestVersion: string; url: string } | null>(null)
 
   // App version for the About tab
@@ -1343,19 +1352,51 @@ export default function SettingsModal({
       // main-side); dev runs fall back to the plain GitHub API check.
       if (typeof window.AnyBuff.updateCheck === 'function') {
         const res = (await window.AnyBuff.updateCheck()) as UpdateCheckResult
+        // M-C2 gap #2 (plan §4.2): the WS shim answers {status:'disabled'}
+        // when no update repo is injected — that is a legitimate OFF state
+        // (Android side-load before the first APK-bearing release), not a
+        // failed check. Render a friendly disabled note instead of the
+        // "Failed to check for updates." error.
+        if ((res as { status?: string }).status === 'disabled') {
+          setUpdater({ status: 'idle', version: '', percent: 0, message: '' })
+          setUpdateCheckDisabled(true)
+          return
+        }
+        setUpdateCheckDisabled(false)
         if (!res.ok) {
           setUpdater({ status: 'error', version: '', percent: 0, message: res.error ?? 'Failed to check for updates.' })
           return
         }
         if (res.updateAvailable) {
-          setUpdater({ status: 'available', version: res.latestVersion ?? '', percent: 0, message: '' })
-          void window.AnyBuff.updateDownload?.()
+          // WS shim (Android): updateDownload is a permanent no-op there, so the
+          // 'available' state ("downloading in background…") would stick forever —
+          // route to the release-page modal instead. Electron IPC results never
+          // set updateDownloadSupported, so the packaged flow is unchanged.
+          if (res.updateDownloadSupported === false) {
+            if (res.latestVersion && res.url) {
+              setPendingUpdate({ latestVersion: res.latestVersion, url: res.url })
+              setUpdater({ status: 'idle', version: '', percent: 0, message: '' })
+            } else {
+              // No routable URL: stay neutral rather than claiming a download
+              // that can never progress.
+              setUpdater({ status: 'up-to-date', version: res.currentVersion ?? '', percent: 0, message: '' })
+            }
+          } else {
+            setUpdater({ status: 'available', version: res.latestVersion ?? '', percent: 0, message: '' })
+            void window.AnyBuff.updateDownload?.()
+          }
         } else {
           setUpdater({ status: 'up-to-date', version: res.currentVersion ?? '', percent: 0, message: '' })
         }
         return
       }
       const res = (await window.AnyBuff.checkForUpdates()) as UpdateCheckResult
+      if ((res as { status?: string }).status === 'disabled') {
+        setUpdater({ status: 'idle', version: '', percent: 0, message: '' })
+        setUpdateCheckDisabled(true)
+        return
+      }
+      setUpdateCheckDisabled(false)
       if (!res.ok) {
         setUpdater({ status: 'error', version: '', percent: 0, message: res.error ?? 'Failed to check for updates.' })
         return
@@ -2890,7 +2931,10 @@ export default function SettingsModal({
                       </span>
                     )}
                     {updater.status === 'error' && <span className="about-status fail">{updater.message}</span>}
-                    {(updater.status === 'idle' || updater.status === 'checking') && (
+                    {updateCheckDisabled && updater.status === 'idle' && (
+                      <span className="hint-inline">Update check is not enabled for this build.</span>
+                    )}
+                    {!updateCheckDisabled && (updater.status === 'idle' || updater.status === 'checking') && (
                       <span className="hint-inline">
                         {updater.status === 'checking' ? 'Checking…' : 'Background checks run every 4 hours.'}
                       </span>
@@ -3512,7 +3556,7 @@ export default function SettingsModal({
               </p>
               <p className="hint">
                 Update now opens the GitHub release page in your browser, where you can download the
-                latest installer.
+                latest release for your platform.
               </p>
             </div>
             <div className="update-modal-footer">
@@ -3524,7 +3568,20 @@ export default function SettingsModal({
                 href={pendingUpdate.url}
                 target="_blank"
                 rel="noreferrer"
-                onClick={() => setPendingUpdate(null)}
+                onClick={(e) => {
+                  // Android WebView has no window.open / multiple-windows
+                  // support: a target="_blank" anchor is a dead tap there.
+                  // The native bridge's openExternal (http/https-validated
+                  // NativeBridge.openExternal) is the shell's way out.
+                  const native = (
+                    window as unknown as { __ANYBUFF_NATIVE__?: { openExternal?: (url: string) => void } }
+                  ).__ANYBUFF_NATIVE__
+                  if (native?.openExternal) {
+                    e.preventDefault()
+                    native.openExternal(pendingUpdate.url)
+                  }
+                  setPendingUpdate(null)
+                }}
               >
                 <GitHubIcon size={13} /> Update now
               </a>

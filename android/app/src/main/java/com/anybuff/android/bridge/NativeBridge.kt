@@ -667,6 +667,14 @@ class NativeBridge(
           window.__ANYBUFF_WS_URL__ = '$escapedWs';
           window.__ANYBUFF_APP_VERSION__ = '$appVersion';
           window.__ANYBUFF_SYSTEM_THEME__ = '$systemTheme';
+          // M-C2 附帶工作項 (gap #1): enables the About-tab update check in
+          // the shared renderer's host-ws shim (version compare + open the
+          // matching APK release page). __ANYBUFF_UPDATE_APK_FILTER__ opts the
+          // check into the APK-asset filter — only releases carrying a .apk
+          // asset count as newer, so desktop-only releases can never mislead
+          // the side-loaded app.
+          window.__ANYBUFF_UPDATE_REPO__ = 'JasonMMIV/Anybuff';
+          window.__ANYBUFF_UPDATE_APK_FILTER__ = true;
           window.__ANYBUFF_NATIVE__ = {
             pickFolder: () => send('pickFolder').then(r => (r.error ? Promise.reject(new Error(r.error)) : r.path || null)),
             pickFiles: () => send('pickFiles').then(r => r.paths || []),

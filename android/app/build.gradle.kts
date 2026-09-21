@@ -3,6 +3,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// ── Version facts (M-C2, ADR-14) ──────────────────────────────────────────
+// desktop/package.json "version" is the SINGLE source of truth for the app
+// version (ADR-14). The CI release workflow derives name + versionCode from
+// it (1.0.0 → 10000 + patch·1 per ten-thousand) and passes them in via
+// -Panybuff.versionName / -Panybuff.versionCode. Local builds fall back to
+// the same defaults CI would derive from v1.0.0.
+val anybuffVersionName = (project.findProperty("anybuff.versionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.0.0"
+val anybuffVersionCode = (project.findProperty("anybuff.versionCode") as String?)?.takeIf { it.isNotBlank() }?.toIntOrNull() ?: 10000
+
+// Release signing is env-driven for CI (GitHub Secrets → ANYBUFF_KEYSTORE_*).
+// When absent, buildTypes.release below stays UNASSIGNED and AGP falls back
+// to the debug key — local release builds stay side-loadable with zero setup.
+val releaseSigningConfigured = !System.getenv("ANYBUFF_KEYSTORE_FILE").isNullOrBlank() &&
+    !System.getenv("ANYBUFF_KEYSTORE_PASSWORD").isNullOrBlank()
+
 android {
     namespace = "com.anybuff.android"
     compileSdk = 36
@@ -11,8 +26,8 @@ android {
         applicationId = "com.anybuff.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10000
-        versionName = "1.0.0"
+        versionCode = anybuffVersionCode
+        versionName = anybuffVersionName
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -22,10 +37,31 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // All four values come from CI env (secret-managed). Anything
+            // missing → leave this config inert; buildTypes.release keeps the
+            // debug-signing fallback below. A malformed config fails loudly
+            // at signing time — never silently unsigned.
+            if (releaseSigningConfigured) {
+                storeFile = rootProject.file(System.getenv("ANYBUFF_KEYSTORE_FILE")!!)
+                storePassword = System.getenv("ANYBUFF_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANYBUFF_KEY_ALIAS") ?: "anybuff"
+                keyPassword = System.getenv("ANYBUFF_KEY_PASSWORD") ?: System.getenv("ANYBUFF_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // else: unset → AGP signs with the debug keystore. Deliberate
+            // fallback (plan M-C2): a maintainer's local `assembleRelease`
+            // produces an installable APK without owning the release key.
         }
     }
 

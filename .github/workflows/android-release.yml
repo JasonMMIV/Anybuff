@@ -1,0 +1,204 @@
+name: android-release
+
+# M-C2 出包管線 (AnyBuff Android 版實作計畫 §4.2):
+#   renderer web build → bun run build:sdk → host-core dist → APK assets
+#   → Gradle arm64 → 簽章 (keystore 私管, env secrets) → Release 附 APK + checksums
+#
+# 版號唯一來源 (ADR-14): desktop/package.json "version"。versionCode 推導:
+#   major*10000 + minor*100 + patch   (1.0.0 → 10000, 1.2.3 → 10203)
+# 與計畫 §4.2 的 "1.0.0 → 10000 + patch" 範例同構 (patch 進個位數/百位欄)。
+#
+# 觸發: 手動 (workflow_dispatch), 或推 v* tag — CI 會為同一 tag 重打包
+# Windows exe 與 Android APK, 滿足「同一 tag 的 latest release 同時含兩者」
+# 的 check-update 前提 (host-ws githubUpdateCheck 過濾 .apk 資產)。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to attach the APK to (e.g. v1.3.2). Empty → build versionName from desktop/package.json without publishing."
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Keep bun deterministic; android/.gitignore excludes all runtime payloads.
+      BUN_INSTALL_CACHE_DIR: ~/.bun/install/cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag + version
+        id: ver
+        # inputs.* is interpolated into env (not the script body): a dispatch
+        # input can never become shell code here.
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(node -p "require('./desktop/package.json').version")
+          MAJOR=$(echo "$APP_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$APP_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$APP_VERSION" | cut -d. -f3)
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          # ADR-14 guard: a pushed v* tag must match desktop/package.json, or
+          # the APK would carry a versionName disagreeing with the release it
+          # attaches to (and the update check would compare wrong versions).
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            if [ "$TAG_VERSION" != "$APP_VERSION" ]; then
+              echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match desktop/package.json version ${APP_VERSION}. Bump the version (ADR-14) before tagging."
+              exit 1
+            fi
+          fi
+          {
+            echo "app_version=$APP_VERSION"
+            echo "version_code=$VERSION_CODE"
+            if [ -n "$DISPATCH_TAG" ]; then
+              echo "release_tag=$DISPATCH_TAG"
+              echo "publish=true"
+            elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              echo "release_tag=${GITHUB_REF#refs/tags/}"
+              echo "publish=true"
+            else
+              echo "release_tag="
+              echo "publish=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$APP_VERSION versionCode=$VERSION_CODE tag=${DISPATCH_TAG:-<none>} ref=${GITHUB_REF}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: bun install
+        run: bun install --frozen-lockfile
+
+      # §6-8 Windows 零回歸閘門: shared-layer green BEFORE any APK is produced.
+      # (Mirrors the repo's `bun run ci` + desktop tests; the renderer web
+      # build below re-validates the renderer again for free.)
+      - name: Gate — shared layers (typecheck + contract tests)
+        run: |
+          bun run typecheck:host-core
+          bun run test:host-core
+          bun run typecheck:desktop
+          bun --cwd desktop run test
+
+      # Layered builds in dependency order (guide §6.2). Bun's env inliner
+      # only reads the build-shell snapshot — env-defaults.json is baked via
+      # Bun `define` inside build.ts, so no NEXT_PUBLIC_* exports are needed
+      # here (plan §3.1 invariant).
+      - name: Build renderer (dist-web) + engine bundle
+        run: |
+          bun run build:sdk
+          bun --cwd desktop run build:web
+          bun run build:host-core
+
+      # The sandbox runtime payloads (Ubuntu rootfs, Node, proot) are pinned +
+      # SHA256-verified by these scripts and deliberately never committed
+      # (android/.gitignore) — CI fetches the exact pinned artifacts.
+      - name: Fetch pinned engine runtime + proot
+        working-directory: android
+        run: |
+          bash scripts/fetch-engine-runtime.sh
+          bash scripts/fetch-proot.sh
+
+      # gradle.properties carries a machine-specific JDK pin for the
+      # maintainer's Windows box; CI provides JDK via setup-java.
+      - name: Strip machine-specific JDK pin from gradle.properties
+        working-directory: android
+        run: sed -i '/^org.gradle.java.home=/d' gradle.properties
+
+      # Release signing (build.gradle.kts reads ANYBUFF_KEYSTORE_* env). The
+      # keystore binary arrives as the base64 secret ANYBUFF_KEYSTORE_BASE64 and
+      # is materialized at android/keystore/release.jks (gitignored). Without
+      # the secrets the build falls back to the DEBUG key — an APK that must
+      # never be published without the signing secrets being configured first.
+      - name: Materialize release keystore (when secrets configured)
+        env:
+          ANYBUFF_KEYSTORE_BASE64: ${{ secrets.ANYBUFF_KEYSTORE_BASE64 }}
+          ANYBUFF_KEYSTORE_PASSWORD: ${{ secrets.ANYBUFF_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$ANYBUFF_KEYSTORE_BASE64" ] && [ -z "$ANYBUFF_KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANYBUFF_KEYSTORE_BASE64 is set but ANYBUFF_KEYSTORE_PASSWORD is missing — partial secrets would silently produce a DEBUG-signed release APK."
+            exit 1
+          fi
+          if [ -z "$ANYBUFF_KEYSTORE_BASE64" ] && [ -n "$ANYBUFF_KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANYBUFF_KEYSTORE_PASSWORD is set but ANYBUFF_KEYSTORE_BASE64 is missing — release.jks would not exist and signing would fail."
+            exit 1
+          fi
+          if [ -n "$ANYBUFF_KEYSTORE_BASE64" ]; then
+            mkdir -p android/keystore
+            printf '%s' "$ANYBUFF_KEYSTORE_BASE64" | base64 -d > android/keystore/release.jks
+            echo "keystore materialized — release APK will be signed with the release key"
+          else
+            echo "signing secrets not configured — assembleRelease falls back to the debug signature (side-load only)"
+          fi
+
+      - name: Gradle assembleRelease
+        working-directory: android
+        env:
+          ANYBUFF_KEYSTORE_FILE: keystore/release.jks
+          ANYBUFF_KEYSTORE_PASSWORD: ${{ secrets.ANYBUFF_KEYSTORE_PASSWORD }}
+          ANYBUFF_KEY_ALIAS: ${{ secrets.ANYBUFF_KEY_ALIAS }}
+          ANYBUFF_KEY_PASSWORD: ${{ secrets.ANYBUFF_KEY_PASSWORD }}
+          APP_VERSION: ${{ steps.ver.outputs.app_version }}
+          VERSION_CODE: ${{ steps.ver.outputs.version_code }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease \
+            -Panybuff.versionName="$APP_VERSION" \
+            -Panybuff.versionCode="$VERSION_CODE"
+
+      - name: Rename + checksum APK
+        id: apk
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          SRC=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$SRC"
+          NAME="AnyBuff-${APP_VERSION}-android-arm64.apk"
+          cp "$SRC" "$NAME"
+          sha256sum "$NAME" > "$NAME.sha256"
+          echo "apk_name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact (always, for PR/test runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.apk_name }}
+          path: |
+            ${{ steps.apk.outputs.apk_name }}
+            ${{ steps.apk.outputs.apk_name }}.sha256
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: steps.ver.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.release_tag }}
+          files: |
+            ${{ steps.apk.outputs.apk_name }}
+            ${{ steps.apk.outputs.apk_name }}.sha256
+          fail_on_unmatched_files: true
+          # Never overwrite the Windows exe/blockmap/latest.yml triad (ADR-14):
+          # we only APPEND the Android pair to the existing release.
+          overwrite_files: false

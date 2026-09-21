@@ -15,6 +15,10 @@ import { createWsAnyBuff, type AnyBuffNativeBridge } from './host/host-ws'
 //   __ANYBUFF_APP_VERSION__  installed app version (getAppVersion)
 //   __ANYBUFF_UPDATE_REPO__  GitHub repo "owner/repo" enabling the About-tab
 //                            update check (v1: version compare + download link)
+//   __ANYBUFF_UPDATE_APK_FILTER__  the app is the Android APK distribution:
+//                            compare against the latest APK-asset release, not
+//                            the latest release tag (desktop-only releases must
+//                            never read as an Android update)
 //   __ANYBUFF_NATIVE__       native bridge object ({ pickFolder, pickFiles,
 //                            openExternal, getVersion }) — WebView JS cannot open
 //                            SAF pickers / external browsers by itself.
@@ -32,6 +36,7 @@ interface WebviewGlobals {
   __ANYBUFF_WS_URL__?: string
   __ANYBUFF_APP_VERSION__?: string
   __ANYBUFF_UPDATE_REPO__?: string
+  __ANYBUFF_UPDATE_APK_FILTER__?: boolean | string
   __ANYBUFF_NATIVE__?: AnyBuffNativeBridge
 }
 
@@ -45,6 +50,7 @@ if (wsUrl) {
     url: wsUrl,
     appVersion: g.__ANYBUFF_APP_VERSION__,
     updateRepo: g.__ANYBUFF_UPDATE_REPO__,
+    updateApkFilter: Boolean(g.__ANYBUFF_UPDATE_APK_FILTER__),
     native: g.__ANYBUFF_NATIVE__,
   }) as never
 

@@ -12,6 +12,11 @@ local.properties
 *.iml
 .kotlin/
 
+# Release keystore materialized from CI secrets (workflow) — never commit keys
+keystore/
+*.jks
+*.keystore
+
 # Engine runtime payloads — pinned + SHA256-verified by scripts/fetch-*.sh
 # (never committed: GPL proot binaries + large distro/Node tarballs; NOTICE covers redistribution)
 app/src/main/assets/runtime/

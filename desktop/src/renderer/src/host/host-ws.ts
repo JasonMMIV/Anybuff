@@ -28,6 +28,11 @@ export interface UpdateCheckResult {
   latestVersion: string
   url?: string
   error?: string
+  /** WS shim only: the webview shell cannot download updates itself —
+   *  "update available" must surface the release page, not a download UI.
+   *  Electron IPC results never set this, so the About tab keeps its
+   *  electron-updater flow there. */
+  updateDownloadSupported?: boolean
 }
 
 export interface UpdateUiEvent {
@@ -103,9 +108,51 @@ export interface WsHostOptions {
   native?: AnyBuffNativeBridge
   /** GitHub repo for the update check, e.g. 'JasonMMIV/Anybuff'. Default unset → update UI disabled. */
   updateRepo?: string
+  /** The running app is the Android APK distribution: compare against the
+   *  latest APK-asset release instead of the latest release tag, so a
+   *  desktop-only release never reads as an Android update. Injected by
+   *  NativeBridge.bootstrapJs (__ANYBUFF_UPDATE_APK_FILTER__). */
+  updateApkFilter?: boolean
 }
 
 const GITHUB_RELEASES_PAGE_PREFIX = 'https://github.com/'
+
+/**
+ * Android builds compare against the latest APK-asset release, not the latest
+ * release tag (M-C2 附帶工作項，2026-09-15): desktop v1.3.x releases ship only
+ * the Windows installer (exe+blockmap+latest.yml), so a naive tag compare has
+ * flagged "update available" ever since the first desktop GA — a mislead that
+ * "Update now" then resolves to a Windows installer page. The Android shell
+ * opts in via WsHostOptions.updateApkFilter; the desktop dev-shell path keeps
+ * the unfiltered tag compare (its only match concern is desktop installers).
+ *
+ * On GitHub API failure this returns null and the caller reports "up to
+ * date" rather than an error: a false negative on a flaky network beats a
+ * false "update available" pointing at a Windows installer. It must NOT fall
+ * back to the unfiltered tag compare — that would resurrect the exact
+ * desktop-only mislead this filter exists to prevent (the common "null" here
+ * is not an API hiccup but the pre-first-APK-release side-load period).
+ */
+async function latestApkReleaseTag(repo: string): Promise<{ tagName: string; url: string } | null> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=15`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AnyBuff' },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return null
+    const releases = (await res.json()) as Array<{ tag_name?: string; html_url?: string; assets?: Array<{ name?: string }> }>
+    if (!Array.isArray(releases)) return null
+    for (const rel of releases) {
+      const tagName = (rel.tag_name ?? '').trim()
+      if (!tagName) continue
+      const hasApk = (rel.assets ?? []).some((a) => typeof a.name === 'string' && a.name.toLowerCase().endsWith('.apk'))
+      if (hasApk) return { tagName, url: rel.html_url ?? `${GITHUB_RELEASES_PAGE_PREFIX}${repo}/releases/latest` }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
 
 /** Returns > 0 when a > b (numeric major.minor.patch, "v" prefix tolerated). */
 function compareVersions(a: string, b: string): number {
@@ -120,9 +167,24 @@ function compareVersions(a: string, b: string): number {
 }
 
 /** Compare the running version against the latest GitHub release (dev/unpackaged parity). */
-async function githubUpdateCheck(repo: string, currentVersion: string): Promise<UpdateCheckResult> {
+async function githubUpdateCheck(repo: string, currentVersion: string, apkFilter: boolean): Promise<UpdateCheckResult> {
   const latestUrl = `${GITHUB_RELEASES_PAGE_PREFIX}${repo}/releases/latest`
   try {
+    if (apkFilter) {
+      const apk = await latestApkReleaseTag(repo)
+      if (apk) {
+        return {
+          ok: true,
+          updateAvailable: compareVersions(apk.tagName, currentVersion) > 0,
+          currentVersion,
+          latestVersion: apk.tagName.replace(/^v/i, ''),
+          url: apk.url,
+          updateDownloadSupported: false,
+        }
+      }
+      // No APK release at all → "up to date" (with the GitHub fallback URL).
+      return { ok: true, updateAvailable: false, currentVersion, latestVersion: '', url: latestUrl, updateDownloadSupported: false }
+    }
     const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AnyBuff' },
       signal: AbortSignal.timeout(15000),
@@ -138,6 +200,7 @@ async function githubUpdateCheck(repo: string, currentVersion: string): Promise<
       currentVersion,
       latestVersion: tagName.replace(/^v/i, ''),
       url: data.html_url && /^https:\/\/github\.com\//.test(data.html_url) ? data.html_url : latestUrl,
+      updateDownloadSupported: false,
     }
   } catch (e) {
     return { ok: false, updateAvailable: false, currentVersion, latestVersion: '', error: e instanceof Error ? e.message : String(e) }
@@ -145,7 +208,7 @@ async function githubUpdateCheck(repo: string, currentVersion: string): Promise<
 }
 
 export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
-  const { url, timeoutMs = 30_000, appVersion = '0.0.0-ws', native, updateRepo } = options
+  const { url, timeoutMs = 30_000, appVersion = '0.0.0-ws', native, updateRepo, updateApkFilter = false } = options
 
   let seq = 0
   /**
@@ -560,8 +623,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       return () => {}
     },
     getAppVersion: async () => ({ version: native?.getVersion ? await native.getVersion() : appVersion }),
-    checkForUpdates: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion) : { status: 'disabled' }),
-    updateCheck: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion) : { status: 'disabled' }),
+    checkForUpdates: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion, updateApkFilter) : { status: 'disabled' }),
+    updateCheck: async () => (updateRepo ? githubUpdateCheck(updateRepo, appVersion, updateApkFilter) : { status: 'disabled' }),
     updateDownload: async () => ({ status: 'disabled' }),
     updateInstall: shellNoOps,
     onUpdateEvent: (callback: (event: UpdateUiEvent) => void) => {
