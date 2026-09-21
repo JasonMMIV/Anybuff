@@ -20,6 +20,7 @@
     "build:host-core": "cd packages/host-core && bun run build",
     "smoke:sdk": "bun sdk/smoke-test-dist.ts",
     "smoke:host-core": "bun packages/host-core/scripts/smoke-host-core.ts",
+    "scan:touch": "bun scripts/scan-touch-targets.ts",
     "dev:desktop": "bun --cwd desktop dev",
     "build:desktop": "bun --cwd desktop build",
     "typecheck:desktop": "bun --cwd desktop typecheck",
