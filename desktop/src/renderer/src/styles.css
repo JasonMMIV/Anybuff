@@ -9117,3 +9117,356 @@ select option {
   color: var(--text-0);
   border-color: var(--text-2);
 }
+/* ─── M-C1 touch-target floors (2026-09-21 static scan remediation) ──────
+
+   scripts/scan-touch-targets.ts (bun run scan:touch) audits the shared
+   stylesheet against a 44px floor on both axes. Every rule below is
+   prefixed `.is-webview` — an unprefixed floor would change Windows
+   desktop metrics (guide §6 note 8 zero-regression). The scan itself
+   enforces the discipline.
+
+   Scope note: these floors cover PORTRAIT phones (the `.is-webview`
+   branch). Extending the floors to landscape webviews (the 640px media
+   does not apply there) is future work. */
+
+/* Shared button family: every real button is ≥44px tall on Android.
+   min-width guards compressed inline actions; fixed-size icon buttons are
+   overridden below. */
+.is-webview .btn {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.is-webview .send-btn {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.is-webview .btn.icon-only {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+.is-webview .topbar-select-folder-btn,
+.is-webview .topbar-set-key-btn {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* Hover-revealed message/footer controls → always visible + sized. */
+.is-webview .mini-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .msg-actions {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.is-webview .code-block-action,
+.is-webview .code-copy-btn {
+  opacity: 1 !important;
+  visibility: visible !important;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Expandable heads: the whole header is the toggle on touch. */
+.is-webview .tool-card-head {
+  min-height: 44px;
+}
+
+.is-webview .file-changes-header {
+  min-height: 44px;
+}
+
+.is-webview .thought-head {
+  min-height: 44px;
+}
+
+.is-webview .todo-header {
+  min-height: 44px;
+}
+
+.is-webview .plan-head {
+  min-height: 44px;
+}
+
+/* Sidebar rows / lists. */
+.is-webview .project-row {
+  min-height: 44px;
+}
+
+.is-webview .task-row {
+  min-height: 44px;
+}
+
+.is-webview .tree-row {
+  min-height: 44px;
+}
+
+.is-webview .search-result {
+  min-height: 44px;
+}
+
+.is-webview .nav-item {
+  min-height: 44px;
+}
+
+.is-webview .mention-item {
+  min-height: 44px;
+}
+
+.is-webview .row-more-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .project-new-task-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .mini-plus {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Context menus (task/project ⋯ menus — M-C1 onContextMenu pass). */
+.is-webview .context-menu-item {
+  min-height: 44px;
+}
+
+.is-webview .project-menu-item {
+  min-height: 44px;
+}
+
+/* Panels / tabs. */
+.is-webview .tab {
+  min-height: 44px;
+}
+
+.is-webview .settings-modal-nav-item {
+  min-height: 44px;
+}
+
+.is-webview .right-panel-close-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Chat composer + queue. */
+.is-webview .attach-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .chip-x {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .queue-text {
+  min-height: 44px;
+}
+
+.is-webview .queue-panel-header {
+  min-height: 44px;
+}
+
+/* Cards / results / links. */
+.is-webview .followup-card {
+  min-height: 44px;
+}
+
+.is-webview .web-result {
+  min-height: 44px;
+}
+
+.is-webview .about-link {
+  min-height: 44px;
+}
+
+.is-webview .link-btn {
+  min-height: 44px;
+}
+
+.is-webview .chip {
+  min-height: 44px;
+}
+
+.is-webview .preset-card {
+  min-height: 44px;
+}
+
+.is-webview .review-scope-item {
+  min-height: 44px;
+}
+
+.is-webview .color-theme-card {
+  min-height: 44px;
+}
+
+.is-webview .theme-mode-btn {
+  min-height: 44px;
+}
+
+.is-webview .agent-capability {
+  min-height: 44px;
+}
+
+.is-webview .custom-select-option {
+  min-height: 44px;
+}
+
+.is-webview .custom-select-trigger {
+  min-height: 44px;
+}
+
+.is-webview .notice-toast {
+  min-height: 44px;
+}
+
+/* Inputs / textareas. */
+.is-webview .mcp-kv-value {
+  min-height: 44px;
+}
+
+.is-webview .mcp-kv-key {
+  min-height: 44px;
+}
+
+.is-webview .tree-search {
+  min-height: 44px;
+}
+
+.is-webview .model-search-input {
+  min-height: 44px;
+}
+
+.is-webview .task-rename-input {
+  min-height: 44px;
+}
+
+.is-webview .cap-filter-input {
+  min-height: 44px;
+}
+
+.is-webview .cap-input {
+  min-height: 44px;
+}
+
+.is-webview .queue-edit {
+  min-height: 44px;
+}
+
+/* MCP tools settings. */
+.is-webview .mcp-mode-btn {
+  min-height: 44px;
+}
+
+.is-webview .mcp-server-toggle input {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Agent wizard steps + template cards. */
+.is-webview .agent-wizard-step {
+  min-height: 44px;
+}
+
+.is-webview .agent-template {
+  min-height: 44px;
+}
+
+.is-webview .diff-file-row {
+  min-height: 44px;
+}
+
+/* Codebase index panel. */
+.is-webview .index-open-file {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .index-related {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .index-result-head {
+  min-height: 44px;
+}
+
+/* Revert modal + file preview + engine-down. */
+.is-webview .revert-modal-close-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .revert-cancel-btn,
+.is-webview .btn-revert-confirm {
+  min-height: 44px;
+}
+
+.is-webview .file-preview-modal-close {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .engine-down-secondary {
+  min-height: 44px;
+}
+
+.is-webview .model-search-clear {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.is-webview .model-remove-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+
+/* Remaining M-C1 findings — settings mobile chrome, sidebar close, composer
+   token pill, probe button, import textarea. */
+.is-webview .settings-back-btn,
+.is-webview .settings-close-btn,
+.is-webview .settings-category-btn,
+.is-webview .settings-category-dropdown-item {
+  min-height: 44px;
+}
+
+.is-webview .sidebar-close-btn {
+  width: 44px;
+  height: 44px;
+}
+
+.is-webview .token-ring-wrap.is-touchable {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+}
+
+.is-webview .cap-probe-btn {
+  min-height: 44px;
+}
+
+.is-webview .cap-import-textarea {
+  min-height: 88px;
+}
+
+/* The mode/model/reasoning triggers carry a 0,3,0-specificity 36px floor
+   earlier in this file; match its shape so 44px wins the cascade there too
+   (the generic `.is-webview .custom-select-trigger` alone would lose). */
+.is-webview .mode-select .custom-select-trigger,
+.is-webview .model-select .custom-select-trigger,
+.is-webview .reasoning-select .custom-select-trigger {
+  min-height: 44px;
+}

@@ -269,12 +269,13 @@ const DESKTOP_CHROME_CLASSES = new Set([
 ])
 
 /**
- * Delegated-click containers: the element itself is not the tap target —
- * clicks delegate to generated children (`.markdown` bakes sanitized HTML
- * whose buttons/links are the real targets; its content height is text flow,
- * not a control).
+ * Delegated/dismiss-guard containers: clicks on the element itself are not
+ * an affordance — `.markdown` delegates to generated children (its content
+ * height is text flow, not a control); `.task-context-menu` only stops
+ * propagation so taps inside don't close the menu (the items are the
+ * targets).
  */
-const DELEGATED_CONTAINER_CLASSES = new Set(['markdown'])
+const DELEGATED_CONTAINER_CLASSES = new Set(['markdown', 'task-context-menu'])
 
 // ── CSS parsing ─────────────────────────────────────────────────────────────
 
@@ -321,6 +322,20 @@ function parseCssRules(cssText: string): CssRule[] {
   while (i < n) {
     while (mediaStack.length && i >= mediaStack[mediaStack.length - 1].closeAt)
       mediaStack.pop()
+
+    // Stray closing braces (e.g. the `}` that closes an @media block, which
+    // the block-skip below never consumes) must not leak into the next
+    // rule's prelude — `} .is-webview .btn` would otherwise never match.
+    // Skip whitespace before each brace (CRLF sits between them).
+    for (;;) {
+      while (i < n && /\s/.test(src[i])) i++
+      if (i < n && src[i] === '}') {
+        i++
+        continue
+      }
+      break
+    }
+    if (i >= n) break
 
     const brace = src.indexOf('{', i)
     if (brace === -1) break
@@ -382,28 +397,40 @@ function parseCssRules(cssText: string): CssRule[] {
 
 // ── Length resolution (with custom-property substitution) ───────────────────
 
-function collectCustomProps(rules: CssRule[]): Map<string, string> {
-  const props = new Map<string, string>()
+/**
+ * Custom properties resolved per scope: `base` = root tokens + base-rule
+ * declarations (last base rule wins); `any` = additionally every
+ * mobile-scoped declaration. A base rule resolves var() against `base` so a
+ * mobile override of `--btn-padding-y` cannot masquerade as the base size;
+ * mobile-scoped rules resolve against `any`.
+ */
+type CustomProps = { base: Map<string, string>; any: Map<string, string> }
+
+function collectCustomProps(rules: CssRule[]): CustomProps {
+  const base = new Map<string, string>()
+  const any = new Map<string, string>()
   for (const rule of rules) {
     for (const [prop, value] of rule.decls) {
-      if (prop.startsWith('--')) props.set(prop, value)
+      if (!prop.startsWith('--')) continue
+      any.set(prop, value)
+      if (rule.scope === 'base') base.set(prop, value)
     }
   }
-  return props
+  return { base, any }
 }
 
 function substituteVars(
   value: string,
-  props: Map<string, string>,
+  vars: Map<string, string>,
   depth = 0,
 ): string {
   if (depth > 8 || !value.includes('var(')) return value
   const replaced = value.replace(
     /var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/g,
     (_all, name: string, fallback: string | undefined) =>
-      props.get(name) ?? fallback ?? '0',
+      vars.get(name) ?? fallback ?? '0',
   )
-  return substituteVars(replaced, props, depth + 1)
+  return substituteVars(replaced, vars, depth + 1)
 }
 
 /**
@@ -413,10 +440,10 @@ function substituteVars(
  */
 function parseLen(
   raw: string | undefined,
-  props: Map<string, string>,
+  vars: Map<string, string>,
 ): number | null {
   if (!raw) return null
-  const v = substituteVars(raw, props)
+  const v = substituteVars(raw, vars)
     .replace(/!important/i, '')
     .trim()
   if (v === '0' || v === '0px') return 0
@@ -440,16 +467,20 @@ function parseLen(
 /** One axis (0 = vertical/top, 1 = horizontal/left) of a padding shorthand. */
 function paddingAxis(
   shorthand: string | undefined,
-  props: Map<string, string>,
+  vars: Map<string, string>,
   axis: 0 | 1,
 ): number {
   if (!shorthand) return 0
-  const resolved = substituteVars(shorthand, props)
+  // Shorthand values can carry a trailing !important (`padding: 6px 16px
+  // !important`) — strip it before parsing, mirroring parseLen.
+  const resolved = substituteVars(shorthand, vars)
+    .replace(/!important/i, '')
+    .trim()
   if (/%|calc\(/.test(resolved)) return 0
   const lens = resolved
     .trim()
     .split(/\s+/)
-    .map((p) => parseLen(p, props))
+    .map((p) => parseLen(p, vars))
   if (lens.some((l) => l == null)) return 0
   const l = lens as number[]
   if (l.length === 1) return l[0]
@@ -464,34 +495,39 @@ function paddingAxis(
  * content estimate applies to HEIGHT only (padding + 2×border +
  * lines×font×line-height). Width is never padding-derived (text-dependent).
  * Full-stretch overlays (top+bottom / inset covering both axes) are treated
- * as unpinned in height.
+ * as unpinned in height. Custom properties resolve against the scope layer
+ * this rule belongs to (base rules see base tokens only).
  */
 function ruleFloor(
   decls: Map<string, string>,
-  props: Map<string, string>,
+  props: CustomProps,
   axis: 'w' | 'h',
+  isMobileScope: boolean,
 ): number | null {
   if (decls.get('display') === 'none') return null // renders nothing — pins no size
+  // Mobile-scoped rules may override the base tokens; base rules must not
+  // see them (a mobile `--btn-padding-y` bump cannot fake a base size).
+  const vars = isMobileScope ? props.any : props.base
   const minRaw = decls.get(axis === 'w' ? 'min-width' : 'min-height')
-  const min = parseLen(minRaw, props)
-  const explicit = parseLen(decls.get(axis === 'w' ? 'width' : 'height'), props)
+  const min = parseLen(minRaw, vars)
+  const explicit = parseLen(decls.get(axis === 'w' ? 'width' : 'height'), vars)
 
   const padShorthand = decls.get('padding')
   const padMain =
     axis === 'h'
-      ? (parseLen(decls.get('padding-top'), props) ??
-        paddingAxis(padShorthand, props, 0))
+      ? (parseLen(decls.get('padding-top'), vars) ??
+        paddingAxis(padShorthand, vars, 0))
       : Math.max(
-          parseLen(decls.get('padding-left'), props) ??
-            paddingAxis(padShorthand, props, 1),
-          parseLen(decls.get('padding-right'), props) ??
-            paddingAxis(padShorthand, props, 1),
+          parseLen(decls.get('padding-left'), vars) ??
+            paddingAxis(padShorthand, vars, 1),
+          parseLen(decls.get('padding-right'), vars) ??
+            paddingAxis(padShorthand, vars, 1),
         )
 
   const borderShorthand = decls.get('border') ?? decls.get('border-width')
   const borderWidth =
-    parseLen(decls.get('border-width'), props) ??
-    parseLen(borderShorthand, props) ??
+    parseLen(decls.get('border-width'), vars) ??
+    parseLen(borderShorthand, vars) ??
     (borderShorthand && !/^(none|0)/.test(borderShorthand.trim()) ? 1 : 0)
 
   const candidates: number[] = []
@@ -525,14 +561,14 @@ function ruleFloor(
         if ((inset && nonAuto(inset)) || (nonAuto(top) && nonAuto(bottom)))
           return null
       }
-      const fontSize = parseLen(decls.get('font-size'), props) ?? 13 // body ≈13px
+      const fontSize = parseLen(decls.get('font-size'), vars) ?? 13 // body ≈13px
       let lhFactor = 1.2
       const lhRaw = decls.get('line-height')
       if (lhRaw) {
-        const trimmed = substituteVars(lhRaw, props).trim()
+        const trimmed = substituteVars(lhRaw, vars).trim()
         if (/^[\d.]+$/.test(trimmed)) lhFactor = Number.parseFloat(trimmed)
         else {
-          const lhPx = parseLen(trimmed, props)
+          const lhPx = parseLen(trimmed, vars)
           if (lhPx != null && fontSize > 0) lhFactor = lhPx / fontSize
         }
       }
@@ -568,10 +604,30 @@ function classesOfCompound(compound: string): string[] {
   return (compound.match(/\.([A-Za-z][\w-]*)/g) ?? []).map((t) => t.slice(1))
 }
 
-/** A rule applies to the element when some comma-part's SUBJECT compound's classes ⊆ element classes. */
+/**
+ * A rule applies to the element when some comma-part's SUBJECT compound's
+ * classes ⊆ element classes. Ancestors are only honored for shell-truth
+ * compounds (`.is-webview …`, `:root…`): a descendant context like
+ * `.cap-row-actions .btn` is only true for SOME buttons — treating it as
+ * global would fabricate floors for unrelated buttons. Skipping such rules
+ * under-reports (a conservative, documented blind spot) instead of
+ * over-reporting phantom pins.
+ */
 function ruleAppliesTo(rule: CssRule, elementClasses: Set<string>): boolean {
   for (const part of rule.compounds) {
     if (!part.length) continue
+    const ancestors = part.slice(0, -1)
+    if (
+      ancestors.length &&
+      !ancestors.every(
+        (a) =>
+          a === '.is-webview' ||
+          a.startsWith(':root') ||
+          a === 'html' ||
+          a === 'body',
+      )
+    )
+      continue
     const subject = part[part.length - 1]
     if (
       subject.includes('[') ||
@@ -620,10 +676,25 @@ function main() {
       const mobilePins: Array<{ rule: CssRule; floor: number }> = []
       const basePins: Array<{ rule: CssRule; floor: number }> = []
       for (const rule of relevant) {
-        const floor = ruleFloor(rule.decls, customProps, axis)
+        const isMobile = rule.scope !== 'base'
+        const floor = ruleFloor(rule.decls, customProps, axis, isMobile)
         if (floor == null) continue
-        ;(rule.scope === 'base' ? basePins : mobilePins).push({ rule, floor })
+        ;(isMobile ? mobilePins : basePins).push({ rule, floor })
       }
+      // Target-level full-stretch detection: the element may be a viewport-
+      // sized overlay whose stretch comes from ANOTHER class's fixed+inset
+      // rule (e.g. `.file-preview-backdrop` shares its element with
+      // `.modal-backdrop { position:fixed; inset:0 }`). If any applicable
+      // rule makes the element a stretched overlay, height is viewport-
+      // derived — ignore per-rule full-stretch-missed content estimates.
+      const stretchesViewport = relevant.some((r) => {
+        if (r.decls.get('position') !== 'fixed') return false
+        const inset = r.decls.get('inset')
+        if (inset && !/auto/.test(inset)) return true
+        const nonAuto = (v: string | undefined) =>
+          v !== undefined && !/auto|initial|unset/.test(v)
+        return nonAuto(r.decls.get('top')) && nonAuto(r.decls.get('bottom'))
+      })
       // Mobile rules decide Android size; base pins carry through as lower
       // bounds (a mobile rule cannot shrink below a base min-* it doesn't
       // re-declare, and explicit base sizes usually persist).
@@ -635,6 +706,16 @@ function main() {
       const allPins = [...mobilePins, ...basePins]
       const floor = Math.max(...allPins.map((p) => p.floor))
       if (floor >= TARGET_PX) continue
+      // Stretched overlays: only report when a real min-* pin (not a padding
+      // content estimate) keeps it below the floor.
+      if (stretchesViewport) {
+        const minKey = axis === 'w' ? 'min-width' : 'min-height'
+        const hasRealMinPin = relevant.some((r) => {
+          const v = parseLen(r.decls.get(minKey), customProps.base)
+          return v != null && v > SHRINK_IDIOM_PX
+        })
+        if (!hasRealMinPin) continue
+      }
 
       findings.push({
         target: target.classes.join('.'),
