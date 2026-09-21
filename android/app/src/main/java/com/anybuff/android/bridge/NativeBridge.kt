@@ -142,7 +142,16 @@ class NativeBridge(
                 }
                 "pickFiles" -> {
                     pendingFiles[id] = replyProxy
-                    pickFilesLauncher.launch(arrayOf("*/*"))
+                    try {
+                        pickFilesLauncher.launch(arrayOf("*/*"))
+                    } catch (e: Exception) {
+                        // Same never-hang contract as pickFolder: an unusable
+                        // picker must resolve, not leave the page's promise
+                        // pending forever (pending entry removed on failure).
+                        pendingFiles.remove(id)
+                        Log.e(TAG, "pickFiles launch failed", e)
+                        post(id, replyProxy) { put("ok", false); put("error", "failed to open file picker") }
+                    }
                 }
                 "takeStagedFolder" -> {
                     // Page-mounted PULL of a staged SAF pick. The push
@@ -461,9 +470,31 @@ class NativeBridge(
     fun onFilesPicked(uris: List<Uri>) {
         val entry = pendingFiles.entries.firstOrNull() ?: return
         pendingFiles.remove(entry.key)
+        val id = entry.key
         val replyProxy = entry.value
-        val paths = uris.map { copyToUpload(it) }.filterNotNull()
-        post(entry.key, replyProxy) { put("paths", JSONArray(paths)) }
+        // Copy OFF the main thread — mirror of the folder path (ANR comment
+        // there) and downloadFile: picked attachments are arbitrary files
+        // (*/* picker), so DocumentsProvider IPC + a full copy can easily
+        // exceed the 5s input-dispatch ANR window on large files. The reply
+        // itself must land on the UI thread (JavaScriptReplyProxy contract),
+        // posted via runOnUiThread; a dead proxy (page recreated mid-copy)
+        // is caught instead of crashing the launcher callback.
+        Thread {
+            val paths = uris.map { copyToUpload(it) }.filterNotNull()
+            val failed = uris.size - paths.size
+            EngineLog.append(
+                activity,
+                "pick: files copied ${paths.size}/${uris.size} → /upload" + (if (failed > 0) " ($failed failed)" else ""),
+            )
+            activity.runOnUiThread {
+                try {
+                    post(id, replyProxy) { put("paths", JSONArray(paths)) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "files reply failed (page likely recreated)", e)
+                    EngineLog.append(activity, "pick: files reply failed (${e.message})")
+                }
+            }
+        }.start()
     }
 
     private data class CopyResult(val path: String?, val error: String?)
