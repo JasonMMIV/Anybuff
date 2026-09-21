@@ -44,6 +44,8 @@ class NativeBridge(
     private val vault: KeyVault,
     private val appVersion: String,
     private val onRestartEngine: () -> Unit = {},
+    /** M-C3 keep-screen-on: renderer reports run in-flight transitions. */
+    private val onSetRunActive: (active: Boolean) -> Unit = {},
     /** Set by MainActivity: true once the appassets page finished loading. */
     private val pageReady: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
 ) {
@@ -143,6 +145,16 @@ class NativeBridge(
                 }
                 "getVersion" -> {
                     post(id, replyProxy) { put("version", appVersion) }
+                }
+                "setRunActive" -> {
+                    // M-C3 keep-screen-on: the page's run lifecycle → the
+                    // activity window's FLAG_KEEP_SCREEN_ON. Window-flag
+                    // only (no wakelock): locking the screen or leaving the
+                    // app releases it by construction — the user's explicit
+                    // lock intent always wins.
+                    val active = msg.optBoolean("active", false)
+                    post(id, replyProxy) { put("ok", true) }
+                    onSetRunActive(active)
                 }
                 "readEngineLog" -> {
                     // Engine diagnostics WITHOUT adb: the renderer reads the
@@ -681,6 +693,10 @@ class NativeBridge(
             openExternal: (url) => { androidNative.postMessage(JSON.stringify({ method: 'openExternal', url })); },
             getVersion: () => send('getVersion').then(r => r.version),
             restartEngine: () => { androidNative.postMessage(JSON.stringify({ method: 'restartEngine' })); },
+            // M-C3 keep-screen-on: run in-flight transitions keep the screen
+            // on for the run's duration (activity window flag — locking the
+            // screen always wins). Fire-and-forget; no reply expected.
+            setRunActive: (active) => { try { androidNative.postMessage(JSON.stringify({ method: 'setRunActive', active: !!active })); } catch (e) {} },
             readEngineLog: () => send('readEngineLog').then(r => r.log || ''),
             takeStagedFolder: () => send('takeStagedFolder').then(r => r.path || null),
             logEvent: (kind, detail) => { try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: String(kind || ''), detail: String(detail || '') })); } catch (e) {} },

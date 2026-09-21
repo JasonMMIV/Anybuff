@@ -20,8 +20,9 @@ import { createWsAnyBuff, type AnyBuffNativeBridge } from './host/host-ws'
 //                            the latest release tag (desktop-only releases must
 //                            never read as an Android update)
 //   __ANYBUFF_NATIVE__       native bridge object ({ pickFolder, pickFiles,
-//                            openExternal, getVersion }) — WebView JS cannot open
-//                            SAF pickers / external browsers by itself.
+//                            openExternal, getVersion, setRunActive }) —
+//                            WebView JS cannot open SAF pickers / external
+//                            browsers by itself, or hold screen-on flags.
 function resolveWsUrl(): string | null {
   if (typeof window !== 'undefined') {
     const injected = (window as unknown as { __ANYBUFF_WS_URL__?: string }).__ANYBUFF_WS_URL__

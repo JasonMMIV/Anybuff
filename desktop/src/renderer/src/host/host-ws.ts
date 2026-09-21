@@ -88,6 +88,12 @@ export interface AnyBuffNativeBridge {
   saveKey?(providerId: string, apiKey: string): Promise<boolean>
   /** Android-only: remove a key from the device keychain. */
   deleteKey?(providerId: string): Promise<boolean>
+  /** Android-only (M-C3 keep-screen-on): report whether an agent run is
+   *  in flight. The shell holds FLAG_KEEP_SCREEN_ON on the activity window
+   *  for the duration of the run only — never a service wakelock, and the
+   *  user locking the screen always wins (the flag lives on the window,
+   *  so backgrounding/locking releases it with no extra signal). */
+  setRunActive?(active: boolean): void
 }
 
 export interface WsHostOptions {

@@ -400,6 +400,16 @@ export default function App() {
   const [hasProvider, setHasProvider] = useState(false)
   const [running, setRunning] = useState(false)
   const [stopping, setStopping] = useState(false)
+  // M-C3 keep-screen-on: one sink for EVERY run lifecycle transition (optimistic
+  // submit, run_status events, resume, stop, engine-state reload) — the shell
+  // keeps the screen awake only while a run is actually in flight. No-ops on
+  // desktop (no __ANYBUFF_NATIVE__ bridge method).
+  useEffect(() => {
+    const setRunActive = (
+      window as unknown as { __ANYBUFF_NATIVE__?: { setRunActive?: (active: boolean) => void } }
+    ).__ANYBUFF_NATIVE__?.setRunActive
+    if (setRunActive) setRunActive(running)
+  }, [running])
   /** #2 執行中訊息佇列：messages parked while a run is in flight. */
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const [prompt, setPrompt] = useState('')

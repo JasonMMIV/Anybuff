@@ -174,6 +174,7 @@ class MainActivity : ComponentActivity() {
             vault = vault,
             appVersion = BuildConfig.VERSION_NAME,
             onRestartEngine = { restartEngine() },
+            onSetRunActive = { active -> setRunActive(active) },
             pageReady = pageReady,
         )
         bridge.register()
@@ -287,6 +288,33 @@ class MainActivity : ComponentActivity() {
             startForegroundService(intent)
         } else {
             startService(intent)
+        }
+    }
+
+    /**
+     * M-C3 keep-screen-on (plan §M-C3 設計基準): while an agent run is in
+     * flight, hold FLAG_KEEP_SCREEN_ON on THIS activity's window so OEM
+     * killers that trigger on screen-off (MIUI/HyperOS, PowerGenie, OPPO)
+     * never fire mid-run when the user simply waits. Design constraints:
+     *  - Window flag on the activity, NOT a service wakelock: backgrounding
+     *    or locking the screen drops it by construction — the user's lock
+     *    intent always wins, and background survival stays the FGS's job.
+     *  - Run-scoped only: cleared on the first run end/abort.
+     *  - EngineLog breadcrumb per state change, mirroring the renderer's
+     *    other lifecycle breadcrumbs.
+     *  - Never touches the WebView (window flags are safe pre/teardown).
+     */
+    private fun setRunActive(active: Boolean) {
+        val had = (window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+        if (had == active) return
+        EngineLog.append(
+            this,
+            if (active) "screen: keep-on ON (run in flight)" else "screen: keep-on OFF (run ended)",
+        )
+        if (active) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
