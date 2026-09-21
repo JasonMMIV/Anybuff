@@ -149,20 +149,50 @@ object DirectAccess {
      * Record (or replace) the bind for [name] and persist atomically. The
      * directory itself is validated by the caller (probe + sanitization);
      * this only manages the registry file.
+     *
+     * @return true when the MOUNT changed (a new name, or an existing name
+     *   re-pointed at a different rawPath) — proot mounts are baked in at
+     *   host spawn, so the caller (§4.6 D1 activation) uses this to decide
+     *   whether a running host must restart to pick the bind up. Same-name
+     *   picks of the same rawPath return false: the mount is already live
+     *   and a restart would be pointless churn.
      */
-    fun record(context: Context, name: String, rawPath: String, uri: String) {
-        val binds = loadFile(context).filter { it.name != name } + DirectBind(name, rawPath, uri)
-        save(context, binds)
-        EngineLog.append(context, "direct: bound '$name' → $rawPath (${binds.size} total)")
+    fun record(context: Context, name: String, rawPath: String, uri: String): Boolean {
+        val binds = loadFile(context)
+        val existing = binds.firstOrNull { it.name == name }
+        // Identical re-pick: nothing to persist, nothing to remount — leave
+        // a breadcrumb (re-picks of the same project are common; silence
+        // would read as "the pick was dropped").
+        if (existing?.rawPath == rawPath && existing.uri == uri) {
+            EngineLog.append(context, "direct: re-picked '$name' → $rawPath (unchanged; no remount)")
+            return false
+        }
+        val next = binds.filter { it.name != name } + DirectBind(name, rawPath, uri)
+        save(context, next)
+        val remount = existing == null || existing.rawPath != rawPath
+        EngineLog.append(
+            context,
+            if (remount) "direct: bound '$name' → $rawPath (${next.size} total)"
+            else "direct: refreshed '$name' → $rawPath (uri only; mount unchanged)",
+        )
+        return remount
     }
 
-    /** Drop the bind for [name] (project deleted / re-picked as a copy). */
-    fun remove(context: Context, name: String) {
+    /**
+     * Drop the bind for [name] (project deleted, or re-picked into the copy
+     * flow).
+     *
+     * @return true when an entry was actually removed (§4.6 D3): a live host
+     *   keeps serving the old mount until a restart, so the caller uses this
+     *   to trigger the same activation as a fresh bind.
+     */
+    fun remove(context: Context, name: String): Boolean {
         val binds = loadFile(context)
         val next = binds.filter { it.name != name }
-        if (next.size == binds.size) return
+        if (next.size == binds.size) return false
         save(context, next)
         EngineLog.append(context, "direct: unbound '$name' (${next.size} total)")
+        return true
     }
 
     /* The registry is tiny (a handful of projects); read-parse-write per

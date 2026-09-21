@@ -44,6 +44,11 @@ class NativeBridge(
     private val vault: KeyVault,
     private val appVersion: String,
     private val onRestartEngine: () -> Unit = {},
+    /** §4.6 D1/D3: the direct-bind registry changed in a way a live host
+     *  must re-spawn to see — a new/re-pointed bind (D1), or a bind removed
+     *  by a copy-flow re-pick whose old mount would shadow the fresh copy
+     *  (D3). MainActivity restarts only when a host is actually running. */
+    private val onDirectBindChanged: () -> Unit = {},
     /** M-C3 keep-screen-on: renderer reports run in-flight transitions. */
     private val onSetRunActive: (active: Boolean) -> Unit = {},
     /** Set by MainActivity: true once the appassets page finished loading. */
@@ -322,19 +327,29 @@ class NativeBridge(
             // probe it. Any failure falls through to the legacy copy flow
             // with feature parity (R11 — "AFA off → copy flow, no regression").
             val direct = tryDirectBind(uri)
-            if (direct != null) {
-                deliverPick(id, replyProxy, direct)
+            if (direct.result != null) {
+                deliverPick(id, replyProxy, direct.result)
+                // §4.6 D1: a fresh bind is only mounted at host SPAWN time —
+                // if a host already exists, restart it so the new spawn picks
+                // the bind up (the staged-folder flow re-opens the project on
+                // the reloaded page). Otherwise the just-picked folder is a
+                // ghost path until the next natural restart.
+                if (direct.bindChanged) onDirectBindChanged()
                 return@Thread
             }
-            val result = if (uri == null) CopyResult(null, null) else copyTreeToUpload(uri)
+            val result = if (uri == null) CopyResult(null, null) else copyTreeToUpload(uri, direct.skipReason)
             if (result.error != null) {
                 // Surface copy failures as a UI notice too — a failed pick must
                 // never look like a silent no-op on the welcome screen.
                 pushProgress("{\"phase\":\"error\",\"error\":${JSONObject.quote(result.error)}}")
             } else if (result.path != null) {
-                pushProgress("{\"phase\":\"done\"}")
+                pushProgress(progressJson("done", null, direct.skipReason))
             }
             deliverPick(id, replyProxy, result)
+            // §4.6 D3: a copy that displaced a direct bind needs the same
+            // host refresh as a fresh bind — until the restart, the live
+            // host's old mount keeps shadowing the copy at /workspace/<name>.
+            if (result.removedDirectBind) onDirectBindChanged()
         }.start()
     }
 
@@ -357,31 +372,49 @@ class NativeBridge(
     }
 
     /**
+     * Result of the §4.6 direct-bind attempt for one folder pick.
+     *
+     * @property result the copy-free guest path when a bind was recorded,
+     *   null when the legacy copy flow takes over.
+     * @property skipReason machine-readable fallback reason (afa-off,
+     *   no-raw-mapping, raw-missing, probe-rejected, blank-name, unsafe-name,
+     *   volume-root) — carried to the renderer so a copied-into-sandbox
+     *   project never looks mysterious.
+     * @property bindChanged true when the registry actually changed and a
+     *   running host must restart to mount the new bind.
+     */
+    private data class DirectOutcome(
+        val result: CopyResult?,
+        val skipReason: String?,
+        val bindChanged: Boolean,
+    )
+
+    /**
      * §4.6 item 2: try to turn a SAF tree pick into a direct bind.
-     * Returns the copy-free CopyResult on success, null to fall back to the
+     * Returns the copy-free CopyResult on success, or a skip reason for the
      * legacy copy. Every step logs its reason to the EngineLog (probe result
      * and reason are plan-mandated breadcrumbs).
      */
-    private fun tryDirectBind(uri: Uri?): CopyResult? {
-        if (uri == null) return null
+    private fun tryDirectBind(uri: Uri?): DirectOutcome {
+        if (uri == null) return DirectOutcome(null, null, false)
         if (!DirectAccess.isAfaGranted()) {
             EngineLog.append(activity, "direct: AFA not granted — copy flow")
-            return null
+            return DirectOutcome(null, "afa-off", false)
         }
         val rawPath = DirectAccess.rawPathOf(uri)
         if (rawPath == null) {
             EngineLog.append(activity, "direct: tree uri has no raw mapping (cloud provider?) — copy flow")
-            return null
+            return DirectOutcome(null, "no-raw-mapping", false)
         }
         val dir = File(rawPath)
         if (!dir.isDirectory) {
             EngineLog.append(activity, "direct: raw path missing ($rawPath) — copy flow")
-            return null
+            return DirectOutcome(null, "raw-missing", false)
         }
         val (writable, reason) = DirectAccess.probeWritable(dir)
         if (!writable) {
             EngineLog.append(activity, "direct: probe rejected $rawPath ($reason) — copy flow")
-            return null
+            return DirectOutcome(null, "probe-rejected", false)
         }
         // Guest project name = the folder's last segment. An empty/blank name
         // is possible (filesystem oddity) and the copy flow silently falls
@@ -389,12 +422,12 @@ class NativeBridge(
         // bails to the copy flow instead of recording a nameless entry.
         val name = dir.name.takeIf { it.isNotBlank() } ?: run {
             EngineLog.append(activity, "direct: blank folder name — copy flow")
-            return null
+            return DirectOutcome(null, "blank-name", false)
         }
         // Reject names that would escape the guest /workspace root.
         if (name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
             EngineLog.append(activity, "direct: unsafe folder name '$name' — copy flow")
-            return null
+            return DirectOutcome(null, "unsafe-name", false)
         }
         // A VOLUME ROOT pick (primary storage or an SD card itself) has no
         // usable last segment: dir.name would be "0" or the volume UUID and
@@ -403,12 +436,12 @@ class NativeBridge(
         // behavior for users who pick the root out of habit).
         if (DirectAccess.isVolumeRoot(rawPath)) {
             EngineLog.append(activity, "direct: volume-root pick has no project name — copy flow")
-            return null
+            return DirectOutcome(null, "volume-root", false)
         }
-        DirectAccess.record(activity, name, rawPath, uri.toString())
+        val changed = DirectAccess.record(activity, name, rawPath, uri.toString())
         EngineLog.append(activity, "direct: DIRECT bind '$name' ($rawPath) — copy skipped")
         pushProgress("{\"phase\":\"direct\"}")
-        return CopyResult("/workspace/$name", null)
+        return DirectOutcome(CopyResult("/workspace/$name", null), null, changed)
     }
 
     /**
@@ -497,7 +530,21 @@ class NativeBridge(
         }.start()
     }
 
-    private data class CopyResult(val path: String?, val error: String?)
+    private data class CopyResult(
+        val path: String?,
+        val error: String?,
+        /** §4.6 D3: a stale direct bind with the same name was dropped — a
+         *  live host must restart to stop shadowing the fresh copy. */
+        val removedDirectBind: Boolean = false,
+    )
+
+    /** JSON payload for a folder-progress event (all fields explicit). */
+    private fun progressJson(phase: String, copied: Int?, directSkip: String?): String {
+        val o = JSONObject().put("phase", phase)
+        if (copied != null) o.put("copied", copied)
+        if (directSkip != null) o.put("directSkip", directSkip)
+        return o.toString()
+    }
 
     /**
      * Push folder-import progress to the page (main thread, best-effort).
@@ -519,7 +566,7 @@ class NativeBridge(
         }
     }
 
-    private fun copyTreeToUpload(uri: Uri): CopyResult = try {
+    private fun copyTreeToUpload(uri: Uri, directSkip: String?): CopyResult = try {
         val docFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(activity, uri)
             ?: return CopyResult(null, "could not open the selected folder")
         val name = docFile.name ?: "folder"
@@ -531,11 +578,21 @@ class NativeBridge(
         val dest = File(destRoot, name)
         if (dest.exists()) dest.deleteRecursively()
         EngineLog.append(activity, "pick: copying '$name' → /workspace/$name")
-        pushProgress("{\"phase\":\"copying\",\"copied\":0}")
+        pushProgress(progressJson("copying", 0, directSkip))
         val copied = intArrayOf(0)
-        copyDocTree(docFile, dest, copied)
-        EngineLog.append(activity, "pick: copy done ${copied[0]} files → /workspace/$name")
-        CopyResult("/workspace/$name", null)
+        copyDocTree(docFile, dest, copied, directSkip)
+        // §4.6 D3: drop any stale direct bind with this name. A LIVE host
+        // keeps serving its old mount (direct binds are nested after the
+        // base /workspace mount and win), and the next spawn would re-mount
+        // the raw folder OVER this fresh copy — the caller restarts the
+        // host when an entry was actually removed (removedDirectBind).
+        val unbound = DirectAccess.remove(activity, name)
+        EngineLog.append(
+            activity,
+            "pick: copy done ${copied[0]} files → /workspace/$name" +
+                (if (unbound) " (stale direct bind removed)" else ""),
+        )
+        CopyResult("/workspace/$name", null, unbound)
     } catch (e: Exception) {
         Log.e(TAG, "copyTreeToUpload failed", e)
         EngineLog.append(activity, "pick: copy FAILED: ${e.message}")
@@ -546,18 +603,19 @@ class NativeBridge(
         doc: androidx.documentfile.provider.DocumentFile,
         dest: File,
         copied: IntArray,
+        directSkip: String?,
     ) {
         dest.mkdirs()
         doc.listFiles().forEach { child ->
             val out = File(dest, child.name ?: return@forEach)
-            if (child.isDirectory) copyDocTree(child, out, copied)
+            if (child.isDirectory) copyDocTree(child, out, copied, directSkip)
             else {
                 activity.contentResolver.openInputStream(child.uri)?.use { input ->
                     out.outputStream().use { input.copyTo(it) }
                 }
                 copied[0]++
                 if (copied[0] % 100 == 0) {
-                    pushProgress("{\"phase\":\"copying\",\"copied\":${copied[0]}}")
+                    pushProgress(progressJson("copying", copied[0], directSkip))
                 }
             }
         }
@@ -602,6 +660,19 @@ class NativeBridge(
      * the chroot and vice versa.
      */
     private fun guestToHost(guestPath: String): File? {
+        // §4.6 D2: a direct-bound project's files live at their REAL storage
+        // location (the proot bind maps /workspace/<name> → raw path), not
+        // under filesDir — consult the bind registry before falling back to
+        // the copied-workspace roots.
+        if (guestPath.startsWith("/workspace/")) {
+            val rest = guestPath.removePrefix("/workspace/")
+            val name = rest.substringBefore('/')
+            val bind = if (name.isEmpty()) null else DirectAccess.forName(activity, name)
+            if (bind != null) {
+                val remainder = rest.substringAfter('/', "")
+                return if (remainder.isEmpty()) File(bind.rawPath) else File(bind.rawPath, remainder)
+            }
+        }
         val roots = listOf(
             "/workspace/" to File(activity.filesDir, "workspaces/workspace"),
             "/upload/" to File(activity.filesDir, "workspaces/upload"),

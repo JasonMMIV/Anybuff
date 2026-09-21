@@ -913,13 +913,27 @@ export default function App() {
   // failure (plan item 5: 語意差異明示，避免安靜損壞的感知落差).
   useEffect(() => {
     if (isPreview) return
+    /**
+     * §4.6 D4: explain a copy fallback. The shell reports WHY direct access
+     * was unavailable (directSkip) so an imported-into-sandbox project never
+     * silently contradicts the user's expectation of editing the original.
+     */
+    const skipNotice = (skip: string | undefined): string | null => {
+      if (!skip) return null
+      if (skip === 'afa-off') {
+        return 'Copied into the app sandbox — All-Files-Access is off. Enable it in Settings → Engine → Direct Folder Access, then re-pick this folder to edit it in place.'
+      }
+      return 'Copied into the app sandbox — this location cannot be opened directly, so agent edits apply to the copy only.'
+    }
     const onProgress = (ev: Event): void => {
-      const d = (ev as CustomEvent<{ phase?: string; copied?: number; error?: string }>).detail
+      const d = (
+        ev as CustomEvent<{ phase?: string; copied?: number; error?: string; directSkip?: string }>
+      ).detail
       if (!d || typeof d !== 'object') return
       if (d.phase === 'copying') {
         logPickOutcome('copy')
         setNotice(`Importing project folder… ${d.copied ?? 0} files copied`)
-      } else if (d.phase === 'done') setNotice(null)
+      } else if (d.phase === 'done') setNotice(skipNotice(d.directSkip))
       else if (d.phase === 'direct') {
         logPickOutcome('direct')
         setNotice(

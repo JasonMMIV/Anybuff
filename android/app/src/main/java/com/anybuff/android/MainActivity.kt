@@ -179,7 +179,8 @@ class MainActivity : ComponentActivity() {
             pickFilesLauncher = pickFiles,
             vault = vault,
             appVersion = BuildConfig.VERSION_NAME,
-            onRestartEngine = { restartEngine() },
+            onRestartEngine = { restartEngine("renderer overlay") },
+            onDirectBindChanged = { activateDirectBinds() },
             onSetRunActive = { active -> setRunActive(active) },
             pageReady = pageReady,
         )
@@ -257,9 +258,12 @@ class MainActivity : ComponentActivity() {
      * process died / was killed) and the user tapped "Restart Engine". Tear
      * down the sandbox, clear the boot latch and boot again — the fresh host
      * publishes a NEW port+token, which injectAndLoad re-injects on reload.
+     *
+     * @param reason EngineLog breadcrumb — distinguishes the renderer overlay
+     *   path from §4.6 direct-bind activation.
      */
-    fun restartEngine() {
-        EngineLog.append(this, "engine restart requested (renderer overlay)")
+    fun restartEngine(reason: String) {
+        EngineLog.append(this, "engine restart requested ($reason)")
         // No latch reset needed (M-B4): the reboot publishes a fresh dynamic
         // port + token, so injectAndLoad sees a different URL generation and
         // re-points the page. The stop itself can block several seconds
@@ -269,6 +273,28 @@ class MainActivity : ComponentActivity() {
             SandboxManager.get(this).stop()
             runOnUiThread { bootEngine() }
         }.start()
+    }
+
+    /**
+     * §4.6 D1/D3: the direct-bind registry changed (new/re-pointed bind, or
+     * a bind removed by a copy-flow re-pick). proot mounts are baked into the
+     * host launch arguments, so only a fresh spawn can change the mount set.
+     *
+     * Restart ONLY when a host process is running right now. With no live
+     * host — first boot still installing, or the teardown window of a
+     * concurrent restart — the next spawn reads direct-binds.json at launch
+     * and picks the change up for free; stop()/start() here would no-op
+     * (start() just queues behind an in-flight boot), so leave a breadcrumb
+     * instead of pretending. After a restart, the page reloads and the
+     * staged-folder flow re-opens the picked project automatically.
+     */
+    private fun activateDirectBinds() {
+        val sandbox = SandboxManager.get(this)
+        if (sandbox.isHostRunning()) {
+            restartEngine("direct-bind activation")
+        } else {
+            EngineLog.append(this, "direct-bind activation: no live host — next spawn picks up the change")
+        }
     }
 
     private fun showBootError(error: String) {

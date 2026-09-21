@@ -122,6 +122,13 @@ class SandboxManager private constructor(context: Context) {
     fun isHostAliveOrBooting(): Boolean =
         host.get()?.process?.isAlive == true || starting
 
+    /** True when a host process is up RIGHT NOW — a boot in flight does not
+     *  count (the service gate above covers that). §4.6 D1/D3 activation uses
+     *  this: only a live host can be restarted to mount a registry change; a
+     *  boot in flight reads direct-binds.json at spawn, so it needs no
+     *  restart. */
+    fun isHostRunning(): Boolean = host.get()?.process?.isAlive == true
+
     /** Listeners awaiting a boot that is already in flight (recreated Activity). */
     private val pendingListeners = java.util.concurrent.ConcurrentLinkedQueue<Listener>()
 

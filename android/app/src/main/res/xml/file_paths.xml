@@ -3,8 +3,14 @@
      under filesDir/workspaces — bound at /workspace, /upload, /skills inside
      the proot guest (see ProotRunner). One files-path covers all three.
      cache-path: engine-log export (Settings → Engine → Share Log) writes
-     anybuff-engine-log.txt to cacheDir/shared and shares it via ACTION_SEND. -->
+     anybuff-engine-log.txt to cacheDir/shared and shares it via ACTION_SEND.
+     root-path /storage/: §4.6 direct-bind projects live at their REAL storage
+     location (primary volume or SD card) — "Open externally" must be able to
+     hand out those files too. The provider is not exported and only issues
+     read-only per-intent grants, so this covers exactly the files the app
+     already reads with All-Files-Access. -->
 <paths>
     <files-path name="workspaces" path="workspaces/" />
     <cache-path name="shared" path="shared/" />
+    <root-path name="storage" path="/storage/" />
 </paths>

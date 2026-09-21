@@ -105,9 +105,47 @@ val webAssetsDir = genAssetsRoot.get().dir("www")
 val engineAssetsDir = genAssetsRoot.get().dir("engine")
 val runtimeAssetsDir = layout.projectDirectory.dir("src/main/assets/runtime")
 
+// ── Web-bundle freshness guard (stale-bundle incident, 2026-09-21) ────────
+// syncWebAssets only COPIES desktop/dist-web — it never builds it. A local
+// APK build that skipped `build:web` therefore silently ships whatever
+// bundle was left on disk; that is how the §4.6 "Direct Folder Access" UI
+// (plus the M-C1/M-C2/M-C3 renderer halves) missed every APK for six days.
+// Fail the build instead of shipping a stale UI. CI is unaffected — the
+// release workflow runs build:web before Gradle, so the check always passes
+// there.
+val checkWebAssetsFresh = tasks.register("checkWebAssetsFresh") {
+    description = "Fail fast when desktop/dist-web is missing or older than the renderer sources"
+    group = "anybuff"
+    // A pure check: always executes, never up-to-date-skipped.
+    outputs.upToDateWhen { false }
+    doLast {
+        val indexHtml = distWebDir.resolve("index.html")
+        if (!indexHtml.exists()) {
+            throw GradleException(
+                "desktop/dist-web is missing — the APK would ship with no renderer UI. " +
+                    "Build it first:  bun run build:web",
+            )
+        }
+        val desktopDir = distWebDir.parentFile
+        val newestSource = maxOf(
+            desktopDir.resolve("src/renderer").walkTopDown()
+                .filter { it.isFile }
+                .maxOfOrNull { it.lastModified() } ?: 0L,
+            desktopDir.resolve("web-vite.config.ts").lastModified(),
+        )
+        if (newestSource > indexHtml.lastModified()) {
+            throw GradleException(
+                "desktop/dist-web is older than the renderer sources — run  bun run build:web  " +
+                    "before building the APK (a stale bundle silently ships an old UI).",
+            )
+        }
+    }
+}
+
 val syncWebAssets = tasks.register<Sync>("syncWebAssets") {
     description = "Copy desktop/dist-web renderer build into generated APK assets/www"
     group = "anybuff"
+    dependsOn(checkWebAssetsFresh)
     from(distWebDir)
     into(webAssetsDir)
     // dist-web is emptyOutDir'd by vite; mirror that here so content-hashed
