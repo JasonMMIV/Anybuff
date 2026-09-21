@@ -113,6 +113,26 @@ class NativeBridge(
                         post(id, replyProxy) { put("ok", false); put("error", "failed to open folder picker") }
                     }
                 }
+                "storageStatus" -> {
+                    // §4.6 direct-bind trial: the Storage tab mirrors the AFA
+                    // gate (whether "Grant" still needs doing). Cheap, sync.
+                    post(id, replyProxy) {
+                        put("ok", true)
+                        put("afaGranted", DirectAccess.isAfaGranted())
+                    }
+                }
+                "openStorageSettings" -> {
+                    // AFA system screen (per-app toggle). The gate state is
+                    // re-reported when the user comes back (onResume).
+                    DirectAccess.afaSettingsIntent().let {
+                        try {
+                            activity.startActivity(it)
+                            post(id, replyProxy) { put("ok", true) }
+                        } catch (e: Exception) {
+                            post(id, replyProxy) { put("ok", false); put("error", e.message ?: "could not open settings") }
+                        }
+                    }
+                }
                 "restartEngine" -> {
                     // WS-dead recovery (renderer shows the lost-connection
                     // overlay): stop + reboot the sandbox host, then the page
@@ -265,10 +285,38 @@ class NativeBridge(
         val replyProxy = entry?.value
         if (entry == null) EngineLog.append(activity, "pick: no live pending request — result will be staged")
 
-        // Copy OFF the main thread: a project tree can be thousands of files
-        // and DocumentsProvider IPC is slow — copying inline would freeze the
-        // UI (ANR) for minutes.
+        // Keep the tree grant regardless of the direct/copy outcome (§4.6):
+        // probe fallback re-picks, the Route A write-back engine, and a later
+        // re-open of the same folder all reuse it. Persisted grants cap at 512
+        // per app with silent LRU eviction — re-taking is always harmless.
+        if (uri != null) {
+            try {
+                activity.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                EngineLog.append(activity, "pick: tree grant persisted")
+            } catch (e: Exception) {
+                // Provider may hand a non-persistable uri — the copy flow does
+                // not need the grant beyond this result anyway.
+                EngineLog.append(activity, "pick: grant persist failed: ${e.message}")
+            }
+        }
+
+        // The direct-bind attempt AND the copy both run OFF the main thread —
+        // §4.6 item 2's probe is FUSE disk I/O (write + delete on possibly a
+        // slow SD card), exactly the ANR class the copy path's thread hop was
+        // added for. Single background path: direct first, copy as fallback.
         Thread {
+            // §4.6 direct-bind attempt: map the tree URI to a raw path and
+            // probe it. Any failure falls through to the legacy copy flow
+            // with feature parity (R11 — "AFA off → copy flow, no regression").
+            val direct = tryDirectBind(uri)
+            if (direct != null) {
+                deliverPick(id, replyProxy, direct)
+                return@Thread
+            }
             val result = if (uri == null) CopyResult(null, null) else copyTreeToUpload(uri)
             if (result.error != null) {
                 // Surface copy failures as a UI notice too — a failed pick must
@@ -277,27 +325,81 @@ class NativeBridge(
             } else if (result.path != null) {
                 pushProgress("{\"phase\":\"done\"}")
             }
-            if (replyProxy != null && postSafely(id, replyProxy, result)) {
-                EngineLog.append(activity, "pick: replied live id=$id path=${result.path}")
-            }
-            // Stage EVERY successfully copied pick — not just the no-live-request
-            // case. A live reply that "succeeded" from this side can still be lost
-            // before the page's JS runs it: the render process can die between the
-            // reply and the handler (memory pressure), the Activity can be
-            // recreated racing the picker return, or the reply listener can be
-            // missing (the round-9 bug this whole path backstops). The staged
-            // holder is process-wide and survives recreation; it is flushed right
-            // now when the page is ready, or by the next onPageFinished. The
-            // renderer dedupes (its folder-pending handler skips a path equal to
-            // the current cwd), so the double delivery is harmless.
-            if (result.path != null) {
-                pendingFolderPath = result.path
-                EngineLog.append(activity, "pick: staged ${result.path} for the loaded page")
-                activity.runOnUiThread {
-                    if (pageReady.get()) flushPendingFolder()
-                }
-            }
+            deliverPick(id, replyProxy, result)
         }.start()
+    }
+
+    /**
+     * Deliver a pick result to the live page when possible and stage it for
+     * the loaded page either way (the staged holder is the self-healing
+     * fallback when the live reply is lost — round-9 discipline).
+     */
+    private fun deliverPick(id: Long, replyProxy: JavaScriptReplyProxy?, result: CopyResult) {
+        if (replyProxy != null && postSafely(id, replyProxy, result)) {
+            EngineLog.append(activity, "pick: replied live id=$id path=${result.path}")
+        }
+        if (result.path != null) {
+            pendingFolderPath = result.path
+            EngineLog.append(activity, "pick: staged ${result.path} for the loaded page")
+            activity.runOnUiThread {
+                if (pageReady.get()) flushPendingFolder()
+            }
+        }
+    }
+
+    /**
+     * §4.6 item 2: try to turn a SAF tree pick into a direct bind.
+     * Returns the copy-free CopyResult on success, null to fall back to the
+     * legacy copy. Every step logs its reason to the EngineLog (probe result
+     * and reason are plan-mandated breadcrumbs).
+     */
+    private fun tryDirectBind(uri: Uri?): CopyResult? {
+        if (uri == null) return null
+        if (!DirectAccess.isAfaGranted()) {
+            EngineLog.append(activity, "direct: AFA not granted — copy flow")
+            return null
+        }
+        val rawPath = DirectAccess.rawPathOf(uri)
+        if (rawPath == null) {
+            EngineLog.append(activity, "direct: tree uri has no raw mapping (cloud provider?) — copy flow")
+            return null
+        }
+        val dir = File(rawPath)
+        if (!dir.isDirectory) {
+            EngineLog.append(activity, "direct: raw path missing ($rawPath) — copy flow")
+            return null
+        }
+        val (writable, reason) = DirectAccess.probeWritable(dir)
+        if (!writable) {
+            EngineLog.append(activity, "direct: probe rejected $rawPath ($reason) — copy flow")
+            return null
+        }
+        // Guest project name = the folder's last segment. An empty/blank name
+        // is possible (filesystem oddity) and the copy flow silently falls
+        // back to "folder" for it — direct bind has no such fallback, so it
+        // bails to the copy flow instead of recording a nameless entry.
+        val name = dir.name.takeIf { it.isNotBlank() } ?: run {
+            EngineLog.append(activity, "direct: blank folder name — copy flow")
+            return null
+        }
+        // Reject names that would escape the guest /workspace root.
+        if (name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
+            EngineLog.append(activity, "direct: unsafe folder name '$name' — copy flow")
+            return null
+        }
+        // A VOLUME ROOT pick (primary storage or an SD card itself) has no
+        // usable last segment: dir.name would be "0" or the volume UUID and
+        // would collide with any same-named project. Whole-volume access is
+        // not a trial target — the copy flow handles it (and keeps the old
+        // behavior for users who pick the root out of habit).
+        if (DirectAccess.isVolumeRoot(rawPath)) {
+            EngineLog.append(activity, "direct: volume-root pick has no project name — copy flow")
+            return null
+        }
+        DirectAccess.record(activity, name, rawPath, uri.toString())
+        EngineLog.append(activity, "direct: DIRECT bind '$name' ($rawPath) — copy skipped")
+        pushProgress("{\"phase\":\"direct\"}")
+        return CopyResult("/workspace/$name", null)
     }
 
     /**
@@ -687,6 +789,11 @@ class NativeBridge(
           // the side-loaded app.
           window.__ANYBUFF_UPDATE_REPO__ = 'JasonMMIV/Anybuff';
           window.__ANYBUFF_UPDATE_APK_FILTER__ = true;
+          // §4.6 direct-bind trial: capability flag for the renderer's Storage
+          // settings section. The live gate state arrives via
+          // 'anybuff:storage-gate' DOM events (pushed from onResume), so the
+          // tab never goes stale after the user returns from system settings.
+          window.__ANYBUFF_AFA_SUPPORTED__ = true;
           window.__ANYBUFF_NATIVE__ = {
             pickFolder: () => send('pickFolder').then(r => (r.error ? Promise.reject(new Error(r.error)) : r.path || null)),
             pickFiles: () => send('pickFiles').then(r => r.paths || []),
@@ -699,6 +806,9 @@ class NativeBridge(
             setRunActive: (active) => { try { androidNative.postMessage(JSON.stringify({ method: 'setRunActive', active: !!active })); } catch (e) {} },
             readEngineLog: () => send('readEngineLog').then(r => r.log || ''),
             takeStagedFolder: () => send('takeStagedFolder').then(r => r.path || null),
+            // §4.6 direct-bind trial: AFA gate mirror + system settings hop.
+            storageStatus: () => send('storageStatus').then(r => ({ ok: r.ok !== false, afaGranted: !!r.afaGranted })),
+            openStorageSettings: () => send('openStorageSettings').then(r => ({ ok: r.ok !== false, error: r.error || null })),
             logEvent: (kind, detail) => { try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: String(kind || ''), detail: String(detail || '') })); } catch (e) {} },
             // saveKey/deleteKey hand a freshly-typed key to the shell for
             // Keystore storage (same transient renderer→native crossing the

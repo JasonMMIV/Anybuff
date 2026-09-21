@@ -342,6 +342,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * §4.6 direct-bind trial: re-report the All-Files-Access gate whenever the
+     * activity resumes — the canonical return path from the system AFA screen
+     * ("返回後重驗"). The Storage tab listens for the DOM event and flips its
+     * UI between "grant needed" and "direct bind active" without a reload;
+     * a page load that raced the toggle picks the fresh state up from the
+     * document-start bootstrap on the next injection anyway.
+     */
+    override fun onResume() {
+        super.onResume()
+        pushStorageGate()
+    }
+
+    /** Push the AFA gate state to the live page (main thread, best-effort). */
+    private fun pushStorageGate() {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            if (!pageReady.get()) return@runOnUiThread
+            try {
+                val granted = com.anybuff.android.bridge.DirectAccess.isAfaGranted()
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('anybuff:storage-gate', " +
+                        "{ detail: { granted: $granted } }));",
+                    null,
+                )
+            } catch (_: Exception) {
+                // Page not in a state that can run JS — the next load covers it.
+            }
+        }
+    }
+
     /** Push the current system theme to the live page (main thread, best-effort). */
     private fun pushSystemTheme(theme: String) {
         runOnUiThread {

@@ -2897,6 +2897,11 @@ export default function SettingsModal({
           {/* 8. Engine Diagnostics Tab (Android: on-device ring-buffer log) */}
           {activeTab === 'engine' && <EngineDiagnostics />}
 
+          {/* 8b. Storage section (Android §4.6 direct-bind trial): AFA gate
+              mirror + system-settings hop. Desktop never sees it (gated by
+              the native bridge, same pattern as the Engine tab). */}
+          {activeTab === 'engine' && <StorageAccessPanel />}
+
           {/* 9. About Tab */}
           {activeTab === 'about' && (
             <div className="settings-tab-content">
@@ -3758,6 +3763,74 @@ function EngineDiagnostics() {
       </p>
       {shareError && <p className="hint" style={{ color: 'var(--error, #ef4444)' }}>{shareError}</p>}
       <pre className="engine-log-box">{log || '…'}</pre>
+    </div>
+  )
+}
+
+/* ─── Storage access panel (§4.6 direct-bind trial) ────────── */
+
+/**
+ * Android-only mirror of the All-Files-Access gate. Shows the live state
+ * (pushed by the shell on every activity resume via 'anybuff:storage-gate'),
+ * a button that hops to the system AFA screen, and the trial's semantic
+ * caveats (plan item 5: 語意差異明示). When AFA is off the folder picker
+ * still works — it falls back to the copy flow, so this panel is guidance,
+ * not a blocker.
+ */
+function StorageAccessPanel() {
+  const [afaGranted, setAfaGranted] = useState<boolean | null>(null)
+
+  // Read the gate once the bridge is available; the shell re-pushes on every
+  // activity resume (return from the system settings screen re-verifies).
+  useEffect(() => {
+    if (typeof document === 'undefined' || !document.documentElement.classList.contains('is-webview')) return
+    const native = (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
+    if (!native) return
+    let alive = true
+    void native.storageStatus?.().then((r) => {
+      if (alive) setAfaGranted(!!r?.afaGranted)
+    })
+    const onGate = (ev: Event): void => {
+      const d = (ev as CustomEvent<{ granted?: boolean }>).detail
+      if (d && typeof d === 'object') setAfaGranted(!!d.granted)
+    }
+    window.addEventListener('anybuff:storage-gate', onGate)
+    return () => {
+      alive = false
+      window.removeEventListener('anybuff:storage-gate', onGate)
+    }
+  }, [])
+
+  const openSettings = useCallback(async () => {
+    const native = (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
+    await native?.openStorageSettings?.()
+  }, [])
+
+  return (
+    <div className="settings-tab-content">
+      <div className="settings-section-card about-card">
+        <div className="settings-section-head">
+          <span>Direct Folder Access</span>
+          {afaGranted === true && <span className="about-version-badge">on</span>}
+          {afaGranted === false && <span className="about-version-badge">off</span>}
+        </div>
+        <p className="hint">
+          With All-Files-Access granted, a picked project folder is opened in place (no copy) — including SD cards.
+          Without it, folders are copied into the app's sandbox instead. Both paths work; the copy fallback never
+          blocks you.
+        </p>
+        <p className="hint">
+          In-place projects keep live files at their original location, but on-device limits apply: some builds
+          (npm native modules) cannot execute from app storage, and node_modules symlinks may fail. These failures
+          are counted in the engine log for the direct-access trial.
+        </p>
+        {afaGranted === false && (
+          <button type="button" className="btn ghost small" onClick={() => void openSettings()}>
+            Grant All-Files-Access
+          </button>
+        )}
+        {afaGranted === null && <p className="hint">Checking storage access…</p>}
+      </div>
     </div>
   )
 }

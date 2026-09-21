@@ -2,6 +2,7 @@ package com.anybuff.android.engine
 
 import android.content.Context
 import android.util.Log
+import com.anybuff.android.bridge.DirectAccess
 import java.io.File
 import java.io.IOException
 
@@ -227,6 +228,42 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
             "-b", "${File(procFakes, "vmstat").absolutePath}:/proc/vmstat",
             "-b", "/proc",
             "-b", "/sys",
+        )
+        // §4.6 direct-bind trial: per-project raw-path binds NESTED inside the
+        // /workspace mount (nested bind precedent: /dev + /dev/urandom:/dev/random).
+        // A direct-bind project's files live on their REAL storage location
+        // (main volume or SD card) — no copy, live edits visible in any file
+        // manager. Known trade-offs are the trial's observables (plan §4.6):
+        // FUSE noexec (npm install native builds → EPERM) and no symlinks
+        // (symlink errors) — the renderer counts these via logEvent for the
+        // Route-A-vs-stay-direct verdict. The registry lives in
+        // filesDir/direct-binds.json (DirectAccess); a vanished/unreadable
+        // entry just contributes no bind (copy flow re-pick recovers it).
+        // MUST stay BEFORE the `/usr/bin/env -i` terminator — everything after
+        // it is the guest command, not proot arguments.
+        var directBinds = 0
+        try {
+            for (bind in DirectAccess.all(context)) {
+                val dir = File(bind.rawPath)
+                if (!dir.isDirectory) {
+                    EngineLog.append(context, "direct: stale bind skipped (${bind.name}: ${bind.rawPath})")
+                    continue
+                }
+                command += listOf("-b", "${bind.rawPath}:/workspace/${bind.name}")
+                directBinds++
+            }
+            if (directBinds > 0) {
+                EngineLog.append(context, "direct: $directBinds project bind(s) active")
+            }
+        } catch (e: Exception) {
+            // Registry read failure must never block the host boot — the copy
+            // flow remains fully functional.
+            EngineLog.append(context, "direct: registry read failed (${e.message})")
+        }
+        // The guest command TERMINATOR — everything appended after this line is
+        // the guest program, not proot arguments (proot executes the first
+        // non-option argument). Direct binds are injected above this line.
+        command += listOf(
             "/usr/bin/env", "-i",
         )
         // Guest env as env -i arguments — these survive the wipe and reach the

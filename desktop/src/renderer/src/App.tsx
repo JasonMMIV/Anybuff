@@ -57,6 +57,7 @@ import {
 } from './components/Icons'
 import type { TreeNode } from './components/FileTree'
 import FilePreviewModal from './components/FilePreviewModal'
+import { recordToolOutputForTrial, logPickOutcome } from './utils/trial-counter'
 import type { UiEvent } from '../../preload'
 
 interface UiSettings {
@@ -907,18 +908,45 @@ export default function App() {
   // Android shell pushes folder-import progress as DOM events during the SAF
   // copy (a large project can take minutes over DocumentsProvider IPC).
   // Surface it as a notice so silence never reads as "the pick did nothing".
+  // §4.6 adds the 'direct' phase (AFA bind, no copy) — the notice states the
+  // semantic differences up front instead of after the first surprising
+  // failure (plan item 5: 語意差異明示，避免安靜損壞的感知落差).
   useEffect(() => {
     if (isPreview) return
     const onProgress = (ev: Event): void => {
       const d = (ev as CustomEvent<{ phase?: string; copied?: number; error?: string }>).detail
       if (!d || typeof d !== 'object') return
-      if (d.phase === 'copying') setNotice(`Importing project folder… ${d.copied ?? 0} files copied`)
-      else if (d.phase === 'done') setNotice(null)
-      else if (d.phase === 'error' && d.error) setNotice(`Folder import failed: ${d.error}`)
+      if (d.phase === 'copying') {
+        logPickOutcome('copy')
+        setNotice(`Importing project folder… ${d.copied ?? 0} files copied`)
+      } else if (d.phase === 'done') setNotice(null)
+      else if (d.phase === 'direct') {
+        logPickOutcome('direct')
+        setNotice(
+          'Project opened via direct bind (no copy). Files live at their original location — in-place builds may hit noexec/symlink limits; failures are counted for the trial.'
+        )
+      } else if (d.phase === 'error' && d.error) setNotice(`Folder import failed: ${d.error}`)
     }
     window.addEventListener('anybuff:folder-progress', onProgress)
     return () => window.removeEventListener('anybuff:folder-progress', onProgress)
   }, [isPreview])
+
+  // §4.6 direct-bind trial counters: pattern-match tool RESULT text for the
+  // failure modes the trial measures (EPERM exec / symlink / read-only) and
+  // push them into the on-device engine log via the native bridge. Desktop
+  // and preview are untouched (no __ANYBUFF_NATIVE__ → logEvent no-ops).
+  useEffect(() => {
+    if (isPreview || !isAndroidShell) return
+    const onResult = (event: UiEvent): void => {
+      if (event.type !== 'tool_result') return
+      const text = event.message ?? event.raw
+      if (typeof text === 'string' && text) recordToolOutputForTrial(text)
+    }
+    const unsubscribe = window.AnyBuff.onEvent(onResult)
+    return () => {
+      unsubscribe()
+    }
+  }, [isPreview, isAndroidShell])
 
   // Mobile/WebView only: cap the in-view conversation so a long session cannot
   // balloon the renderer's DOM past what the device can hold — unbounded growth

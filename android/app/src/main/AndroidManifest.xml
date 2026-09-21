@@ -3,6 +3,12 @@
 
     <!-- Loopback HTTP for the local WS host; network for rootfs/Node download + LLM APIs -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- §4.6 direct-bind trial: raw R/W over bind mounts for picked project
+         folders (incl. SD/OTG — the only route that reaches removable volumes
+         with raw access). Side-load phase only; Play requires a Permissions
+         Declaration Form (plan R11). The copy flow remains the fallback —
+         nothing requires this permission to be granted. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <!-- Foreground service: the engine keeps running while the screen is off (M-B4) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

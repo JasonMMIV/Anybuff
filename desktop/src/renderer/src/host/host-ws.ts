@@ -70,6 +70,10 @@ export interface AnyBuffNativeBridge {
   logEvent?: (kind: string, detail: string) => void
   /** Android-only: pull a SAF folder staged while the page was (re)loading. */
   takeStagedFolder?(): Promise<string | null>
+  /** §4.6 direct-bind trial: mirror of the All-Files-Access gate. */
+  storageStatus?(): Promise<{ ok: boolean; afaGranted: boolean }>
+  /** §4.6 direct-bind trial: open the system AFA settings screen. */
+  openStorageSettings?(): Promise<{ ok: boolean; error?: string }>
   /** Android-only (gap #14): open a sandbox file with an external app
    *  (FileProvider + ACTION_VIEW chooser); error when no handler exists. */
   openExternalFile?(guestPath: string): Promise<{ ok: boolean; error?: string }>
