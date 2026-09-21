@@ -49,6 +49,21 @@ class SandboxManager private constructor(context: Context) {
     @Volatile
     private var primaryListener: Listener? = null
 
+    /** Host generation stamp recorded at the moment auto-reboot was DECIDED.
+     * The reboot thread re-checks it against the live generation just before
+     * starting: if another boot (activity open, FGS headless boot) already
+     * produced a new generation, this reboot must not clobber it. */
+    private val generationAtRebootDecision = java.util.concurrent.atomic.AtomicLong(0)
+    private val generation = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Serializes start()'s preamble — the alive check, the single-flight
+     * gate, the primaryListener swap and the generation bump — so two callers
+     * (main-thread boot vs background auto-reboot) can never interleave
+     * inside the check-then-act. The boot itself stays outside the lock (it
+     * runs on [scope]); reentrant, because the auto-reboot thread calls
+     * start() from inside this lock. */
+    private val startLock = Any()
+
     /** True while a deliberate stop is settling — the exit monitor must not
      * auto-reboot those (FGS stop, activity finishing, renderer restart). */
     @Volatile
@@ -116,25 +131,28 @@ class SandboxManager private constructor(context: Context) {
      *  (round 10: the old boot-time snapshot could resurrect deleted keys /
      *  drop freshly-saved ones on an auto-reboot). */
     fun start(listener: Listener) {
-        primaryListener = listener
-        stopping = false
-        val alive = host.get()?.process?.isAlive == true
-        if (alive) {
-            listener.onHostReady(host.get()!!.wsUrl)
-            return
+        synchronized(startLock) {
+            primaryListener = listener
+            stopping = false
+            val alive = host.get()?.process?.isAlive == true
+            if (alive) {
+                listener.onHostReady(host.get()!!.wsUrl)
+                return
+            }
+            // Single-flight: without this, an Activity recreation during a long
+            // first boot (rootfs install) would run two installs / two proots.
+            if (starting) {
+                // A boot is in flight (e.g. the Activity was recreated mid-install
+                // via onRenderProcessGone) — the ORIGINAL caller's listener drives
+                // it, so queue this new listener and replay onHostReady/onError
+                // when the boot settles. Without this the new WebView would sit on
+                // the splash forever (its listener never registered).
+                pendingListeners.add(listener)
+                return
+            }
+            starting = true
+            generation.incrementAndGet()
         }
-        // Single-flight: without this, an Activity recreation during a long
-        // first boot (rootfs install) would run two installs / two proots.
-        if (starting) {
-            // A boot is in flight (e.g. the Activity was recreated mid-install
-            // via onRenderProcessGone) — the ORIGINAL caller's listener drives
-            // it, so queue this new listener and replay onHostReady/onError
-            // when the boot settles. Without this the new WebView would sit on
-            // the splash forever (its listener never registered).
-            pendingListeners.add(listener)
-            return
-        }
-        starting = true
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
@@ -256,6 +274,7 @@ class SandboxManager private constructor(context: Context) {
      */
     private fun watchForUnexpectedExit(h: ProotRunner.HostProcess) {
         val bootAt = System.currentTimeMillis()
+        val myGeneration = generation.get()
         Thread {
             val code = try {
                 h.process.waitFor()
@@ -264,7 +283,10 @@ class SandboxManager private constructor(context: Context) {
             }
             // React only if this host is still the active one — a deliberate
             // stop() has already cleared the reference and owns the reboot.
-            if (host.compareAndSet(h, null)) {
+            // The generation check additionally drops EXITS of hosts that a
+            // concurrent boot already superseded (their monitor is watching a
+            // zombie process; stopping must stay owned by the live host).
+            if (host.compareAndSet(h, null) && myGeneration == generation.get()) {
                 EngineLog.append(
                     appContext,
                     "HOST EXITED code=$code after ${System.currentTimeMillis() - bootAt}ms",
@@ -295,19 +317,42 @@ class SandboxManager private constructor(context: Context) {
             }
         }
         EngineLog.append(appContext, "auto-rebooting host after unexpected exit code=$code")
+        // Stamp the generation NOW; re-checked under startLock on the reboot
+        // thread after the 2s settle sleep, so an activity-open boot or a
+        // deliberate stop that lands inside the window always wins over this
+        // stale reboot.
+        generationAtRebootDecision.set(generation.get())
         Thread {
             try {
                 Thread.sleep(2_000)
             } catch (_: InterruptedException) {
                 return@Thread
             }
-            start(
-                primaryListener ?: object : Listener {
-                    override fun onStage(stage: String) {}
-                    override fun onHostReady(wsUrl: String) {}
-                    override fun onError(error: String) {}
-                },
-            )
+            // Re-check under the same lock start() takes, so the decision and
+            // the boot cannot be split by a racing start()/stop().
+            synchronized(startLock) {
+                if (stopping) {
+                    EngineLog.append(
+                        appContext,
+                        "auto-reboot skipped: engine was stopped deliberately",
+                    )
+                    return@Thread
+                }
+                if (generationAtRebootDecision.get() != generation.get()) {
+                    EngineLog.append(
+                        appContext,
+                        "auto-reboot skipped: a newer host generation took over",
+                    )
+                    return@Thread
+                }
+                start(
+                    primaryListener ?: object : Listener {
+                        override fun onStage(stage: String) {}
+                        override fun onHostReady(wsUrl: String) {}
+                        override fun onError(error: String) {}
+                    },
+                )
+            }
         }.apply {
             isDaemon = true
             name = "host-auto-reboot"

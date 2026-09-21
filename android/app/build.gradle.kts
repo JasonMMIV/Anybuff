@@ -58,10 +58,16 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
+            } else {
+                // AGP does NOT sign release builds with the debug key
+                // implicitly — an unassigned release config produces
+                // app-release-unsigned.apk, which no device accepts. The
+                // debug-key fallback is deliberate (plan M-C2): local
+                // assembleRelease and non-publish CI runs both expect an
+                // installable APK; publishing without release secrets is
+                // blocked upstream in the workflow.
+                signingConfig = signingConfigs.getByName("debug")
             }
-            // else: unset → AGP signs with the debug keystore. Deliberate
-            // fallback (plan M-C2): a maintainer's local `assembleRelease`
-            // produces an installable APK without owning the release key.
         }
     }
 
@@ -196,7 +202,13 @@ android {
 // The generated asset tree lives OUTSIDE src/main/assets, so nothing in AGP's
 // default graph produces it — wire the syncs into every variant's asset merge
 // explicitly (they ran "by luck" before, only when invoked standalone).
-tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach {
+// LintVital (release-only) reads the variant's asset source set without
+// running the merges, which Gradle 8 flags as an implicit dependency and
+// fails assembleRelease (generate*LintVitalReportModel, lintVitalAnalyze*).
+// Same wiring class as merge tasks above.
+tasks.matching {
+    it.name.lowercase().contains("lintvital") || it.name.matches(Regex("merge.*Assets"))
+}.configureEach {
     dependsOn(syncWebAssets, syncEngineAssets)
 }
 

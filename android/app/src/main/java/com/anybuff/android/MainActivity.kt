@@ -123,6 +123,12 @@ class MainActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 if (url?.startsWith(APPASSETS_ORIGIN) == true) {
+                    // M-B4 desk-check: a render-process crash can rebuild the
+                    // activity and land HERE on the OLD webview object before
+                    // onRenderProcessGone's recreate() runs — the queued
+                    // flushPendingFolder would then run JS into a WebView the
+                    // recovery path is about to destroy.
+                    if (isFinishing || isDestroyed) return
                     pageReady.set(true)
                     // A folder picked in SAF while this page was being (re)created
                     // may have been staged after the load started — deliver it
@@ -190,8 +196,20 @@ class MainActivity : ComponentActivity() {
         SandboxManager.get(this).start(
             listener = object : SandboxManager.Listener {
                 override fun onStage(stage: String) { /* splash shows stage */ }
-                override fun onHostReady(wsUrl: String) = injectAndLoad(wsUrl)
-                override fun onError(error: String) = showBootError(error)
+                // M-B4 desk-check: start() has no cancel — if the activity
+                // dies mid-boot (user backs out during the rootfs install),
+                // the boot completes anyway. Swallow the callbacks so the
+                // zombie boot neither loads pages into a destroyed WebView
+                // nor pops the boot-error dialog after the user left. The
+                // engine itself is torn down by the finishing onDestroy.
+                override fun onHostReady(wsUrl: String) {
+                    if (isFinishing || isDestroyed) return
+                    injectAndLoad(wsUrl)
+                }
+                override fun onError(error: String) {
+                    if (isFinishing || isDestroyed) return
+                    showBootError(error)
+                }
             },
         )
     }
