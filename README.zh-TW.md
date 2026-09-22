@@ -2,7 +2,7 @@
 
 [English](./README.md) | 繁體中文
 
-**自帶金鑰（BYOK）的 Windows 編程代理**，基於 [Freebuff](https://github.com/CodebuffAI/freebuff) 多智能體架構。
+**自帶金鑰（BYOK）的 Windows 與 Android 編程代理**，基於 [Freebuff](https://github.com/CodebuffAI/freebuff) 多智能體架構。
 
 Anybuff 在本機完整執行 Freebuff 智能體運行時——無後端、無廣告、無點數。連接你自己的 OpenAI 相容或 Anthropic 相容端點——雲端 API（OpenAI、Anthropic、Mistral、DeepSeek、GLM、OpenRouter 等）或全本地端點（Ollama、LM Studio、vLLM）——直接向你的供應商付費。
 

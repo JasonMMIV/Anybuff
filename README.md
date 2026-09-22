@@ -2,7 +2,7 @@
 
 [English](./README.md) | [繁體中文](./README.zh-TW.md)
 
-**A bring-your-own-key (BYOK) coding agent for Windows**, built on the
+**A bring-your-own-key (BYOK) coding agent for Windows and Android**, built on the
 [Freebuff](https://github.com/CodebuffAI/freebuff) multi-agent architecture.
 
 Anybuff runs the Freebuff agent runtime **entirely in-process** — no hosted
