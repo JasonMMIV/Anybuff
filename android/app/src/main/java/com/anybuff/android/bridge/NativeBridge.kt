@@ -120,10 +120,12 @@ class NativeBridge(
                 }
                 "storageStatus" -> {
                     // §4.6 direct-bind trial: the Storage tab mirrors the AFA
-                    // gate (whether "Grant" still needs doing). Cheap, sync.
+                    // gate (whether "Grant" still needs doing) AND the pause
+                    // preference. Cheap, sync.
                     post(id, replyProxy) {
                         put("ok", true)
                         put("afaGranted", DirectAccess.isAfaGranted())
+                        put("directPaused", DirectAccess.isPaused(activity))
                     }
                 }
                 "openStorageSettings" -> {
@@ -137,6 +139,59 @@ class NativeBridge(
                             post(id, replyProxy) { put("ok", false); put("error", e.message ?: "could not open settings") }
                         }
                     }
+                }
+                "setDirectPaused" -> {
+                    // §4.6 in-app off switch: the platform forbids an app from
+                    // revoking its own MANAGE_EXTERNAL_STORAGE, so pausing is a
+                    // preference (registry kept for resume). Mounts bake in at
+                    // spawn — a live host restarts to drop/re-add them; a
+                    // stopped/booting engine picks the preference up with its
+                    // next spawn.
+                    val paused = msg.optBoolean("paused")
+                    val changed = DirectAccess.setPaused(activity, paused)
+                    post(id, replyProxy) { put("ok", true); put("paused", paused) }
+                    // Restart only when the mount set can actually change: a
+                    // real preference flip with entries present AND AFA on —
+                    // with AFA off nothing is mounted, so the toggle simply
+                    // waits for the next natural spawn.
+                    if (changed && DirectAccess.all(activity).isNotEmpty() && DirectAccess.isAfaGranted()) {
+                        onDirectBindChanged()
+                    }
+                }
+                "listDirectBinds" -> {
+                    // §4.6 management: the panel's "In-place projects" list.
+                    // `exists` marks entries whose folder vanished or is no
+                    // longer reachable (File predicates collapse EACCES/ENOENT
+                    // to false) so stale binds are visible for cleanup. The
+                    // stats run off the main thread — FUSE I/O on SD cards.
+                    val binds = DirectAccess.all(activity)
+                    Thread {
+                        val rows = binds.map { b ->
+                            JSONObject()
+                                .put("name", b.name)
+                                .put("rawPath", b.rawPath)
+                                .put("exists", File(b.rawPath).isDirectory)
+                        }
+                        post(id, replyProxy) {
+                            put("ok", true)
+                            put("binds", JSONArray(rows))
+                        }
+                    }.start()
+                }
+                "removeDirectBind" -> {
+                    // §4.6 management: drop one entry. A live host keeps
+                    // serving the old mount until a restart — unless paused,
+                    // where no mount is active for it (no restart needed).
+                    val name = msg.optString("name")
+                    val removed = name.isNotEmpty() && DirectAccess.remove(activity, name)
+                    post(id, replyProxy) { put("ok", true); put("removed", removed) }
+                    if (removed && !DirectAccess.isPaused(activity)) onDirectBindChanged()
+                }
+                "clearDirectBinds" -> {
+                    // §4.6 management: drop every entry (pause flag kept).
+                    val removed = DirectAccess.clear(activity)
+                    post(id, replyProxy) { put("ok", true); put("removed", removed) }
+                    if (removed > 0 && !DirectAccess.isPaused(activity)) onDirectBindChanged()
                 }
                 "restartEngine" -> {
                     // WS-dead recovery (renderer shows the lost-connection
@@ -376,7 +431,7 @@ class NativeBridge(
      *
      * @property result the copy-free guest path when a bind was recorded,
      *   null when the legacy copy flow takes over.
-     * @property skipReason machine-readable fallback reason (afa-off,
+     * @property skipReason machine-readable fallback reason (paused, afa-off,
      *   no-raw-mapping, raw-missing, probe-rejected, blank-name, unsafe-name,
      *   volume-root) — carried to the renderer so a copied-into-sandbox
      *   project never looks mysterious.
@@ -397,6 +452,14 @@ class NativeBridge(
      */
     private fun tryDirectBind(uri: Uri?): DirectOutcome {
         if (uri == null) return DirectOutcome(null, null, false)
+        // §4.6: the pause preference gates direct access WITHOUT touching the
+        // AFA permission (the platform forbids apps from revoking it).
+        // Explicit user intent wins the messaging over afa-off — resuming is
+        // the actionable step when both apply.
+        if (DirectAccess.isPaused(activity)) {
+            EngineLog.append(activity, "direct: paused — copy flow")
+            return DirectOutcome(null, "paused", false)
+        }
         if (!DirectAccess.isAfaGranted()) {
             EngineLog.append(activity, "direct: AFA not granted — copy flow")
             return DirectOutcome(null, "afa-off", false)
@@ -586,7 +649,13 @@ class NativeBridge(
         // base /workspace mount and win), and the next spawn would re-mount
         // the raw folder OVER this fresh copy — the caller restarts the
         // host when an entry was actually removed (removedDirectBind).
-        val unbound = DirectAccess.remove(activity, name)
+        // EXCEPTION — picks made while direct access is PAUSED keep the
+        // registration: pause is a temporary, user-reversible override
+        // ("resume brings the projects back without a re-pick"), so a paused
+        // copy must not silently convert the project; the resume restart
+        // remounts the raw folder over this copy (documented orphan-copy
+        // behavior).
+        val unbound = if (directSkip == "paused") false else DirectAccess.remove(activity, name)
         EngineLog.append(
             activity,
             "pick: copy done ${copied[0]} files → /workspace/$name" +
@@ -908,9 +977,17 @@ class NativeBridge(
             setRunActive: (active) => { try { androidNative.postMessage(JSON.stringify({ method: 'setRunActive', active: !!active })); } catch (e) {} },
             readEngineLog: () => send('readEngineLog').then(r => r.log || ''),
             takeStagedFolder: () => send('takeStagedFolder').then(r => r.path || null),
-            // §4.6 direct-bind trial: AFA gate mirror + system settings hop.
-            storageStatus: () => send('storageStatus').then(r => ({ ok: r.ok !== false, afaGranted: !!r.afaGranted })),
+            // §4.6 direct-bind trial: AFA gate mirror + pause preference +
+            // system settings hop.
+            storageStatus: () => send('storageStatus').then(r => ({ ok: r.ok !== false, afaGranted: !!r.afaGranted, directPaused: !!r.directPaused })),
             openStorageSettings: () => send('openStorageSettings').then(r => ({ ok: r.ok !== false, error: r.error || null })),
+            // §4.6 in-app off switch + registry management: mutations apply
+            // immediately — a live host restarts via the same direct-bind
+            // activation path, the page then reloads with fresh state.
+            setDirectPaused: (paused) => send('setDirectPaused', { paused: !!paused }).then(r => ({ ok: r.ok !== false })),
+            listDirectBinds: () => send('listDirectBinds').then(r => ({ ok: r.ok !== false, binds: Array.isArray(r.binds) ? r.binds : [] })),
+            removeDirectBind: (name) => send('removeDirectBind', { name: String(name || '') }).then(r => ({ ok: r.ok !== false, removed: !!r.removed })),
+            clearDirectBinds: () => send('clearDirectBinds').then(r => ({ ok: r.ok !== false, removed: r.removed || 0 })),
             logEvent: (kind, detail) => { try { androidNative.postMessage(JSON.stringify({ method: 'logEvent', kind: String(kind || ''), detail: String(detail || '') })); } catch (e) {} },
             // saveKey/deleteKey hand a freshly-typed key to the shell for
             // Keystore storage (same transient renderer→native crossing the

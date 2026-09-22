@@ -24,7 +24,8 @@ import java.io.File
  *     [probeWritable]. A pick only becomes a direct bind when the raw path
  *     maps AND accepts a probe file; anything else (cloud providers, restricted
  *     volumes) falls through to the legacy copy flow.
- *  3. The direct-bind registry — [record]/[all]/[remove]. Entries persist in
+ *  3. The direct-bind registry — [record]/[all]/[remove] plus the pause
+ *     preference ([isPaused]/[setPaused]/[clear]). State persists in
  *     filesDir/direct-binds.json (single-write atomic replace, ADR-13 shape)
  *     and ProotRunner adds one `-b raw:/workspace/<name>` per entry at host
  *     spawn. `uri` is kept for the future Route A write-back engine
@@ -40,6 +41,9 @@ object DirectAccess {
 
     /** A direct-bind entry: guest name ↔ host raw path. */
     data class DirectBind(val name: String, val rawPath: String, val uri: String)
+
+    /** Registry file shape: the pause preference + the bind entries. */
+    data class Registry(val paused: Boolean, val binds: List<DirectBind>)
 
     // ── Permission gate ─────────────────────────────────────────────
 
@@ -139,11 +143,50 @@ object DirectAccess {
     // ── Direct-bind registry ────────────────────────────────────────
 
     /** All recorded direct binds, newest last. Empty on any parse failure. */
-    fun all(context: Context): List<DirectBind> = loadFile(context)
+    fun all(context: Context): List<DirectBind> = loadRegistry(context).binds
 
     /** The bind for a guest folder name, or null. */
     fun forName(context: Context, name: String): DirectBind? =
-        loadFile(context).firstOrNull { it.name == name }
+        loadRegistry(context).binds.firstOrNull { it.name == name }
+
+    // ── Pause preference (§4.6: the in-app off switch) ──────────────
+
+    /**
+     * true when in-place access is PAUSED. The platform forbids an app from
+     * revoking its own MANAGE_EXTERNAL_STORAGE, so this app-level preference
+     * (persisted next to the registry) is the user-reachable off switch:
+     * picks run the copy flow and a (re)spawned host mounts nothing, while
+     * the registry is KEPT so resuming restores every project in place.
+     */
+    fun isPaused(context: Context): Boolean = loadRegistry(context).paused
+
+    /**
+     * Set the pause preference (see [isPaused]).
+     *
+     * @return true when the value actually changed — callers use this to
+     *   skip pointless host restarts (an unchanged preference remounts
+     *   nothing).
+     */
+    fun setPaused(context: Context, paused: Boolean): Boolean {
+        val reg = loadRegistry(context)
+        if (reg.paused == paused) return false
+        save(context, paused, reg.binds)
+        EngineLog.append(
+            context,
+            if (paused) "direct: paused (${reg.binds.size} bind(s) kept for resume)"
+            else "direct: resumed (${reg.binds.size} bind(s) re-enabled)",
+        )
+        return true
+    }
+
+    /** Remove EVERY entry (the pause flag is kept). @return removed count. */
+    fun clear(context: Context): Int {
+        val reg = loadRegistry(context)
+        if (reg.binds.isEmpty()) return 0
+        save(context, reg.paused, emptyList())
+        EngineLog.append(context, "direct: cleared ${reg.binds.size} bind(s)")
+        return reg.binds.size
+    }
 
     /**
      * Record (or replace) the bind for [name] and persist atomically. The
@@ -158,7 +201,8 @@ object DirectAccess {
      *   and a restart would be pointless churn.
      */
     fun record(context: Context, name: String, rawPath: String, uri: String): Boolean {
-        val binds = loadFile(context)
+        val reg = loadRegistry(context)
+        val binds = reg.binds
         val existing = binds.firstOrNull { it.name == name }
         // Identical re-pick: nothing to persist, nothing to remount — leave
         // a breadcrumb (re-picks of the same project are common; silence
@@ -168,7 +212,7 @@ object DirectAccess {
             return false
         }
         val next = binds.filter { it.name != name } + DirectBind(name, rawPath, uri)
-        save(context, next)
+        save(context, reg.paused, next)
         val remount = existing == null || existing.rawPath != rawPath
         EngineLog.append(
             context,
@@ -187,10 +231,10 @@ object DirectAccess {
      *   to trigger the same activation as a fresh bind.
      */
     fun remove(context: Context, name: String): Boolean {
-        val binds = loadFile(context)
-        val next = binds.filter { it.name != name }
-        if (next.size == binds.size) return false
-        save(context, next)
+        val reg = loadRegistry(context)
+        val next = reg.binds.filter { it.name != name }
+        if (next.size == reg.binds.size) return false
+        save(context, reg.paused, next)
         EngineLog.append(context, "direct: unbound '$name' (${next.size} total)")
         return true
     }
@@ -203,26 +247,30 @@ object DirectAccess {
 
     private fun file(context: Context): File = File(context.filesDir, FILE_NAME)
 
-    private fun loadFile(context: Context): List<DirectBind> {
+    private fun loadRegistry(context: Context): Registry {
         val f = file(context)
-        if (!f.exists()) return emptyList()
+        if (!f.exists()) return Registry(false, emptyList())
         return try {
-            val arr = JSONObject(f.readText()).optJSONArray("binds") ?: JSONArray()
-            (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                val name = o.optString("name")
-                val rawPath = o.optString("rawPath")
+            val o = JSONObject(f.readText())
+            val arr = o.optJSONArray("binds") ?: JSONArray()
+            val binds = (0 until arr.length()).mapNotNull { i ->
+                val b = arr.optJSONObject(i) ?: return@mapNotNull null
+                val name = b.optString("name")
+                val rawPath = b.optString("rawPath")
                 if (name.isEmpty() || rawPath.isEmpty()) null
-                else DirectBind(name, rawPath, o.optString("uri"))
+                else DirectBind(name, rawPath, b.optString("uri"))
             }
+            // A missing `paused` key (files written before the preference
+            // existed) reads as false — fully backward compatible.
+            Registry(o.optBoolean("paused", false), binds)
         } catch (_: Exception) {
             // A corrupt registry degrades to "no direct binds" (copy flow) —
             // same self-healing read policy as probe-samples (ADR-27 MC-2.2).
-            emptyList()
+            Registry(false, emptyList())
         }
     }
 
-    private fun save(context: Context, binds: List<DirectBind>) {
+    private fun save(context: Context, paused: Boolean, binds: List<DirectBind>) {
         val f = file(context)
         val arr = JSONArray()
         binds.forEach { b ->
@@ -233,7 +281,9 @@ object DirectAccess {
                     .put("uri", b.uri)
             )
         }
-        val payload = JSONObject().put("binds", arr).toString()
+        // `paused` is written on EVERY save: record/remove thread it through
+        // so registry edits can never wipe the preference.
+        val payload = JSONObject().put("paused", paused).put("binds", arr).toString()
         // Atomic replace: write the sibling temp file first, then rename over
         // the target (ADR-13 — never truncate the live file in place).
         val tmp = File(f.parentFile, "$FILE_NAME.${android.os.Process.myPid()}.${System.currentTimeMillis()}.tmp")

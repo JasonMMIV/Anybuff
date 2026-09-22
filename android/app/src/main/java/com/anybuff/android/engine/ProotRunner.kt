@@ -238,22 +238,33 @@ class ProotRunner(private val context: Context, private val paths: SandboxPaths)
         // (symlink errors) — the renderer counts these via logEvent for the
         // Route-A-vs-stay-direct verdict. The registry lives in
         // filesDir/direct-binds.json (DirectAccess); a vanished/unreadable
-        // entry just contributes no bind (copy flow re-pick recovers it).
+        // entry just contributes no bind (copy flow re-pick recovers it), and
+        // the pause preference skips the whole set without clearing it.
         // MUST stay BEFORE the `/usr/bin/env -i` terminator — everything after
         // it is the guest command, not proot arguments.
         var directBinds = 0
         try {
-            for (bind in DirectAccess.all(context)) {
-                val dir = File(bind.rawPath)
-                if (!dir.isDirectory) {
-                    EngineLog.append(context, "direct: stale bind skipped (${bind.name}: ${bind.rawPath})")
-                    continue
+            val binds = DirectAccess.all(context)
+            if (DirectAccess.isPaused(context)) {
+                // §4.6 pause preference: the registry is KEPT (resume remounts
+                // it on a later spawn) but a paused engine mounts nothing —
+                // picks run the copy flow for the duration.
+                if (binds.isNotEmpty()) {
+                    EngineLog.append(context, "direct: paused — ${binds.size} bind(s) not mounted")
                 }
-                command += listOf("-b", "${bind.rawPath}:/workspace/${bind.name}")
-                directBinds++
-            }
-            if (directBinds > 0) {
-                EngineLog.append(context, "direct: $directBinds project bind(s) active")
+            } else {
+                for (bind in binds) {
+                    val dir = File(bind.rawPath)
+                    if (!dir.isDirectory) {
+                        EngineLog.append(context, "direct: stale bind skipped (${bind.name}: ${bind.rawPath})")
+                        continue
+                    }
+                    command += listOf("-b", "${bind.rawPath}:/workspace/${bind.name}")
+                    directBinds++
+                }
+                if (directBinds > 0) {
+                    EngineLog.append(context, "direct: $directBinds project bind(s) active")
+                }
             }
         } catch (e: Exception) {
             // Registry read failure must never block the host boot — the copy

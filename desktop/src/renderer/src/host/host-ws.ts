@@ -70,10 +70,25 @@ export interface AnyBuffNativeBridge {
   logEvent?: (kind: string, detail: string) => void
   /** Android-only: pull a SAF folder staged while the page was (re)loading. */
   takeStagedFolder?(): Promise<string | null>
-  /** §4.6 direct-bind trial: mirror of the All-Files-Access gate. */
-  storageStatus?(): Promise<{ ok: boolean; afaGranted: boolean }>
+  /** §4.6 direct-bind trial: mirror of the All-Files-Access gate + the
+   *  in-place pause preference. */
+  storageStatus?(): Promise<{ ok: boolean; afaGranted: boolean; directPaused?: boolean }>
   /** §4.6 direct-bind trial: open the system AFA settings screen. */
   openStorageSettings?(): Promise<{ ok: boolean; error?: string }>
+  /** §4.6: pause/resume in-place access — the in-app off switch (the
+   *  platform forbids apps from revoking their own All-Files-Access). A live
+   *  engine restarts to drop/re-add the mounts; the registry is kept. */
+  setDirectPaused?(paused: boolean): Promise<{ ok: boolean }>
+  /** §4.6: the registered in-place projects (management list). `exists:
+   *  false` marks a folder that vanished or is no longer reachable. */
+  listDirectBinds?(): Promise<{
+    ok: boolean
+    binds: Array<{ name: string; rawPath: string; exists: boolean }>
+  }>
+  /** §4.6: drop one in-place project registration (applies immediately). */
+  removeDirectBind?(name: string): Promise<{ ok: boolean; removed: boolean }>
+  /** §4.6: drop every in-place registration (the pause flag is kept). */
+  clearDirectBinds?(): Promise<{ ok: boolean; removed: number }>
   /** Android-only (gap #14): open a sandbox file with an external app
    *  (FileProvider + ACTION_VIEW chooser); error when no handler exists. */
   openExternalFile?(guestPath: string): Promise<{ ok: boolean; error?: string }>

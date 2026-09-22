@@ -3777,41 +3777,75 @@ function EngineDiagnostics() {
  * still works — it falls back to the copy flow, so this panel is guidance,
  * not a blocker.
  */
+/** The Android shell's injected bridge, or null on desktop/preview (no
+ *  storageStatus method) where the whole storage card is hidden. */
+function storageBridge(): AnyBuffNativeBridge | null {
+  if (typeof window === 'undefined') return null
+  const native = (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
+  return native?.storageStatus ? native : null
+}
+
 function StorageAccessPanel() {
   const [afaGranted, setAfaGranted] = useState<boolean | null>(null)
+  const [paused, setPaused] = useState(false)
+  const [binds, setBinds] = useState<Array<{ name: string; rawPath: string; exists: boolean }>>([])
+  const [busy, setBusy] = useState(false)
 
-  // Read the gate once the bridge is available; the shell re-pushes on every
-  // activity resume (return from the system settings screen re-verifies).
+  // Read the gate, the pause preference and the registry in one shot; the
+  // shell re-pushes the gate on every activity resume (return from the
+  // system settings screen re-verifies) and every mutation reloads.
+  const loadStorageState = useCallback(async (): Promise<void> => {
+    const native = storageBridge()
+    if (!native) return
+    const [status, list] = await Promise.all([native.storageStatus?.(), native.listDirectBinds?.()])
+    setAfaGranted(!!status?.afaGranted)
+    setPaused(!!status?.directPaused)
+    setBinds(list?.binds ?? [])
+  }, [])
+
   useEffect(() => {
     if (typeof document === 'undefined' || !document.documentElement.classList.contains('is-webview')) return
-    const native = (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
-    if (!native) return
-    let alive = true
-    void native.storageStatus?.().then((r) => {
-      if (alive) setAfaGranted(!!r?.afaGranted)
-    })
+    if (!storageBridge()) return
+    void loadStorageState()
     const onGate = (ev: Event): void => {
       const d = (ev as CustomEvent<{ granted?: boolean }>).detail
       if (d && typeof d === 'object') setAfaGranted(!!d.granted)
+      void loadStorageState()
     }
     window.addEventListener('anybuff:storage-gate', onGate)
-    return () => {
-      alive = false
-      window.removeEventListener('anybuff:storage-gate', onGate)
-    }
+    return () => window.removeEventListener('anybuff:storage-gate', onGate)
+  }, [loadStorageState])
+
+  const openSettings = useCallback(async (): Promise<void> => {
+    await storageBridge()?.openStorageSettings?.()
   }, [])
 
-  const openSettings = useCallback(async () => {
-    const native = (window as unknown as { __ANYBUFF_NATIVE__?: AnyBuffNativeBridge }).__ANYBUFF_NATIVE__
-    await native?.openStorageSettings?.()
-  }, [])
+  // Mutations apply immediately: the shell restarts a live engine so the
+  // mount-set changes take effect (the page then reloads with fresh state).
+  const mutate = useCallback(
+    async (run: () => Promise<unknown>): Promise<void> => {
+      if (busy) return
+      setBusy(true)
+      try {
+        await run()
+        await loadStorageState()
+      } finally {
+        setBusy(false)
+      }
+    },
+    [busy, loadStorageState],
+  )
+
+  // Desktop/preview have no storage bridge — hide the card entirely (it used
+  // to sit at "Checking storage access…" forever there).
+  if (!storageBridge()) return null
 
   return (
     <div className="settings-tab-content">
       <div className="settings-section-card about-card">
         <div className="settings-section-head">
           <span>Direct Folder Access</span>
-          {afaGranted === true && <span className="about-version-badge">on</span>}
+          {afaGranted === true && <span className="about-version-badge">{paused ? 'paused' : 'on'}</span>}
           {afaGranted === false && <span className="about-version-badge">off</span>}
         </div>
         <p className="hint">
@@ -3824,12 +3858,98 @@ function StorageAccessPanel() {
           (npm native modules) cannot execute from app storage, and node_modules symlinks may fail. These failures
           are counted in the engine log for the direct-access trial.
         </p>
+        {afaGranted === true && (
+          <button type="button" className="btn ghost small" onClick={() => void openSettings()}>
+            Manage in system settings
+          </button>
+        )}
+        {(afaGranted === true || paused) && (
+          <>
+            <label className="model-checkbox-row" style={{ marginTop: '10px' }}>
+              <input
+                type="checkbox"
+                checked={paused}
+                disabled={busy}
+                onChange={(e) => {
+                  const next = e.target.checked
+                  void mutate(async () => {
+                    await storageBridge()?.setDirectPaused?.(next)
+                  })
+                }}
+              />
+              <span className="model-checkbox-label">Pause in-place access</span>
+            </label>
+            <p className="hint">
+              When paused, picks are copied into the sandbox instead and in-place projects go dormant. Nothing is
+              deleted — resuming brings them back. To revoke the permission itself, turn it off in Android system
+              settings.
+            </p>
+          </>
+        )}
         {afaGranted === false && (
           <button type="button" className="btn ghost small" onClick={() => void openSettings()}>
             Grant All-Files-Access
           </button>
         )}
         {afaGranted === null && <p className="hint">Checking storage access…</p>}
+        {binds.length > 0 ? (
+          <div>
+            <div className="settings-section-head" style={{ marginTop: '14px' }}>
+              <span>In-place projects</span>
+              {binds.length > 1 && (
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={busy}
+                  onClick={() =>
+                    void mutate(async () => {
+                      await storageBridge()?.clearDirectBinds?.()
+                    })
+                  }
+                >
+                  Remove all
+                </button>
+              )}
+            </div>
+            {afaGranted === false && (
+              <p className="hint">Inactive while All-Files-Access is off — you can still clean entries up here.</p>
+            )}
+            {binds.map((b) => (
+              <div
+                key={b.name}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                  marginTop: '10px',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>{b.name}</div>
+                  <div className="hint" style={{ margin: 0, wordBreak: 'break-all' }} title={b.rawPath}>
+                    {b.rawPath}
+                  </div>
+                  {!b.exists && <span className="about-version-badge">missing</span>}
+                </div>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={busy}
+                  onClick={() =>
+                    void mutate(async () => {
+                      await storageBridge()?.removeDirectBind?.(b.name)
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          afaGranted !== null && <p className="hint">No in-place projects.</p>
+        )}
       </div>
     </div>
   )

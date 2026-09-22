@@ -920,6 +920,9 @@ export default function App() {
      */
     const skipNotice = (skip: string | undefined): string | null => {
       if (!skip) return null
+      if (skip === 'paused') {
+        return 'Copied into the app sandbox — in-place access is paused. Resume it in Settings → Engine → Direct Folder Access to edit folders in place again.'
+      }
       if (skip === 'afa-off') {
         return 'Copied into the app sandbox — All-Files-Access is off. Enable it in Settings → Engine → Direct Folder Access, then re-pick this folder to edit it in place.'
       }
