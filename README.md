@@ -91,9 +91,13 @@ sandbox inside the app runs Ubuntu userland + Node 22 + the exact same
 host-core bundle the desktop uses. Nothing leaves the phone except the
 requests to *your* configured providers.
 
+![Anybuff running on Android](docs/screenshots/Mobile.jpg)
+
 - **Get it** — download `AnyBuff-<version>-android-arm64.apk` from the
-  [latest release](https://github.com/JasonMMIV/Anybuff/releases) and install
-  it (allow "unknown apps" for your browser/file manager when prompted).
+  [Releases page](https://github.com/JasonMMIV/Anybuff/releases) (Android
+  builds ship as releases titled "v<version> Android") and install it
+  (allow "unknown apps" for your browser/file manager when prompted).
+  **Requirements:** Android 8.0+ on an arm64 device; 6 GB RAM recommended.
   The engine ships inside the APK — no first-boot downloads.
 - **Architecture** — Kotlin thin shell (WebView + Keystore vault + SAF file
   pickers + foreground service) → proot sandbox → Node host over a loopback
