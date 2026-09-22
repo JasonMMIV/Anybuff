@@ -10,6 +10,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.webkit.WebViewAssetLoader
@@ -60,6 +61,29 @@ class MainActivity : ComponentActivity() {
     private val pageReady = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
+     * True while a back probe/consume round-trip to the page is in flight.
+     * Some gesture-nav builds double-fire the back callback on a single
+     * swipe; the second invocation must be swallowed whole — the first one
+     * may still be waiting on the page's answer, and a re-entry could close
+     * two layers for one gesture (or double-finish).
+     */
+    private var backProbePending = false
+
+    /**
+     * Single back-press sink (OnBackPressedDispatcher). Registered in
+     * onCreate; the callback stays enabled for the activity's whole life —
+     * WHAT a press means is decided by handleBackPress's page probe, not by
+     * an enabled flag. Keeping the flag static also means predictive back
+     * never starts a to-home animation underneath a page that was about to
+     * consume the press (androidx routes both the legacy onBackPressed path
+     * and the API 33+ OnBackInvokedCallback path through the dispatcher, so
+     * no manifest opt-in is needed for interception to work).
+     */
+    private val backCallback = object : OnBackPressedCallback(enabled = true) {
+        override fun handleOnBackPressed() = handleBackPress()
+    }
+
+    /**
      * Current system dark/light theme (round 12) — the shell is the source of
      * truth for the renderer's 'system' theme mode: the WebView's
      * prefers-color-scheme media query is derived from this Activity's theme
@@ -88,6 +112,10 @@ class MainActivity : ComponentActivity() {
         systemTheme = themeFromConfiguration(resources.configuration)
         webView = WebView(this)
         setContentView(webView)
+
+        // Back navigation wiring (see backCallback / handleBackPress): the
+        // dispatcher routes every back press through the page-aware probe.
+        onBackPressedDispatcher.addCallback(this, backCallback)
 
         // Crash-loop guard landed (see onRenderProcessGone): the fresh WebView
         // is healthy, but re-loading the app right now would just crash again
@@ -456,8 +484,58 @@ class MainActivity : ComponentActivity() {
         webView.destroy()
     }
 
-    override fun onBackPressed() {
-        if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+    /**
+     * Hardware back navigation, page-aware (renderer App.tsx owns the
+     * overlay stack):
+     *
+     *  - The app is a SPA — the WebView sits on a single document for its
+     *    whole life, so webView.canGoBack() was always false and back exited
+     *    the app from ANY screen (Settings, file preview, right panel…).
+     *  - Now every press first probes the page: window.__ANYBUFF_BACK__
+     *    (registered by the renderer ONLY in the Android shell) answers
+     *    canPop() — true when an overlay (settings modal, preview, drawers,
+     *    context menus…) can absorb the press — and consume calls pop()
+     *    in the SAME evaluation, popping the topmost layer (probe+consume
+     *    are atomic: no TOCTOU gap between the check and the close).
+     *  - When the page has nothing to close, the callback stays unconsumed →
+     *    system default: an open IME keyboard is dismissed first (same
+     *    back-gesture stream, framework behavior), otherwise the activity
+     *    finishes (the press exits to home as before).
+     *
+     * Threading: evaluateJavascript runs its result callback on the UI
+     * thread, so backProbePending is confined to the main thread.
+     *
+     * Boot/error pages have no __ANYBUFF_BACK__ probe: back falls through to
+     * the system default (exit) — unchanged legacy behavior.
+     */
+    private fun handleBackPress() {
+        if (backProbePending) return
+        if (isFinishing || isDestroyed) return
+        if (!pageReady.get()) {
+            // Boot splash / boot-error page: no renderer to probe (the
+            // back-gesture keyboard dismissal still applies for free) — exit.
+            finish()
+            return
+        }
+        backProbePending = true
+        webView.evaluateJavascript(
+            "(function(){var b=window.__ANYBUFF_BACK__;" +
+                "if(b&&b.canPop&&b.canPop()){b.pop();return 'consumed';}" +
+                "return 'default';})()",
+        ) { value ->
+            backProbePending = false
+            if (!isFinishing && !isDestroyed && (value?.contains("consumed") != true)) {
+                // Nothing to navigate back to: system default. Re-dispatch
+                // with this callback temporarily disabled so the system
+                // default runs — never a re-entry loop.
+                backCallback.isEnabled = false
+                try {
+                    onBackPressedDispatcher.onBackPressed()
+                } finally {
+                    backCallback.isEnabled = true
+                }
+            }
+        }
     }
 
     private companion object {

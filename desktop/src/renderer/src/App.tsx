@@ -209,16 +209,16 @@ function resolveProjectPath(cwd: string | null, path: string): string {
 }
 
 /**
- * Round 12 (Android theme follow-system): the Android WebView derives
- * prefers-color-scheme from the hosting Activity theme's android:isLightTheme
- * attribute — NOT from the system uiMode/night setting — and with uiMode kept
- * in android:configChanges (deliberately no Activity recreation; recreating
- * would tear down the WebView and re-race the sandbox boot) the media query
- * never live-updates when the system toggles dark mode (Chromium
- * aw_dark_mode.cc / DarkModeHelper.java; Google issuetracker 170328697;
- * react-native-webview#3013). The Kotlin shell therefore injects the TRUE
- * system theme as window.__ANYBUFF_SYSTEM_THEME__ and pushes changes as
- * 'anybuff:system-theme-change' DOM events. On desktop both helpers are
+ * Round 12 (Android theme follow-system): the Android WebView's
+ * prefers-color-scheme is derived from the hosting Activity theme's
+ * android:isLightTheme attribute — NOT from the system uiMode/night setting —
+ * and with uiMode kept in android:configChanges (deliberately no Activity
+ * recreation; recreating would tear down the WebView and re-race the sandbox
+ * boot) the media query never live-updates when the system toggles dark mode
+ * (Chromium aw_dark_mode.cc / DarkModeHelper.java; Google issuetracker
+ * 170328697; react-native-webview#3013). The Kotlin shell therefore injects
+ * the TRUE system theme as window.__ANYBUFF_SYSTEM_THEME__ and pushes changes
+ * as 'anybuff:system-theme-change' DOM events. On desktop both helpers are
  * inert (no injected global, event never fires) and matchMedia stays the
  * single source — zero desktop behavior change (is-webview discipline).
  */
@@ -233,6 +233,47 @@ function getSystemTheme(): 'dark' | 'light' | null {
 function onSystemThemeChange(callback: () => void): () => void {
   window.addEventListener('anybuff:system-theme-change', callback)
   return () => window.removeEventListener('anybuff:system-theme-change', callback)
+}
+
+/**
+ * Android hardware back button navigation (system-back integration):
+ *
+ * The app is a SPA — the WebView sits on a single document for its whole
+ * life, so webView.canGoBack() is always false and Android's back button
+ * used to exit the app from ANY screen (Settings, a file preview, the
+ * right panel…). The Kotlin shell now intercepts back via the
+ * OnBackPressedDispatcher and asks THIS page what to do through the same
+ * shell→renderer DOM-event channel as the system theme / storage gate:
+ *
+ *   probe  — the shell evaluates window.__ANYBUFF_BACK__.canPop() before
+ *            deciding; the back callback stays UNCONSUMED when the page
+ *            has nothing to close (system default: dismiss the keyboard,
+ *            otherwise finish the activity — home exit, per plan).
+ *   consume— the shell calls __ANYBUFF_BACK__.pop() in the SAME evaluation
+ *            (probe + consume are atomic — no TOCTOU gap); we close the
+ *            TOPMOST open overlay only. Invariant: exactly ONE boolean flips
+ *            per press, so a buggy double-push can never tear down two
+ *            layers at once.
+ *
+ * The overlay list below is ordered by visual stacking (z-order). The
+ * layered modals deliberately repeat (diagnostics z-index 200 layers OVER
+ * the settings modal at 100; the agent wizard replaces settings but closes
+ * back into it). Desktop/preview never register a handler — zero behavior
+ * change outside the Android WebView (is-webview discipline).
+ */
+interface BackPopTarget {
+  /** True when the overlay is open (a layer is pushed on the back stack). */
+  open: boolean
+  /** Close exactly this layer; returns true when it was open and got closed. */
+  close: () => boolean
+}
+
+/** Window probe the shell's back callback evaluates (Android shell only). */
+interface AnyBuffBackProbe {
+  /** True when at least one overlay can absorb this back press. */
+  canPop: () => boolean
+  /** Close the topmost open overlay; true when a layer was consumed. */
+  pop: () => boolean
 }
 
 export interface FollowupItem {
@@ -2248,6 +2289,68 @@ export default function App() {
       refreshProjects()
     }
   }, [refreshProjects])
+
+  // ── Android hardware back navigation ─────────────────────────────────
+  // Layers ordered by visual stacking (z-order, topmost LAST — pop() scans
+  // from the end). The layered modals repeat deliberately: diagnostics sits
+  // at z-index 200 OVER the settings modal (z-index 100), and closing the
+  // agent wizard drops back into the settings modal that launched it —
+  // each repeated entry owns exactly ONE boolean, so one press pops one
+  // layer. Kept in a ref so the back probe below stays live for the app's
+  // whole life (no re-registration churn as overlays open/close).
+  const backLayersRef = useRef<BackPopTarget[]>([])
+  backLayersRef.current = [
+    // Edge drawers first: they hug the screen edges and can coexist with the
+    // right panel (mobile toggles them off on open, but both may be open on
+    // wide screens), so the closest-to-content layers pop first.
+    { open: leftOpen, close: () => (setLeftOpen(false), true) },
+    { open: rightOpen, close: () => (setRightOpen(false), true) },
+    // Panel-internal state.
+    { open: todoPanelCollapsed, close: () => (setTodoPanelCollapsed(false), true) },
+    { open: searchOpen, close: () => (setSearchOpen(false), true) },
+    // Full-screen overlays, topmost of the stack last. The settings /
+    // diagnostics pair can coexist (diagnostics z-index 200 layers OVER the
+    // settings modal at 100) — diagnostics is LATER so it pops first.
+    { open: showAgentWizard, close: () => (setShowAgentWizard(false), setShowSettings(true), true) },
+    { open: showSettings, close: () => (handleCloseSettings(), true) },
+    { open: showDiagnostics, close: () => (setShowDiagnostics(false), true) },
+    { open: reviewScopeOpen, close: () => (setReviewScopeOpen(false), true) },
+    { open: pendingRevert !== null, close: () => (setPendingRevert(null), true) },
+    { open: previewFile !== null, close: () => (setPreviewFile(null), true) },
+    { open: editMenu !== null, close: () => (setEditMenu(null), true) },
+    { open: fileMenu !== null, close: () => (setFileMenu(null), true) },
+    // Topbar project dropdown (z=200) — transient menu, same tier as the
+    // context menus above. The titlebar File/Edit menus are desktop-only
+    // (is-webview CSS hides the titlebar) so they need no layer.
+    { open: projectMenuOpen, close: () => (setProjectMenuOpen(false), true) }
+    // Deliberately NOT on the back stack: the approval / ask-user banners are
+    // blocking prompts (not pages) — hiding them would only orphan the run's
+    // pending question. Back with nothing else open falls through to the
+    // system default (dismiss keyboard / exit home), and the run survives.
+  ]
+
+  useEffect(() => {
+    if (!isAndroidShell) return
+    const topOpenIndex = (layers: BackPopTarget[]): number => {
+      for (let i = layers.length - 1; i >= 0; i--) {
+        if (layers[i].open) return i
+      }
+      return -1
+    }
+    ;(window as unknown as { __ANYBUFF_BACK__?: AnyBuffBackProbe }).__ANYBUFF_BACK__ ??= {
+      canPop: () => topOpenIndex(backLayersRef.current) >= 0,
+      pop: () => {
+        const layers = backLayersRef.current
+        const i = topOpenIndex(layers)
+        // Invariant: ONE boolean flips per press — a duplicate consume
+        // (double-fired gesture) can never tear down two layers at once.
+        return i >= 0 ? layers[i].close() : false
+      }
+    }
+    return () => {
+      delete (window as unknown as { __ANYBUFF_BACK__?: AnyBuffBackProbe }).__ANYBUFF_BACK__
+    }
+  }, [isAndroidShell])
 
   const onSettingsSaved = useCallback(
     (saved: { hasProvider: boolean }) => {
