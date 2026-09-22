@@ -65,13 +65,9 @@ WebView，host 引擎**整組跑在手機上**——App 內的 proot 沙盒執�
 使用者空間 + Node 22 + 與桌面完全相同的 host-core bundle。除了你自行設
 定的 provider 請求，沒有任何東西離開手機。
 
-![Anybuff Android 版執行畫面](docs/screenshots/Mobile.jpg)
+<img src="docs/screenshots/Mobile.jpg" width="300" alt="Anybuff Android 版執行畫面">
 
-- **取得**——從
-  [Releases 頁](https://github.com/JasonMMIV/Anybuff/releases)
-  下載 `AnyBuff-<version>-android-arm64.apk` 安裝（Android 版以「v<version>
-  Android」標題發佈；依提示允許瀏覽器/檔案管理器安裝未知來源 App）。
-  **需求**：Android 8.0+（arm64 裝置），建議 6 GB RAM 以上。引擎隨 APK
+- **需求**——Android 8.0+（arm64 裝置），建議 6 GB RAM 以上。引擎隨 APK
   附帶，首次啟動無需任何下載。
 - **架構**——Kotlin 薄殼（WebView + Keystore 金鑰庫 + SAF 檔案選擇器 +
   前景服務）→ proot 沙盒 → Node host 經 loopback WebSocket。金鑰以
@@ -81,9 +77,6 @@ WebView，host 引擎**整組跑在手機上**——App 內的 proot 沙盒執�
   螢幕自動保持喚醒，引擎死亡時自動重啟並自動重連。
 - **直連資料夾**（選用）——授權「所有檔案存取」後，挑選的專案資料夾
   （含 SD 卡）原地綁定免拷貝；不授權則拷入 App 沙盒，功能不回退。
-- **從原始碼建置**——見 [`android/README.md`](android/README.md)
-  （Gradle arm64 assemble；引擎 runtime 由 pinned + SHA256 驗證的腳本取
-  得）。
 
 ## 安全
 
