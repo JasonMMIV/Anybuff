@@ -1,5 +1,6 @@
-# Android / Gradle build outputs
+# Android / Gradle build outputs (incl. local release artifacts)
 *.apk
+*.apk.sha256
 *.aab
 *.ap_
 *.dex
