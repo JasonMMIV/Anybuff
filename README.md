@@ -83,6 +83,32 @@ Anthropic-compatible provider, and start chatting.
    safeStorage), fetch models, select one, and start chatting. Switch between
    Chat / Build / Plan modes from the composer.
 
+## Android
+
+AnyBuff also ships as a **side-loaded Android app (arm64)**: the same React
+renderer in a WebView, with the host engine running **on-device** — a proot
+sandbox inside the app runs Ubuntu userland + Node 22 + the exact same
+host-core bundle the desktop uses. Nothing leaves the phone except the
+requests to *your* configured providers.
+
+- **Get it** — download `AnyBuff-<version>-android-arm64.apk` from the
+  [latest release](https://github.com/JasonMMIV/Anybuff/releases) and install
+  it (allow "unknown apps" for your browser/file manager when prompted).
+  The engine ships inside the APK — no first-boot downloads.
+- **Architecture** — Kotlin thin shell (WebView + Keystore vault + SAF file
+  pickers + foreground service) → proot sandbox → Node host over a loopback
+  WebSocket. Keys are AES/GCM-encrypted in the Android Keystore (the DPAPI
+  counterpart on desktop); secrets never enter the WebView or `process.env`.
+- **Long runs** — a specialUse foreground service keeps the engine alive with
+  the screen off; while a run is in flight the screen stays awake, and a
+  dead engine auto-reboots and reconnects by itself.
+- **Direct folder access** (optional) — grant All-Files-Access and picked
+  project folders (including SD card) are bound in place, no copying; without
+  it, folders are copied into the app's sandbox and everything still works.
+- **Build from source** — see [`android/README.md`](android/README.md)
+  (Gradle arm64 assemble; the engine runtime is fetched by pinned,
+  SHA256-verified scripts).
+
 ## Security
 
 The provider keys stored in Anybuff's settings are DPAPI-encrypted at rest.

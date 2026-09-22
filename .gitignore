@@ -79,3 +79,7 @@ AnyBuff-Android-plan.md
 docs/android-m0-engine-smoke.md
 docs/android-mb4-lifecycle-desk-check.md
 docs/android-release-runbook.md
+docs/android-performance-budget.md
+docs/android-device-matrix.md
+docs/android-play-store-assessment.md
+android/scripts/measure-perf.sh

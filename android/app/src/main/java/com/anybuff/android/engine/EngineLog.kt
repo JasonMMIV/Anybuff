@@ -29,6 +29,18 @@ object EngineLog {
     private val lock = Any()
     private val ts = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
+    /**
+     * logcat tag for the Phase D performance budget (plan §4.3): every entry
+     * is ALSO mirrored to the system log under "AnyBuffHost" so
+     * `adb logcat -s AnyBuffHost -v epoch` can timestamp boot stages
+     * (run-start budget) without root — the on-device ring buffer alone has
+     * no cross-referencable wall clock for scripts. The mirror carries the
+     * same 400-char cap; the wsUrl's random token is scrubbed first (system
+     * logs are readable by more apps than filesDir — see the token note in
+     * ws-server / SandboxManager).
+     */
+    private const val LOGCAT_TAG = "AnyBuffHost"
+
     fun file(context: Context): File =
         File(File(context.filesDir, "engine"), "logs/host.log")
 
@@ -42,6 +54,17 @@ object EngineLog {
             }
         } catch (_: Exception) {
             // Logging must never break the engine.
+        }
+        // Mirror AFTER the file append (best-effort, outside the lock): the
+        // wsUrl token is dropped so loopback auth never enters logcat, and
+        // any throw here must not affect the ring buffer above.
+        try {
+            android.util.Log.i(
+                LOGCAT_TAG,
+                line.take(MAX_LINE)
+                    .replace(Regex("token=[^ ]+"), "token=***"),
+            )
+        } catch (_: Exception) {
         }
     }
 

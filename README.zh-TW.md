@@ -58,6 +58,29 @@ provider，即可開始對話。
    DPAPI 加密儲存），取得模型清單，選擇模型，即可開始對話。
    並可於輸入框切換 Chat / Build / Plan 模式。
 
+## Android
+
+AnyBuff 亦有 **側載 Android 版（arm64）**：同一份 React renderer 放進
+WebView，host 引擎**整組跑在手機上**——App 內的 proot 沙盒執行 Ubuntu
+使用者空間 + Node 22 + 與桌面完全相同的 host-core bundle。除了你自行設
+定的 provider 請求，沒有任何東西離開手機。
+
+- **取得**——從
+  [最新 release](https://github.com/JasonMMIV/Anybuff/releases)
+  下載 `AnyBuff-<version>-android-arm64.apk` 安裝（依提示允許瀏覽器/檔案
+  管理器安裝未知來源 App）。引擎隨 APK 附帶，首次啟動無需任何下載。
+- **架構**——Kotlin 薄殼（WebView + Keystore 金鑰庫 + SAF 檔案選擇器 +
+  前景服務）→ proot 沙盒 → Node host 經 loopback WebSocket。金鑰以
+  Android Keystore AES/GCM 加密（桌面對應 DPAPI）；金鑰不進 WebView、
+  不進 `process.env`。
+- **長任務**——specialUse 前景服務讓引擎在熄屏時持續存活；run 進行中
+  螢幕自動保持喚醒，引擎死亡時自動重啟並自動重連。
+- **直連資料夾**（選用）——授權「所有檔案存取」後，挑選的專案資料夾
+  （含 SD 卡）原地綁定免拷貝；不授權則拷入 App 沙盒，功能不回退。
+- **從原始碼建置**——見 [`android/README.md`](android/README.md)
+  （Gradle arm64 assemble；引擎 runtime 由 pinned + SHA256 驗證的腳本取
+  得）。
+
 ## 安全
 
 存在 Anybuff 設定內的 provider 金鑰靜態以 DPAPI 加密。這**不及於**
