@@ -1894,6 +1894,13 @@ textarea {
   word-break: break-word;
 }
 
+/* 淺色主題：accent-soft 的藍色調在白底上太搶眼，蓋過了助手回答的視覺權重。
+   改用同色相、淺一階的 --bg-3（仍是主題色調，只是不再發色），讓使用者訊息
+   退為背景。深色主題維持 accent-soft —— 深底上的低透明度藍本來就夠淡。 */
+:root[data-theme='light'] .user-bubble {
+  background: var(--bg-3);
+}
+
 /* #11 Plan 區塊特殊呈現 — highlighted bordered plan card */
 .plan-box {
   border: 1.5px solid var(--accent);
@@ -2202,26 +2209,104 @@ textarea {
   border-top-color: #f59e0b;
 }
 
+/* ─── Process group (folded thinking + tool cards) ─── */
+/* One header per work segment: `> Working…` while its thinking/tools run,
+   `> Worked` once they finish. The triangle points right when collapsed and
+   down when expanded (TriangleIcon). */
+.process-group {
+  /* Same horizontal column as a tool card used to have — the group (not the
+     cards inside it) now owns the chat column alignment. */
+  margin: 1px max(24px, calc((100% - 760px) / 2));
+}
+
+.process-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-base);
+}
+
+.process-head:hover {
+  background: var(--bg-hover);
+}
+
+.process-triangle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+
+.process-label {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-0);
+}
+
+/* Still working: the accent tint is the only extra cue — the wording alone
+   (`Working` vs `Worked`) carries the state, so a finished group stays neutral. */
+.process-group.live .process-label,
+.process-group.live .process-triangle {
+  color: var(--accent);
+}
+
+/* The dots paint with `background`, not `color` — mirror the live tint onto
+   them so the header reads as one unit. */
+.process-group.live .thinking-dots span {
+  background: var(--accent);
+}
+
+/* The `Working` trailing ellipsis is the same CSS three-dot bounce as the stream
+   placeholder (runtime icon matrix: 「已開始串流但尚無文字 → CSS 三點彈跳」),
+   just sized to sit inline after a 12.5px mono label. Reuses .thinking-dots'
+   @keyframes bounce + stagger, so the two affordances never drift apart. */
+.thinking-dots-compact {
+  gap: 3px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.thinking-dots-compact span {
+  width: 4px;
+  height: 4px;
+}
+
+/* Group body: one flex column, 8px rhythm = the old tool-card spacing
+   (1px card margins + chat-scroll's 6px gap), now shared by every non-prose
+   block so thinking cards and tool cards are spaced identically. */
+.process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+
+.process-body .process-entry {
+  min-width: 0;
+}
+
+/* Inside the group the cards no longer center themselves — the group owns the
+   horizontal alignment, so every child shares one left/right edge. */
+.process-body .tool-card {
+  margin: 0;
+}
+
 /* ─── Thought block (reasoning / <think>) ──────────────── */
 .thought-block {
-  /* 思考＋正文的訊息：6px 是 thinking 卡與下方文字氣泡之間的呼吸空間
-     （msg-stack 為無 gap 的 flex column，完全仰賴此 margin）。 */
-  margin-bottom: 6px;
+  /* 過程收闔: thinking cards live inside a .process-body, whose flex gap owns the
+     vertical rhythm — identical spacing before/after thinking and tool cards. */
+  margin: 0;
   background: transparent;
   border: none;
   max-width: 100%;
-}
-
-/* 純思考訊息（只有 thinking 卡、無文字氣泡）：與工具卡同類的過程回饋，
-   行距與工具卡一致（tool-card 上下 margin 1px ＋ chat-scroll gap 6px ＝ 8px）。
-   此 override 選擇器權重較高，只影響 thought-only，思考＋正文維持 6px。 */
-.msg-row.thought-only {
-  padding-top: 1px;
-  padding-bottom: 1px;
-}
-
-.msg-row.thought-only .thought-block {
-  margin-bottom: 0;
 }
 
 .thought-block.thinking {
@@ -2370,7 +2455,7 @@ textarea {
 .tool-summary {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
   flex: 1 1 0;
   font-size: 12px;
@@ -2385,11 +2470,13 @@ textarea {
   /* 寬度依內容而定：短內容維持內容寬度；長內容超出可用版面時
      由 flex-shrink 按比例收斂到版面內，再以 ellipsis 截斷。 */
   flex: 0 1 auto;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 1px 7px;
-  /* 與對話訊息（.markdown）一致使用 UI 字體：中文路徑／檔名不再以等寬字體顯示 */
+  /* Text only — the summary chips lost their pill shape (no frame, no
+     fill); spacing between neighbouring paths comes from .tool-summary's gap. */
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  /* Same UI font as .markdown, so CJK paths never render in monospace. */
   font-family: var(--font-ui);
   font-size: 11px;
   color: var(--text-1);
@@ -2402,11 +2489,6 @@ textarea {
   flex-shrink: 0;
   color: var(--text-2);
   font-family: var(--font-ui);
-}
-
-:root[data-theme='light'] .tool-summary .chip {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.12);
 }
 
 /* 敏感檔 blocked：刪除線 + 徽章 */
@@ -9199,6 +9281,10 @@ select option {
 }
 
 .is-webview .thought-head {
+  min-height: 44px;
+}
+
+.is-webview .process-head {
   min-height: 44px;
 }
 

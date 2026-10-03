@@ -29,7 +29,9 @@ import {
   playRunPausedSound,
   setNotificationSoundEnabled
 } from './utils/notification-sounds'
-import { AssistantBubble, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
+import { AssistantBubble, ThoughtBlock, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
+import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
+import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
   AlertCircleIcon,
@@ -2873,10 +2875,9 @@ export default function App() {
         (r.taskId === currentTaskRef.current && (!r.projectPath || r.projectPath === cwd))
 
       if (isCurrentTask) {
-        const el = msgRefs.current[r.index]
-        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        el?.classList.add('search-flash')
-        setTimeout(() => el?.classList.remove('search-flash'), 1500)
+        // The delayed jump (below) also expands a collapsed process group
+        // around the hit before scrolling to it.
+        setPendingJump({ index: r.index })
         return
       }
 
@@ -2891,28 +2892,13 @@ export default function App() {
         }
       }
 
-      const el = msgRefs.current[r.index]
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el?.classList.add('search-flash')
-      setTimeout(() => el?.classList.remove('search-flash'), 1500)
+      setPendingJump({ index: r.index })
     },
     [cwd, projects, onOpenTask, openPreviewByPath]
   )
 
-  // Safe jump scrolling when loading a historical task from search
-  useEffect(() => {
-    if (!pendingJump) return
-    const timer = setTimeout(() => {
-      const el = msgRefs.current[pendingJump.index]
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        el.classList.add('search-flash')
-        setTimeout(() => el.classList.remove('search-flash'), 1500)
-        setPendingJump(null)
-      }
-    }, 100)
-    return () => clearTimeout(timer)
-  }, [chatItems, pendingJump])
+  // Safe jump scrolling when loading a historical task from search — the
+  // effect itself lives below, next to `jumpToRow` (which needs `chatNodes`).
 
   // View-scoped run state: only the conversation being VIEWED shows streaming
   // cursors, stop buttons, and activity animations — background runs elsewhere
@@ -2922,6 +2908,82 @@ export default function App() {
   const busyElsewhere = running && !viewRunning
 
   const streaming = viewRunning && chatItems.length > 0
+  // 過程收闔 (process folding): every non-prose block (thinking + tool cards) is
+  // collected into a collapsible `> Working…` / `> Worked` group. A group the
+  // user has never touched follows the run — open while it works, folded again
+  // once it finishes; an explicit toggle pins that group for good. Keyed by the
+  // group's first timeline index.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+  const openGroupsRef = useRef(openGroups)
+  openGroupsRef.current = openGroups
+  const groupOpen = (key: string, live: boolean): boolean => isGroupOpen(openGroups[key], live)
+  const toggleGroup = useCallback((key: string, live: boolean) => {
+    setOpenGroups((prev) => ({ ...prev, [key]: !isGroupOpen(prev[key], live) }))
+  }, [])
+  const chatNodes = useMemo(() => buildChatNodes(chatItems, { streaming }), [chatItems, streaming])
+  // Group keys are index-based — one conversation's expansion must never leak
+  // into another (task switch, project switch, New Task).
+  const viewIdentity = activeViewTaskId ?? historyTask?.id ?? 'draft'
+  useEffect(() => {
+    setOpenGroups({})
+  }, [viewIdentity])
+
+  /**
+   * Search / history jumps. A hit inside a collapsed process group has no mounted
+   * DOM, so the group covering it is expanded first and the caller retries.
+   * Returns true once the row was found and scrolled to.
+   */
+  const jumpToRow = useCallback(
+    (index: number): boolean => {
+      const row = msgRefs.current[index]
+      const flash = (el: HTMLDivElement): void => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('search-flash')
+        setTimeout(() => el.classList.remove('search-flash'), 1500)
+      }
+      const group = findProcessGroup(chatNodes, index)
+      if (group) {
+        // Stale ref from a previous expansion: it is never connected while closed.
+        if (row?.isConnected && row.closest('.process-group.open')) {
+          flash(row)
+          return true
+        }
+        if (!isGroupOpen(openGroupsRef.current[group.key], group.live)) {
+          setOpenGroups((prev) => ({ ...prev, [group.key]: true }))
+        }
+        return false
+      }
+      if (!row?.isConnected) return false
+      flash(row)
+      return true
+    },
+    [chatNodes]
+  )
+
+  // Delayed jump after a search hit opens a (possibly historical) conversation.
+  // Polls instead of relying on `chatItems` identity: a hit can sit in a group we
+  // just expanded (or in a timeline still loading), neither of which is a
+  // dependable trigger, so retry on a short timer with a bounded budget.
+  useEffect(() => {
+    if (!pendingJump) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let tries = 0
+    const attempt = (): void => {
+      if (cancelled) return
+      if (jumpToRow(pendingJump.index) || ++tries > 25) {
+        setPendingJump(null)
+        return
+      }
+      timer = setTimeout(attempt, 80)
+    }
+    timer = setTimeout(attempt, 100)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [pendingJump, jumpToRow])
+
   const currentStage = deriveStage(events, running)
   // Runs live in the main process now — navigating is always safe.
   const canSwitchProject = chatItems.length === 0 && !historyTask
@@ -3251,7 +3313,57 @@ export default function App() {
 
                     {/* key: remount on conversation switch so a stale boundary error never blocks healthy conversations */}
                     <ErrorBoundary key={activeViewTaskId ?? historyTask?.id ?? 'chat'}>
-                    {chatItems.map((item, i) => {
+                    {chatNodes.map((node) => {
+                      if (node.type === 'process') {
+                        // 過程收闔: the thinking + tool cards of one
+                        // work segment, behind one `> Working…` / `> Worked` head.
+                        const open = groupOpen(node.key, node.live)
+                        return (
+                          <div key={node.key} data-index={node.index} ref={setMsgRef}>
+                            <ProcessGroup live={node.live} open={open} onToggle={() => toggleGroup(node.key, node.live)}>
+                              {node.entries.map((entry) => {
+                                if (entry.type === 'tool') {
+                                  const tool = (entry.item as Extract<ChatItem, { kind: 'tool' }>).tool
+                                  if (!tool) return null
+                                  return (
+                                    <div key={entry.key} className="process-entry" data-index={entry.index} ref={setMsgRef}>
+                                      <ToolCard tool={tool} isLast={entry.index === chatItems.length - 1 && running} />
+                                    </div>
+                                  )
+                                }
+                                if (entry.type === 'thought') {
+                                  return (
+                                    <div key={entry.key} className="process-entry" data-index={entry.index} ref={setMsgRef}>
+                                      <ThoughtBlock reasoning={entry.reasoning} streaming={entry.streaming} />
+                                    </div>
+                                  )
+                                }
+                                return (
+                                  <div key={entry.key} className="process-entry" data-index={entry.index} ref={setMsgRef}>
+                                    <ThinkingDots />
+                                  </div>
+                                )
+                              })}
+                            </ProcessGroup>
+                          </div>
+                        )
+                      }
+
+                      if (node.type === 'body') {
+                        return (
+                          <div key={node.key} data-index={node.index} ref={setMsgRef}>
+                            <AssistantBubble
+                              text={node.text}
+                              plan={node.plan}
+                              ts={node.ts}
+                              streaming={node.streaming}
+                            />
+                          </div>
+                        )
+                      }
+
+                      const item = node.item
+                      const i = node.index
                       if (item.kind === 'user') {
                         const isLastUser = i === lastUserIdx
                         return (
@@ -3261,27 +3373,6 @@ export default function App() {
                               ts={item.ts}
                               onRevert={isLastUser && !viewRunning && !historyTask ? () => void requestRevert() : undefined}
                             />
-                          </div>
-                        )
-                      }
-                      if (item.kind === 'assistant') {
-                        const isStreaming = streaming && i === chatItems.length - 1
-                        return (
-                          <div key={i} data-index={i} ref={setMsgRef}>
-                            <AssistantBubble
-                              text={item.text ?? ''}
-                              reasoning={item.reasoning}
-                              ts={item.ts}
-                              streaming={isStreaming}
-                            />
-                          </div>
-                        )
-                      }
-                      if (item.kind === 'tool' && item.tool) {
-                        const isLastTool = i === chatItems.length - 1
-                        return (
-                          <div key={i} data-index={i} ref={setMsgRef}>
-                            <ToolCard tool={item.tool} isLast={isLastTool && running} />
                           </div>
                         )
                       }

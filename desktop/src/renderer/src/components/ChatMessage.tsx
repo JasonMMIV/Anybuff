@@ -646,12 +646,15 @@ export const UserBubble = memo(function UserBubble({ text, onRevert, ts }: { tex
 
 export const AssistantBubble = memo(function AssistantBubble({
   text,
-  reasoning,
+  plan: planProp,
   streaming,
   ts
 }: {
   text: string
-  reasoning?: string
+  /** 過程收闔: the timeline builder (utils/chat-groups) already lifted the reasoning
+   *  into its process group and extracted the <PLAN> box; the fallbacks below
+   *  keep the bubble self-sufficient for any other caller. */
+  plan?: string
   streaming: boolean
   ts?: number
 }) {
@@ -659,43 +662,18 @@ export const AssistantBubble = memo(function AssistantBubble({
   const extracted = useMemo(() => extractThinkTags(text), [text])
   // #11: pull <PLAN>…</PLAN> out of the remaining text for the plan card.
   const planExtracted = useMemo(() => extractPlanBlocks(extracted.text), [extracted.text])
-  const combinedReasoning = [reasoning?.trim(), extracted.reasoning?.trim()].filter(Boolean).join('\n\n')
   const mainText = planExtracted.text
-  const plan = planExtracted.plan
-  const isReasoningOnly = streaming && !mainText.trim() && !plan && Boolean(combinedReasoning || extracted.isThinking)
-  // #24 純思考訊息（只有 thinking 卡、無文字氣泡）＝與工具卡同類的過程回饋：
-  // 縮緊行距與工具卡一致（chat-scroll gap 6px + 卡片自身邊距），不加　margin-bottom。
-  const thoughtOnly = !mainText.trim() && Boolean(combinedReasoning)
-
-  if (!mainText.trim() && !combinedReasoning && streaming) {
-    return (
-      <div className="msg-row assistant">
-        <div className="thinking-dots">
-          <span />
-          <span />
-          <span />
-        </div>
-      </div>
-    )
-  }
+  const plan = planProp ?? planExtracted.plan
 
   return (
-    <div className={`msg-row assistant${thoughtOnly ? ' thought-only' : ''}`}>
+    <div className="msg-row assistant">
       <div className="msg-stack assistant">
-        {combinedReasoning && (
-          <ThoughtBlock
-            reasoning={combinedReasoning}
-            streaming={streaming && (!mainText.trim() || extracted.isThinking)}
-          />
-        )}
-        {(plan || mainText.trim() || !combinedReasoning) && (
-          <div className="assistant-bubble">
-            {/* #11: the plan card comes FIRST so the spec is always prominent. */}
-            {plan && <PlanBox plan={plan} />}
-            {mainText.trim() && <Markdown text={mainText} />}
-            {streaming && !isReasoningOnly && <span className="caret" />}
-          </div>
-        )}
+        <div className="assistant-bubble">
+          {/* #11: the plan card comes FIRST so the spec is always prominent. */}
+          {plan && <PlanBox plan={plan} />}
+          {mainText.trim() && <Markdown text={mainText} />}
+          {streaming && <span className="caret" />}
+        </div>
         {/* #21/#25 footer：只有「看得見的助手內容」才蓋時間戳——純思考訊息
             （thinking 後接工具呼叫／執行、text 為空）不顯示，避免時間蓋在
             thinking 區塊與後續工具卡之間。plan-only 仍以 plan 為可見內容。
