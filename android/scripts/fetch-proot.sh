@@ -34,15 +34,15 @@ PREFIX = "data/data/com.termux/files/usr"
 
 # (deb name, version, sha256, jniLibs name, deb-relative lib path)
 PINS = [
-    ("proot", "5.1.107.92",
-     "1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9",
+    ("proot", "5.1.107.96",
+     "8199dca06dccb693ec09fb1759e3e1ad08b4863f0c11c612f89c20bd9ecdc1a0",
      "libproot_exec.so", f"{PREFIX}/bin/proot"),
-    ("proot", "5.1.107.92",
-     "1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9",
+    ("proot", "5.1.107.96",
+     "8199dca06dccb693ec09fb1759e3e1ad08b4863f0c11c612f89c20bd9ecdc1a0",
      "libproot_loader.so", f"{PREFIX}/libexec/proot/loader"),
-    ("libtalloc", "2.4.3",
-     "ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da",
-     "ENGINE_LIBS/libtalloc.so.2", f"{PREFIX}/lib/libtalloc.so.2.4.3"),
+    ("libtalloc", "2.5.0",
+     "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7",
+     "ENGINE_LIBS/libtalloc.so.2", f"{PREFIX}/lib/libtalloc.so.2.5.0"),
     ("libandroid-shmem", "0.7",
      "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6",
      "libandroid-shmem.so", f"{PREFIX}/lib/libandroid-shmem.so"),
