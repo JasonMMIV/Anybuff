@@ -69,7 +69,6 @@ function isSilentTool(name?: string): boolean {
 
 type Accum = {
   changedFiles: FileChange[]
-  runningToolIndex: number
 }
 
 const accums = new Map<string, Accum>()
@@ -77,7 +76,7 @@ const accums = new Map<string, Accum>()
 function accumOf(taskId: string): Accum {
   let a = accums.get(taskId)
   if (!a) {
-    a = { changedFiles: [], runningToolIndex: -1 }
+    a = { changedFiles: [] }
     accums.set(taskId, a)
   }
   return a
@@ -90,6 +89,61 @@ function lastIsAssistant(entry: SessionEntry): boolean {
 
 function pushSystem(entry: SessionEntry, text: string): void {
   entry.transcript.push({ kind: 'system', text, createdAt: Date.now() })
+}
+
+/**
+ * Locate the card a `tool_result` belongs to.
+ *
+ * Every tool_call/tool_result pair carries a stable `toolCallId`. When a turn
+ * batches several tool calls, all the cards exist before the first result
+ * arrives — positional matching ("the most recently started card") then binds
+ * every result to the wrong card: earlier tools sit on "Running…" forever and
+ * the last one shows the wrong output. Matching by id resolves any batch order
+ * and ignores names on purpose (MCP results carry the STRIPPED tool name:
+ * `context7__fetch_docs` on the call vs `fetch_docs` on the result). The name
+ * fallback only serves legacy events without an id; never guess.
+ */
+function findToolResultIndex(transcript: TaskMessage[], ev: StoreEvent): number {
+  if (ev.toolCallId) {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const item = transcript[i]
+      if (
+        item.kind === 'tool' &&
+        item.tool &&
+        item.tool.status === 'running' &&
+        item.tool.toolCallId === ev.toolCallId
+      ) {
+        return i
+      }
+    }
+    return -1
+  }
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const item = transcript[i]
+    if (
+      item.kind === 'tool' &&
+      item.tool &&
+      item.tool.status === 'running' &&
+      item.tool.toolName === (ev.toolName ?? 'tool')
+    ) {
+      return i
+    }
+  }
+  return -1
+}
+
+/**
+ * Close out cards still marked running once their run is over (Stop mid-tool,
+ * crash restart, a result event that never arrived). A finished transcript
+ * showing "Running…" forever is stale UI — see findToolResultIndex.
+ */
+function sweepRunningTools(transcript: TaskMessage[], status: 'done' | 'interrupted'): void {
+  for (const item of transcript) {
+    if (item.kind === 'tool' && item.tool && item.tool.status === 'running') {
+      item.tool = { ...item.tool, status }
+      item.updatedAt = Date.now()
+    }
+  }
 }
 
 /**
@@ -135,25 +189,25 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
       const tool: NonNullable<TaskMessage['tool']> = {
         toolName: ev.toolName ?? 'tool',
         status: 'running',
+        toolCallId: ev.toolCallId,
         agentType: ev.agentType,
         todos: ev.toolName === 'write_todos' && Array.isArray(ev.todos) ? ev.todos : undefined,
         toolInput: ev.toolInput,
         blockedPaths: ev.blockedPaths
       }
       entry.transcript.push({ kind: 'tool', tool, createdAt: Date.now() })
-      accumOf(taskId).runningToolIndex = entry.transcript.length - 1
       persistSoon(entry)
       return
     }
     case 'tool_result': {
       if (isSilentTool(ev.toolName)) return
-      const acc = accumOf(taskId)
-      const idx = acc.runningToolIndex
-      acc.runningToolIndex = -1
-      const item = idx >= 0 ? entry.transcript[idx] : undefined
-      if (item && item.kind === 'tool' && item.tool) {
-        item.tool = { ...item.tool, status: 'done', detail: ev.message ?? ev.status ?? item.tool.status }
-        item.updatedAt = Date.now()
+      const idx = findToolResultIndex(entry.transcript, ev)
+      if (idx >= 0) {
+        const item = entry.transcript[idx]
+        if (item.kind === 'tool' && item.tool) {
+          item.tool = { ...item.tool, status: 'done', detail: ev.message ?? ev.status ?? item.tool.status }
+          item.updatedAt = Date.now()
+        }
       }
       persistSoon(entry)
       return
@@ -358,6 +412,12 @@ export function finishRun(
       entry.runState = runState
       saveTaskRunState(taskId, runState)
     }
+
+    // The run is over — nothing is still executing. A card left on "running"
+    // lost its result event (or was cancelled mid-tool by Stop); close it out
+    // so it never shows "Running…" forever.
+    sweepRunningTools(entry.transcript, opts.interrupted ? 'interrupted' : 'done')
+
     entry.status = opts.interrupted ? 'interrupted' : 'idle'
 
     persistNow(entry)
@@ -524,6 +584,13 @@ export function trimLastTurn(taskId: string, userText: string): boolean {
 export function getSessionSnapshot(taskId: string): TaskViewSnapshot {
   const entry = sessions.get(taskId)
   if (entry) {
+    // A session whose run is not active (idle / interrupted) cannot hold live
+    // tools — cards still marked running are historical leftovers (crash,
+    // Stop, the batch-correlation bug). Demote them so reopening an old
+    // conversation never shows a stale "Running…" / "Working…" forever.
+    if (entry.status !== 'running') {
+      sweepRunningTools(entry.transcript, entry.status === 'interrupted' ? 'interrupted' : 'done')
+    }
     const resumable = entry.status !== 'running' && isErrorOutput(entry.runState)
     const message = resumable ? errorOutputMessage(entry.runState) : undefined
     return {
@@ -553,9 +620,16 @@ export function getSessionSnapshot(taskId: string): TaskViewSnapshot {
     checkpointMtime !== null && runStateMtime !== null && checkpointMtime > runStateMtime
   const crashedMidTurn = checkpointFresher && runState !== null && !interrupted
 
+  // An on-disk transcript has no live run behind it in this process, so any
+  // card still marked running is history (crash, Stop, lost result). Demote at
+  // read time — without rewriting the file — so old conversations stop
+  // rendering "Running…" / "Working…" forever.
+  const sweptTranscript = transcript ?? []
+  sweepRunningTools(sweptTranscript, interrupted || crashedMidTurn ? 'interrupted' : 'done')
+
   return {
     exists: true,
-    transcript: transcript ?? [],
+    transcript: sweptTranscript,
     status: interrupted || crashedMidTurn ? 'interrupted' : 'idle',
     canResume: interrupted || (crashedMidTurn && Boolean(loadTaskCheckpoint(taskId))),
     resumeReason: interrupted || crashedMidTurn ? classifyFailure(message ?? '') : undefined,

@@ -31,6 +31,8 @@ export interface TaskMessage {
   tool?: {
     toolName: string
     status: string
+    /** Stable runtime id pairing this card with its tool_result event. */
+    toolCallId?: string
     agentType?: string
     agentName?: string
     detail?: string
@@ -52,6 +54,8 @@ export interface UiEvent {
   text?: string
   action?: string
   toolName?: string
+  /** Stable runtime id pairing a tool_call with its tool_result (batch-safe). */
+  toolCallId?: string
   status?: string
   agentType?: string
   /** Human-readable agent name from the runtime (falls back to agentType in the UI). */

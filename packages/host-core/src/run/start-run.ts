@@ -443,6 +443,8 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
       break
     case 'tool_call':
       base.toolName = String(e.toolName ?? '')
+      // Stable id pairing this call with its result (batched calls resolve by id).
+      base.toolCallId = e.toolCallId != null ? String(e.toolCallId) : undefined
       base.status = 'running'
       base.agentType = e.agentType ? String(e.agentType) : undefined
       if (
@@ -493,6 +495,7 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
       break
     case 'tool_start':
       base.toolName = String(e.toolName ?? '')
+      base.toolCallId = e.toolCallId != null ? String(e.toolCallId) : undefined
       base.status = 'running'
       base.agentType = e.agentType ? String(e.agentType) : undefined
       if (
@@ -513,6 +516,7 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
       break
     case 'tool_result': {
       base.toolName = String(e.toolName ?? '')
+      base.toolCallId = e.toolCallId != null ? String(e.toolCallId) : undefined
       base.status = String(e.status ?? 'done')
       base.agentType = e.agentType ? String(e.agentType) : undefined
       if (

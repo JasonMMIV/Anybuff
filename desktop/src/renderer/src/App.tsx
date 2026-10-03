@@ -32,6 +32,7 @@ import {
 import { AssistantBubble, ThoughtBlock, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
 import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
+import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
   AlertCircleIcon,
@@ -577,7 +578,6 @@ export default function App() {
   }, [])
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
-  const toolIndexRef = useRef(-1)
   const changedFilesRef = useRef<string[]>([])
   const accumulatedFileChangesRef = useRef<FileChange[]>([])
   const settingsRef = useRef(settings)
@@ -1068,6 +1068,17 @@ export default function App() {
           // watching — 'idle' = finished successfully, 'interrupted' = stopped/errored.
           if (event.status === 'interrupted') playRunInterruptedSound()
           else playRunFinishedSound()
+          // The run is over — close out any card still marked running in the
+          // viewed conversation (Stop mid-tool, a result event that never
+          // arrived). Nothing is live anymore; a card left on "Running…" also
+          // keeps its whole process group header on "Working…" forever.
+          if (!event.taskId || event.taskId === currentTaskRef.current) {
+            const endStatus: 'done' | 'interrupted' = event.status === 'interrupted' ? 'interrupted' : 'done'
+            setChatItems((prev) => {
+              const swept = sweepRunningCards(prev, endStatus)
+              return swept === prev ? prev : [...swept]
+            })
+          }
         }
         // Any run transition ends the current retry wait (a new attempt is
         // starting, or the run reached a terminal state).
@@ -1214,6 +1225,7 @@ export default function App() {
         const tool: ToolItem = {
           toolName: event.toolName ?? 'tool',
           status: 'running',
+          toolCallId: event.toolCallId,
           agentType: event.agentType,
           todos: event.toolName === 'write_todos' && Array.isArray(event.todos) ? event.todos : undefined,
           toolInput: event.toolInput,
@@ -1222,7 +1234,6 @@ export default function App() {
         if (event.toolName === 'write_todos' && Array.isArray(event.todos)) {
           setActiveTodos(event.todos)
         }
-        toolIndexRef.current = chatItemsRef.current.length
         setChatItems((prev) => [...prev, { kind: 'tool', tool }])
         return
       }
@@ -1235,18 +1246,18 @@ export default function App() {
           }
           return
         }
-        const idx = toolIndexRef.current
-        toolIndexRef.current = -1
-        if (idx >= 0) {
-          setChatItems((prev) => {
-            const next = [...prev]
-            const item = next[idx]
-            if (item && item.kind === 'tool') {
-              next[idx] = { kind: 'tool', tool: { ...item.tool, status: 'done', detail: event.message ?? event.status } }
-            }
-            return next
-          })
-        }
+        // Match by toolCallId inside the updater so the lookup always sees the
+        // latest items: batched tool calls resolve in any order, and no stale
+        // index can bind a result to the wrong card.
+        setChatItems((prev) => {
+          const idx = findToolResultIndex(prev, { toolCallId: event.toolCallId, toolName: event.toolName })
+          if (idx < 0) return prev
+          const item = prev[idx]
+          if (!item || item.kind !== 'tool') return prev
+          const next = [...prev]
+          next[idx] = { kind: 'tool', tool: { ...item.tool, status: 'done', detail: event.message ?? event.status } }
+          return next
+        })
         if (event.toolName === 'query_index') {
           setEvents((prev) => [...prev.slice(-299), event])
         }
@@ -1367,10 +1378,6 @@ export default function App() {
     })
     return unsubscribe
   }, [isPreview])
-
-  // Keep chatItems in a ref for event callbacks
-  const chatItemsRef = useRef(chatItems)
-  chatItemsRef.current = chatItems
 
   const refreshProjects = useCallback(() => {
     if (isPreview) return

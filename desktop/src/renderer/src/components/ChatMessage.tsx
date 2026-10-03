@@ -31,7 +31,9 @@ export interface TodoTodo {
 
 export interface ToolItem {
   toolName: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'interrupted'
+  /** Stable runtime id pairing this card with its tool_result event. */
+  toolCallId?: string
   agentType?: string
   /** Human-readable agent name; sub-agent cards title as `Sub-agent: <agentName ?? agentType>`. */
   agentName?: string
@@ -544,6 +546,7 @@ export const ToolCard = memo(function ToolCard({ tool, isLast }: { tool: ToolIte
         {hasTodos && <span className="todo-summary-badge">{todoSummary}</span>}
         {tool.status === 'running' && <span className="tool-status-text">Running…</span>}
         {tool.status === 'error' && <span className="tool-status-text error">Failed</span>}
+        {tool.status === 'interrupted' && <span className="tool-status-text">Interrupted</span>}
         {!running && tool.status === 'done' && (resultCount || allowedCount !== null) && (
           <span className="tool-result-count">
             {allowedCount !== null ? `${allowedCount}/${allowedCount + blockedCount} allowed` : resultCount}

@@ -2374,7 +2374,8 @@ textarea {
 
 .tool-card.running,
 .tool-card.done,
-.tool-card.error {
+.tool-card.error,
+.tool-card.interrupted {
   border: none;
 }
 
