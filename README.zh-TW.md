@@ -101,4 +101,4 @@ WebView，host 引擎**整組跑在手機上**——App 內的 proot 沙盒執�
 
 ## 授權
 
-Apache-2.0（沿襲上游 Freebuff/Codebuff）。詳見 LICENSE 與 NOTICE。
+Apache-2.0（沿襲上游 Freebuff/Codebuff）。詳見 LICENSE。

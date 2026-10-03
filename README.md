@@ -131,4 +131,4 @@ project you open.
 
 ## License
 
-Apache-2.0 (inherited from upstream Freebuff/Codebuff). See LICENSE and NOTICE.
+Apache-2.0 (inherited from upstream Freebuff/Codebuff). See LICENSE.
