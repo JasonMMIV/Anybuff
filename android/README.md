@@ -54,14 +54,39 @@ bun --cwd desktop run build:web            # emits desktop/dist-web/ (renderer)
 bash scripts/fetch-proot.sh
 bash scripts/fetch-engine-runtime.sh
 
-# 3. assemble (~117MB APK: the engine runtime ships inside — no first-boot downloads)
+# 3. assemble (~70MB APK: the engine runtime ships inside — no first-boot downloads)
 cd android
-./gradlew :app:assembleDebug
+./gradlew :app:assembleRelease
 ```
 
 The APK assets are assembled by `syncWebAssets` (copies `desktop/dist-web/`)
 and `syncEngineAssets` (copies the host bundle + wasm + rg). See
 `app/build.gradle.kts`.
+
+### Release signing
+
+`assembleRelease` is signed with the real release key whenever one is reachable,
+and the build **logs which one it picked** on every run:
+
+```
+[signing] release key → C:\...\android\keystore\anybuff-release.jks (alias anybuff)
+```
+
+It looks, in order, at:
+
+1. `ANYBUFF_KEYSTORE_FILE` + `ANYBUFF_KEYSTORE_PASSWORD` (plus optional
+   `ANYBUFF_KEY_ALIAS` / `ANYBUFF_KEY_PASSWORD`) — this is the CI path, fed from
+   GitHub Secrets.
+2. `android/keystore/anybuff-release.jks` + `android/keystore/keystore-password.txt`.
+   That directory is **gitignored** (keys are never committed), so it exists only
+   on your machine. Drop both files in and nothing else is needed — the password
+   file holds the store password, and the key password defaults to the same.
+
+If neither is present you get a loud warning and a **debug-key** signed APK. That
+one installs fine, but it has the wrong signer identity, so it will *not* update
+an app installed from GitHub Releases — Android rejects the mismatch. If you
+want a debug-signed build on purpose (testing the install path, no key handy),
+opt out with `-Panybuff.ignoreLocalKeystore=true`.
 
 ## Versions (pinned in gradle.properties)
 

@@ -12,11 +12,45 @@ plugins {
 val anybuffVersionName = (project.findProperty("anybuff.versionName") as String?)?.takeIf { it.isNotBlank() } ?: "1.0.0"
 val anybuffVersionCode = (project.findProperty("anybuff.versionCode") as String?)?.takeIf { it.isNotBlank() }?.toIntOrNull() ?: 10000
 
-// Release signing is env-driven for CI (GitHub Secrets → ANYBUFF_KEYSTORE_*).
-// When absent, buildTypes.release below stays UNASSIGNED and AGP falls back
-// to the debug key — local release builds stay side-loadable with zero setup.
-val releaseSigningConfigured = !System.getenv("ANYBUFF_KEYSTORE_FILE").isNullOrBlank() &&
-    !System.getenv("ANYBUFF_KEYSTORE_PASSWORD").isNullOrBlank()
+// ── Release signing ────────────────────────────────────────────────────────
+// CI drives this through ANYBUFF_KEYSTORE_* (GitHub Secrets → env). Locally the
+// keystore lives in android/keystore/ — gitignored, because keys are never
+// committed — so when the env vars are absent we look there instead. That lookup
+// is the whole point: before it existed, a local `./gradlew assembleRelease`
+// with a keystore sitting right there in the tree silently fell through to the
+// debug key and produced an installable APK with the wrong signer identity.
+// Hence the unconditional log line below — the choice is never silent again.
+// Escape hatch: -Panybuff.ignoreLocalKeystore=true forces the debug fallback.
+val ignoreLocalKeystore = (project.findProperty("anybuff.ignoreLocalKeystore") as String?)
+    ?.toBoolean() ?: false
+
+// rootProject.file() — this is the :app module, so bare relative paths would
+// resolve against android/app/. The keystore lives one level up, in android/.
+val localKeystore = rootProject.file("keystore/anybuff-release.jks")
+val localKeystorePassword = rootProject.file("keystore/keystore-password.txt")
+
+val keystoreFromEnv = System.getenv("ANYBUFF_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+val keystoreFile = when {
+    keystoreFromEnv != null -> rootProject.file(keystoreFromEnv)
+    !ignoreLocalKeystore && localKeystore.isFile -> localKeystore
+    else -> null
+}
+val keystorePassword = System.getenv("ANYBUFF_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    ?: localKeystorePassword.takeIf { it.isFile }?.readText()?.trim()
+
+val releaseSigningConfigured = keystoreFile != null && keystorePassword != null
+val keystoreAlias = System.getenv("ANYBUFF_KEY_ALIAS") ?: "anybuff"
+
+logger.lifecycle(
+    if (releaseSigningConfigured) {
+        "[signing] release key → ${keystoreFile?.path} (alias $keystoreAlias)"
+    } else {
+        "[signing] WARNING: no keystore found — assembleRelease will sign with the DEBUG key, " +
+            "so the APK will NOT install over a build from GitHub Releases. " +
+            "Fix: set ANYBUFF_KEYSTORE_FILE + ANYBUFF_KEYSTORE_PASSWORD, or place " +
+            "anybuff-release.jks + keystore-password.txt in android/keystore/."
+    },
+)
 
 android {
     namespace = "com.anybuff.android"
@@ -39,15 +73,16 @@ android {
 
     signingConfigs {
         create("release") {
-            // All four values come from CI env (secret-managed). Anything
-            // missing → leave this config inert; buildTypes.release keeps the
-            // debug-signing fallback below. A malformed config fails loudly
-            // at signing time — never silently unsigned.
+            // Resolved above from CI env, or from android/keystore/ on a dev
+            // machine. Anything missing → leave this config inert and let
+            // buildTypes.release keep the debug-signing fallback below.
+            // A malformed config fails loudly at signing time — never
+            // silently unsigned.
             if (releaseSigningConfigured) {
-                storeFile = rootProject.file(System.getenv("ANYBUFF_KEYSTORE_FILE")!!)
-                storePassword = System.getenv("ANYBUFF_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANYBUFF_KEY_ALIAS") ?: "anybuff"
-                keyPassword = System.getenv("ANYBUFF_KEY_PASSWORD") ?: System.getenv("ANYBUFF_KEYSTORE_PASSWORD")
+                storeFile = keystoreFile
+                storePassword = keystorePassword
+                keyAlias = keystoreAlias
+                keyPassword = System.getenv("ANYBUFF_KEY_PASSWORD") ?: keystorePassword
             }
         }
     }
