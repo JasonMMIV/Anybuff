@@ -1,7 +1,7 @@
 {
   "name": "anybuff-desktop",
   "version": "1.4.0",
-  "description": "AnyBuff Desktop ??Windows GUI for the AnyBuff local-first BYOK coding agent",
+  "description": "AnyBuff Desktop — Windows GUI for the AnyBuff local-first BYOK coding agent",
   "author": "AnyBuff",
   "private": true,
   "main": "./bootstrap.cjs",

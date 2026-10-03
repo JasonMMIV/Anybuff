@@ -129,7 +129,7 @@ function ghApiError(res: Response, context: string): Error {
         'GitHub API rate limit exceeded — unauthenticated requests allow 60 per hour. The limit resets within an hour; try again later.',
       )
     }
-    return new Error(`GitHub denied the request (${res.status}). Try again later, or set a GitHub token.`)
+    return new Error(`GitHub denied the request (${res.status}). Try again later.`)
   }
   return new Error(`GitHub ${context} failed with status ${res.status}.`)
 }
@@ -160,7 +160,9 @@ async function rawFetch(repo: GithubRepo, path: string): Promise<Buffer> {
   if (!res.ok) {
     if (res.status === 404) throw new Error(`File not found in the repository: ${path}`)
     if (res.status === 403 || res.status === 429) {
-      throw new Error(`GitHub denied access to ${path} (${res.status}) — private repository? Set a GitHub token.`)
+      throw new Error(
+        `GitHub denied access to ${path} (${res.status}) — the file may be private; only public repositories are supported.`,
+      )
     }
     throw new Error(`Download failed for ${path} (status ${res.status}).`)
   }

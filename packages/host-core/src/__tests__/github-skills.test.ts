@@ -227,6 +227,23 @@ describe('listGithubSkills', () => {
     expect(res.ok).toBe(false)
     if (!res.ok) {
       expect(res.error).toContain('60 per hour')
+      // The token option is gone — no message may suggest setting one.
+      expect(res.error).not.toContain('token')
+    }
+  })
+
+  test('a 403 WITHOUT the rate-limit header gives a generic denial, no token advice', async () => {
+    // Secondary/abuse limits and SAML denials land here (x-ratelimit-remaining
+    // header absent) — ghApiError's fallback branch, missed by the first pass
+    // of the token removal.
+    install()
+    fetchedUrls = []
+    fetchHandler = () => new Response('{"message":"Forbidden"}', { status: 403 })
+    const res = await listGithubSkills({ repo: 'acme/widgets' })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.error).toContain('denied the request')
+      expect(res.error).not.toContain('token')
     }
   })
 })
@@ -459,6 +476,21 @@ describe('downloadGithubSkill', () => {
     expect(existsSync(join(agentsRoot, 'atomic-skill'))).toBe(false)
     if (existsSync(agentsRoot)) {
       expect(readdirSync(agentsRoot).filter((n) => n.startsWith('.tmp-'))).toEqual([])
+    }
+  })
+
+  test('raw 403 explains the public-only policy without suggesting a token', async () => {
+    install()
+    route({
+      tree: [{ path: 'skills/demo/SKILL.md', size: SKILL_MD.length }],
+      rawStatus: { 'skills/demo/SKILL.md': 403 },
+    })
+    const res = await downloadGithubSkill(downloadPayload())
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.error).toContain('denied access')
+      expect(res.error).toContain('only public repositories')
+      expect(res.error).not.toContain('token')
     }
   })
 })
