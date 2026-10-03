@@ -295,6 +295,29 @@ export function PaperclipIcon(props: IconProps) {
   )
 }
 
+/** Globe / earth (web_search — internet) */
+export function GlobeIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  )
+}
+
+/** Hyperlink chain (read_url — a specific URL) */
+export function LinkIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
+  )
+}
+
 export function XIcon(props: IconProps) {
   const b = base(props)
   return (

@@ -10,13 +10,13 @@ import {
   FileIcon,
   FolderIcon,
   GaugeIcon,
+  GlobeIcon,
   LayersIcon,
+  LinkIcon,
   ListIcon,
   SparkIcon,
   PanelLeftIcon,
-  PaperclipIcon,
   PlugIcon,
-  RobotIcon,
   SearchIcon,
   SparklesIcon,
   SpecialistIcon,
@@ -55,12 +55,13 @@ function toolIcon(name: string): React.ReactNode {
     case 'list_directory':
       return <FolderIcon size={16} />
     case 'code_search':
-    case 'web_search':
       return <SearchIcon size={16} />
+    case 'web_search':
+      return <GlobeIcon size={16} />
     case 'glob':
       return <FolderIcon size={16} />
     case 'read_url':
-      return <PaperclipIcon size={16} />
+      return <LinkIcon size={16} />
     case 'read_docs':
       return <LayersIcon size={16} />
     case 'run_terminal_command':
@@ -87,7 +88,7 @@ function toolIcon(name: string): React.ReactNode {
     case 'ask_user':
       return <AlertCircleIcon size={16} />
     case 'spawn_agents':
-      return <RobotIcon size={16} />
+      return <SpecialistIcon size={16} />
     case 'render_ui':
       return <PanelLeftIcon size={16} />
     default:
@@ -695,7 +696,12 @@ export const AssistantBubble = memo(function AssistantBubble({
             {streaming && !isReasoningOnly && <span className="caret" />}
           </div>
         )}
-        {(ts || mainText.trim()) && (
+        {/* #21/#25 footer：只有「看得見的助手內容」才蓋時間戳——純思考訊息
+            （thinking 後接工具呼叫／執行、text 為空）不顯示，避免時間蓋在
+            thinking 區塊與後續工具卡之間。plan-only 仍以 plan 為可見內容。
+            Boolean()：ts 為 0 時（formatMsgTime 亦視為無時間戳）不可讓 JSX
+            渲染出字面「0」。 */}
+        {(mainText.trim() || Boolean(plan && ts)) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
             {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
             {mainText.trim() && (
