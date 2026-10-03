@@ -1,22 +1,19 @@
 /**
- * GitHub skill download (skills plan D3 / P1) + P2 provenance & token.
+ * GitHub skill download (skills plan D3 / P1) + P2 provenance.
  *
  * Locks:
  *   1. parseGithubRepo — owner/repo variants accepted; any OTHER host is
  *      rejected by name before a request can be made (whitelist starts at
  *      input parsing; ghFetch re-checks defensively).
  *   2. listGithubSkills — folder-level SKILL.md collection (incl. a root
- *      skill), fileCount, truncated-tree warning, rate-limit message, and
- *      the P2 token going out as an Authorization header.
+ *      skill), fileCount, truncated-tree warning, and the rate-limit message.
  *   3. downloadGithubSkill — whole-subfolder install with binary files
  *      intact, quota pre/post filters reported as `warning`, exists→confirm
- *      through dispatch (failure envelope keeps `exists`), traversal refusal,
- *      and atomicity (a failed download leaves neither the skill folder nor
- *      temp dirs behind).
+ *      through dispatch (failure envelope keeps `exists` + `name`), traversal
+ *      refusal, capped skip warnings, and atomicity (a failed download leaves
+ *      neither the skill folder nor temp dirs behind).
  *   4. Provenance — installSkillMulti stamps metadata.source: github and the
  *      list surfaces it as SkillInfo.provenance.
- *   5. Token plumbing — saveGithubToken/getGithubToken round-trip,
- *      githubTokenSet in getState, saveSettings payload save/delete order.
  *
  * globalThis.fetch is stubbed for the whole file — no test ever hits the
  * network; a stray fetch without a handler fails loudly.
@@ -33,7 +30,6 @@ import {
   listGithubSkills,
   parseGithubRepo,
 } from '../skills/github-skills'
-import { saveGithubToken } from '../settings/settings'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'host-core-gh-'))
 const homeDir = mkdtempSync(join(tmpdir(), 'host-core-gh-home-'))
@@ -41,7 +37,7 @@ process.env.ANYBUFF_PROVIDER_CONFIG = join(dataDir, 'anybuff.json')
 
 const agentsRoot = join(homeDir, '.agents', 'skills')
 
-/** SecretStore with working "encryption" (identity) — needed for the token vault. */
+/** SecretStore with working "encryption" (identity) — the host env requires one. */
 function encryptionSecrets() {
   return {
     isEncryptionAvailable: () => true,
@@ -219,7 +215,7 @@ describe('listGithubSkills', () => {
     if (res.ok) expect(res.warning).toContain('truncated')
   })
 
-  test('rate-limit answers explain 60/hr and the token (R4)', async () => {
+  test('rate-limit answers explain the 60/hr unauthenticated ceiling (R4)', async () => {
     install()
     fetchedUrls = []
     fetchHandler = () =>
@@ -231,33 +227,6 @@ describe('listGithubSkills', () => {
     expect(res.ok).toBe(false)
     if (!res.ok) {
       expect(res.error).toContain('60 per hour')
-      expect(res.error).toContain('token')
-    }
-  })
-
-  test('a stored token goes out as Authorization (P2 vault)', async () => {
-    install()
-    let captured: string | undefined
-    const serveTree = () => {
-      fetchHandler = (_url, init) => {
-        captured = (init?.headers as Record<string, string> | undefined)?.Authorization
-        return new Response(JSON.stringify({ tree: [] }), { status: 200 })
-      }
-    }
-    try {
-      saveGithubToken('tok-abc')
-      serveTree()
-      expect((await listGithubSkills({ repo: 'acme/widgets' })).ok).toBe(true)
-      expect(captured).toBe('Bearer tok-abc')
-
-      // Cleared → no header.
-      saveGithubToken('')
-      captured = undefined
-      serveTree()
-      expect((await listGithubSkills({ repo: 'acme/widgets' })).ok).toBe(true)
-      expect(captured).toBeUndefined()
-    } finally {
-      saveGithubToken('')
     }
   })
 })
@@ -490,66 +459,6 @@ describe('downloadGithubSkill', () => {
     expect(existsSync(join(agentsRoot, 'atomic-skill'))).toBe(false)
     if (existsSync(agentsRoot)) {
       expect(readdirSync(agentsRoot).filter((n) => n.startsWith('.tmp-'))).toEqual([])
-    }
-  })
-})
-
-/* ─── 4. token plumbing (P2) ─────────────────────────────────────────── */
-
-describe('GitHub token plumbing (P2)', () => {
-  test('githubTokenSet tracks the vault through getState', async () => {
-    install()
-    const host = createHost()
-    const flag = async (): Promise<boolean> => {
-      const state = (await host.dispatch('getState', [])) as {
-        ok: true
-        result: { settings: { githubTokenSet: boolean } }
-      }
-      return state.result.settings.githubTokenSet
-    }
-    expect(await flag()).toBe(false)
-    saveGithubToken('tok-1')
-    expect(await flag()).toBe(true)
-    saveGithubToken('')
-    expect(await flag()).toBe(false)
-  })
-
-  test('saveSettings payload: delete runs BEFORE save (retype after removal lands)', async () => {
-    install()
-    const host = createHost()
-    const base = {
-      providers: [],
-      activeModel: 'x/y',
-      reasoningEffort: 'default' as const,
-      approvalMode: 'balanced' as const,
-    }
-    const flag = async (): Promise<boolean> => {
-      const state = (await host.dispatch('getState', [])) as {
-        ok: true
-        result: { settings: { githubTokenSet: boolean } }
-      }
-      return state.result.settings.githubTokenSet
-    }
-    try {
-      // Save via the payload channel.
-      expect((await host.dispatch('saveSettings', [{ ...base, githubToken: 'ghp_1' }])).ok).toBe(true)
-      expect(await flag()).toBe(true)
-      // Delete flag clears it.
-      expect(
-        (await host.dispatch('saveSettings', [{ ...base, deleteGithubToken: true }])).ok,
-      ).toBe(true)
-      expect(await flag()).toBe(false)
-      // Both in one payload (sticky delete + fresh retype) → the NEW token wins.
-      expect(
-        (
-          await host.dispatch('saveSettings', [
-            { ...base, githubToken: 'ghp_2', deleteGithubToken: true },
-          ])
-        ).ok,
-      ).toBe(true)
-      expect(await flag()).toBe(true)
-    } finally {
-      saveGithubToken('')
     }
   })
 })

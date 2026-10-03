@@ -265,6 +265,7 @@ SettingsModal 'skills' tab
 
 - **Provenance 欄位**：`installSkill` 寫入時在 frontmatter `metadata` 記 `source: manual|file|github`＋`installedAt`，列表顯示徽章（緩解 R1 種植 skill 的可見性）；
 - **GitHub token**：DPAPI vault id `github-token`（ADR-11 通道，鏡像 `searchApiKey`）——解 60/hr rate limit。
+  **〔2026-10-03 決定：整段移除**——token UI、vault 讀寫（`saveGithubToken`/`getGithubToken`）、`githubTokenSet`、saveSettings payload 欄位、`ghFetch` Authorization header 全數刪除；請求維持 unauthenticated，rate-limit 錯誤訊息保留 60/hr 說明。裁定理由：60/hr 對人工安裝情境綽綽有餘，token 是多餘的設計與安全面。詳 ADR-29〕
 
 ---
 
@@ -301,7 +302,7 @@ SettingsModal 'skills' tab
 | **R1** | **全域 skill 自動載入 = prompt-injection 持久化面**：任何能寫入全域資料夾的行程都能在未來所有 run 種 skill，且模型自動載入 | **接受並登錄**——與上游 `npx skills add` 同風險面（上游既有）。**移除管道雙端俱備**（v1.2：Desktop＝檔案總管／其他 harness；Android＝App 內 Delete）；P2 provenance 徽章讓壞 skill 可辨識 |
 | **R2** | `skillsPath` 與 `includeHomeSkills` 互斥：`resolveSkillsDirs` 的 `skillsPath` 會**取代**專案目錄 | 本計畫**只用 `includeHomeSkills`，絕不傳 `skillsDir`** |
 | **R3** | **save-payload race**（ADR-27 MC-0 教訓）：新欄位缺任一處（renderer payload 或 handler merge）→ 每次 Settings 存檔被抹除 | 兩處同時落地；P0 驗收線必測「false 存檔後回讀仍 false」＋「`globalSkillsEditable` 不持久化」 |
-| **R4** | GitHub unauthenticated rate limit 60/hr；惡意 repo 的巨大／超限 tree | 錯誤訊息說明；上限＋跳檔＋warning（D3）；P2 token（DPAPI vault） |
+| **R4** | GitHub unauthenticated rate limit 60/hr；惡意 repo 的巨大／超限 tree | 錯誤訊息說明；上限＋跳檔＋warning（D3）；~~P2 token（DPAPI vault）~~——token 已於 2026-10-03 決定移除（多餘設計，詳 P2 註記與 ADR-29），60/hr 全額開放 |
 | **R5** | 跨目錄 reference（`SKILL.md` 內 `../../` 相對連結）不在子目錄下載涵蓋內 | 已知限制，文件註明（D3）；skill 慣例是自包含目錄 |
 | **R6** | **scope gate 誤配**：Android 漏設 `'managed'` → Edit/Delete 消失（fail-safe 方向、無資料風險）；**Desktop 誤設 `'managed'` → 共用目錄暴露編輯面** | 兩 shell 的 `installHostEnv` 帶**顯式**欄位＋註解；handler gate 測試（shared 拒絕／managed 允許／缺省拒絕）鎖定；UI 只是鏡像、host gate 才是安全線 |
 | **R7** | Agent 理論上可經檔案工具寫 `/root/.agents/skills`（沙箱內可寫）種 skill | AnyBuff 未給 agent 任何 home-skill 寫入通道或提示（agent prompt 一律指向**專案** `.agents/skills/`）；P2 provenance 可觀察；接受 |

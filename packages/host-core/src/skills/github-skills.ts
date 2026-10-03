@@ -14,8 +14,9 @@
  * total — filtered on the tree's `size` BEFORE downloading, over-limit files
  * are skipped and reported as `warning`; the SKILL.md itself never gets
  * skipped (it fails hard instead). Rate-limit answers (403/429 with
- * x-ratelimit-remaining: 0) explain the 60/hr unauthenticated ceiling and the
- * token field that raises it to 5,000/hr (P2 `github-token` vault).
+ * x-ratelimit-remaining: 0) explain the 60/hr unauthenticated ceiling —
+ * requests stay UNAUTHENTICATED by design (the optional P2 token was removed
+ * 2026-10-03 as redundant; see the skills plan P2 note).
  *
  * Verified against the live API on 2026-10-03: `git/trees/HEAD?recursive=1`
  * resolves HEAD, `raw.githubusercontent.com/<o>/<r>/HEAD/<path>` serves file
@@ -24,7 +25,6 @@
 
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { getGithubToken } from '../settings/settings'
 import {
   extractSkillName,
   globalSkillRoots,
@@ -102,13 +102,11 @@ export function parseGithubRepo(input: string): GithubRepo | { error: string } {
   return { owner, repo }
 }
 
-/** Shared fetch guard: whitelist + timeout + auth header + friendly errors. */
+/** Shared fetch guard: whitelist + timeout + friendly errors (unauthenticated). */
 async function ghFetch(url: string): Promise<Response> {
   const host = new URL(url).host
   if (!ALLOWED_HOSTS.has(host)) throw new Error(`Refusing non-whitelisted host: ${host}`)
   const headers: Record<string, string> = { 'User-Agent': 'AnyBuff' }
-  const token = getGithubToken()
-  if (token) headers.Authorization = `Bearer ${token}`
   try {
     return await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
   } catch (err) {
@@ -122,13 +120,13 @@ async function ghFetch(url: string): Promise<Response> {
 function ghApiError(res: Response, context: string): Error {
   if (res.status === 404) {
     return new Error(
-      `Repository not found on GitHub — "${context}" (or it is private; set a GitHub token to access private repositories).`,
+      `Repository not found on GitHub — "${context}" (it may be private; only public repositories are supported).`,
     )
   }
   if (res.status === 403 || res.status === 429) {
     if (res.headers.get('x-ratelimit-remaining') === '0') {
       return new Error(
-        'GitHub API rate limit exceeded — unauthenticated requests allow 60 per hour. Set a GitHub token in this section to raise the limit to 5,000 per hour.',
+        'GitHub API rate limit exceeded — unauthenticated requests allow 60 per hour. The limit resets within an hour; try again later.',
       )
     }
     return new Error(`GitHub denied the request (${res.status}). Try again later, or set a GitHub token.`)

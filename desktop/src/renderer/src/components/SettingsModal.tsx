@@ -678,11 +678,6 @@ export default function SettingsModal({
   /** Repo string the candidate list came from — downloads always pair with it,
    *  so editing the input after a scan can't mismatch paths and repo. */
   const [githubScannedRepo, setGithubScannedRepo] = useState('')
-  // GitHub token (P2) — only the typed draft and a boolean flag live here;
-  // the persisted value never leaves the host vault (ADR-11/12).
-  const [githubTokenDraft, setGithubTokenDraft] = useState('')
-  const [githubTokenSet, setGithubTokenSet] = useState(false)
-  const [deleteGithubToken, setDeleteGithubToken] = useState(false)
   // MCP Tools settings tab
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([])
   const [loadingMcp, setLoadingMcp] = useState(false)
@@ -821,7 +816,6 @@ export default function SettingsModal({
           webSearchHasKey?: Record<string, boolean>
           globalSkillsEnabled?: boolean
           globalSkillsEditable?: boolean
-          githubTokenSet?: boolean
         }
         agentIds?: string[]
       }
@@ -844,7 +838,6 @@ export default function SettingsModal({
       setWebSearchHasKey(s?.webSearchHasKey ?? {})
       setGlobalSkillsEnabled(s?.globalSkillsEnabled ?? true)
       setGlobalSkillsEditable(s?.globalSkillsEditable ?? false)
-      setGithubTokenSet(s?.githubTokenSet ?? false)
       setAllAgentIds(state.agentIds ?? [])
       setCwd((state as { cwd?: string }).cwd ?? '')
       if ((state as { cwd?: string }).cwd) {
@@ -954,26 +947,6 @@ export default function SettingsModal({
           keyErrors.push(`Could not remove the ${provider} key from the device keychain.`)
         }
       }
-      // GitHub token (skills P2) — same keychain convention, id `github-token`.
-      // Native leg runs DELETE BEFORE SAVE, mirroring the host's ordering in
-      // handlers-app (delete→save): a re-type within the Remove→save debounce
-      // window used to save T2 and then delete it out of the Keystore, while
-      // the host overlay kept T2 — silent token loss on the next reboot
-      // (skills review #1).
-      const trimmedGithubToken = githubTokenDraft.trim()
-      let channelGithubToken: string | undefined
-      if (deleteGithubToken && nativeDeleteKey && !(await nativeDeleteKey('github-token'))) {
-        keyErrors.push('Could not remove the GitHub token from the device keychain.')
-      }
-      if (trimmedGithubToken) {
-        if (nativeSaveKey) {
-          const ok = await nativeSaveKey('github-token', trimmedGithubToken)
-          if (!ok) keyErrors.push('Could not store the GitHub token in the device keychain.')
-          else channelGithubToken = trimmedGithubToken
-        } else {
-          channelGithubToken = trimmedGithubToken
-        }
-      }
 
       const result = (await window.AnyBuff.saveSettings({
         providers: normalizedProviders.map((p) => ({
@@ -1000,12 +973,7 @@ export default function SettingsModal({
         // resets to the default (MC-0 save-payload race lesson).
         globalSkillsEnabled,
         searchApiKeys: channelSearchKeys,
-        deleteSearchKeys,
-        // GitHub token (skills P2): sent only when a new value was typed this
-        // session; the delete flag clears the vault (host orders delete→save,
-        // so a re-type after a removal still lands).
-        ...(channelGithubToken ? { githubToken: channelGithubToken } : {}),
-        ...(deleteGithubToken ? { deleteGithubToken: true } : {})
+        deleteSearchKeys
       })) as {
         ok?: boolean
         keyErrors?: string[]
@@ -1014,7 +982,6 @@ export default function SettingsModal({
           hasProvider?: boolean
           providerHasKey?: Record<string, boolean>
           webSearchHasKey?: Record<string, boolean>
-          githubTokenSet?: boolean
         }
         error?: string
       }
@@ -1035,24 +1002,13 @@ export default function SettingsModal({
       // deletes alike (drives the "Key Set" badges and placeholders).
       if (result.settings?.providerHasKey) setProviderHasKey(result.settings.providerHasKey)
       if (result.settings?.webSearchHasKey) setWebSearchHasKey(result.settings.webSearchHasKey)
-      if (result.settings?.githubTokenSet !== undefined) setGithubTokenSet(result.settings.githubTokenSet)
-      // Retire the one-shot delete flag once the host confirms the vault is
-      // empty OR when a fresh token was sent in this same save (the host
-      // orders delete→save, so a Remove→retype within the debounce window
-      // landed; keeping the flag would wedge it "on" forever and every later
-      // save would re-delete the Keystore copy — skills review #1). The typed
-      // draft is kept until the user hits Remove, matching how search-API-key
-      // drafts behave in this same effect.
-      if (deleteGithubToken && (result.settings?.githubTokenSet === false || channelGithubToken)) {
-        setDeleteGithubToken(false)
-      }
       onSaved?.({ hasProvider: Boolean(result.settings?.hasProvider) })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error('Settings auto-save failed:', err)
       setError(`Save failed: ${message}`)
     }
-  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, webSearchProvider, globalSkillsEnabled, searchApiKeys, deleteSearchKeys, githubTokenDraft, deleteGithubToken, onSaved])
+  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, webSearchProvider, globalSkillsEnabled, searchApiKeys, deleteSearchKeys, onSaved])
 
   const isInitialMount = useRef(true)
   useEffect(() => {
@@ -3661,40 +3617,6 @@ export default function SettingsModal({
                     ))}
                   </div>
                 )}
-
-                <div className="settings-field-group" style={{ marginTop: '14px' }}>
-                  <label className="settings-field-label">GitHub token (optional)</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      type="password"
-                      value={githubTokenDraft}
-                      onChange={(e) => setGithubTokenDraft(e.target.value)}
-                      placeholder={githubTokenSet ? '••••••••••  (saved)' : 'ghp_…'}
-                      spellCheck={false}
-                      style={{ flex: 1 }}
-                    />
-                    {githubTokenSet && (
-                      <button
-                        type="button"
-                        className="btn ghost small"
-                        onClick={() => {
-                          setGithubTokenDraft('')
-                          setDeleteGithubToken(true)
-                        }}
-                        disabled={deleteGithubToken}
-                        title="Remove the stored GitHub token"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <p className="hint">
-                    Unauthenticated GitHub requests allow 60 per hour; a personal access token
-                    (no scopes needed for public repositories) raises that to 5,000. Stored in your
-                    OS keychain and only ever sent to GitHub&apos;s own endpoints
-                    (api.github.com and raw.githubusercontent.com).
-                  </p>
-                </div>
               </div>
             </div>
           )}

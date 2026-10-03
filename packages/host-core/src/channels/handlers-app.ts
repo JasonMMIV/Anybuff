@@ -15,7 +15,6 @@ import {
   updateAgentRouting,
   updateRunGuardrails,
   saveSearchApiKey,
-  saveGithubToken,
   setWebSearchProvider,
   setGlobalSkillsEnabled,
   type ProviderConfig,
@@ -44,10 +43,6 @@ export interface SaveSettingsPayload {
   globalSkillsEnabled?: boolean
   searchApiKeys?: Partial<Record<WebSearchProviderId, string>>
   deleteSearchKeys?: WebSearchProviderId[]
-  /** Skills tab GitHub download: token typed this save (trimmed non-empty). */
-  githubToken?: string
-  /** Skills tab GitHub download: remove the stored token. */
-  deleteGithubToken?: boolean
   /** #17 per-run step cap (0 = SDK default) + cost mode flag. */
   maxAgentSteps?: number
   costMode?: RunCostMode
@@ -124,22 +119,6 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
       saveSearchApiKey(provider, '')
     } catch (error) {
       keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  // GitHub token (skills P1/P2): delete BEFORE save so re-typing right after
-  // a removal lands — the renderer's delete flag is sticky within a session.
-  if (payload.deleteGithubToken) {
-    try {
-      saveGithubToken('')
-    } catch (error) {
-      keyErrors.push(`github-token: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  if (typeof payload.githubToken === 'string' && payload.githubToken.trim()) {
-    try {
-      saveGithubToken(payload.githubToken.trim())
-    } catch (error) {
-      keyErrors.push(`github-token: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   return {

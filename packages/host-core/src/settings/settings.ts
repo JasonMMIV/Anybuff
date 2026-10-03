@@ -117,8 +117,6 @@ export interface AppSettings {
   webSearchProvider: WebSearchProviderId
   /** Whether a Tinyfish/Firecrawl search key is stored (DPAPI). */
   webSearchHasKey: Record<WebSearchProviderId, boolean>
-  /** Whether a GitHub token is stored (DPAPI) — Skills tab GitHub download. */
-  githubTokenSet: boolean
   /** Skills page: scan the home dir's global skills folders (~/.agents/skills,
    * ~/.claude/skills) when starting a run — drives SDK includeHomeSkills
    * (default ON; see the skills plan D2). */
@@ -557,8 +555,7 @@ export function getAppSettings(): AppSettings {
       duckduckgo: false,
       firecrawl: getSearchApiKey('firecrawl') !== undefined,
       tinyfish: getSearchApiKey('tinyfish') !== undefined
-    },
-    githubTokenSet: getGithubToken() !== undefined
+    }
   }
 }
 
@@ -616,58 +613,6 @@ export function getSearchApiKey(provider: WebSearchProviderId): string | undefin
   if (!enc) return undefined
   if (enc.startsWith('plain:')) {
     console.warn(`[anybuff] stored search key for '${provider}' is legacy plaintext; re-entry required`)
-    return undefined
-  }
-  try {
-    return hostSecrets().decryptString(Buffer.from(enc, 'base64'))
-  } catch {
-    return undefined
-  }
-}
-
-/** Vault id for the optional GitHub token (ADR-11 channel, mirrors searchApiKey). */
-const GITHUB_TOKEN_ID = 'github-token'
-
-/**
- * Save the GitHub token used by the Skills tab's GitHub download (raises the
- * api.github.com limit from 60/hr unauthenticated to 5,000/hr). Empty string
- * deletes it. Same DPAPI-mandatory policy as every other secret (ADR-11),
- * same Android keyPersistence seam as search keys (ADR-17).
- */
-export function saveGithubToken(token: string): void {
-  const id = GITHUB_TOKEN_ID
-  const persistence = hostKeyPersistence()
-  if (persistence) {
-    if (token) persistence.save(id, token)
-    else persistence.remove(id)
-    const overlays = hostKeyOverrides()
-    if (token) overlays[id] = token
-    else delete overlays[id]
-    return
-  }
-  const s = loadSettings()
-  s.encryptedKeys = s.encryptedKeys ?? {}
-  if (!token) {
-    delete s.encryptedKeys[id]
-  } else if (hostSecrets().isEncryptionAvailable()) {
-    s.encryptedKeys[id] = hostSecrets().encryptString(token).toString('base64')
-  } else {
-    throw new Error(
-      'OS credential encryption (DPAPI) is unavailable, so the GitHub token cannot be stored safely. Downloads work without a token at 60 requests per hour.'
-    )
-  }
-  saveSettings(s)
-}
-
-/** Decrypt the stored GitHub token (undefined when absent). Never logged. */
-export function getGithubToken(): string | undefined {
-  const overlay = hostKeyOverrides()[GITHUB_TOKEN_ID]
-  if (overlay !== undefined) return overlay
-  const s = loadSettings()
-  const enc = s.encryptedKeys?.[GITHUB_TOKEN_ID]
-  if (!enc) return undefined
-  if (enc.startsWith('plain:')) {
-    console.warn('[anybuff] stored GitHub token is legacy plaintext; re-entry required')
     return undefined
   }
   try {
