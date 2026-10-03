@@ -2251,17 +2251,14 @@ textarea {
   color: var(--text-0);
 }
 
-/* Still working: the accent tint is the only extra cue — the wording alone
-   (`Working` vs `Worked`) carries the state, so a finished group stays neutral. */
-.process-group.live .process-label,
-.process-group.live .process-triangle {
-  color: var(--accent);
-}
-
-/* The dots paint with `background`, not `color` — mirror the live tint onto
-   them so the header reads as one unit. */
+/* Working state is carried by the wording (`Working` vs `Worked`) and the
+   three-dot bounce — not by colour. An accent-tinted header read like an alert
+   and pulled the eye away from the prose, so the label and its dots stay in the
+   primary text colour. --text-0 is #090d16 (black) on light themes; on dark
+   themes it is white, because literal black on a near-black panel is unreadable
+   — "black" here means "primary text", not "always #000". */
 .process-group.live .thinking-dots span {
-  background: var(--accent);
+  background: var(--text-0);
 }
 
 /* The `Working` trailing ellipsis is the same CSS three-dot bounce as the stream
