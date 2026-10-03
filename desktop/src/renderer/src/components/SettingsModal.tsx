@@ -3,12 +3,14 @@ import type { ColorTheme, ThemeMode } from '../App'
 import type { AnyBuffNativeBridge } from '../host/host-ws'
 import {
   ActivityIcon,
+  AlertCircleIcon,
   AppIcon,
   BoltIcon,
   CheckCircleIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   EditIcon,
+  FolderOpenIcon,
   GaugeIcon,
   GitHubIcon,
   InfoIcon,
@@ -16,6 +18,7 @@ import {
   LayersIcon,
   MonitorIcon,
   MoonIcon,
+  NotePenIcon,
   PaletteIcon,
   PlugIcon,
   PlusIcon,
@@ -35,7 +38,7 @@ import ModelCapabilitiesPanel from './ModelCapabilitiesPanel'
 import { previewNotificationSound } from '../utils/notification-sounds'
 
 type ProviderType = 'openai-compatible' | 'anthropic-compatible'
-type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'mcp' | 'capabilities' | 'about' | 'engine'
+type SettingsTab = 'providers' | 'general' | 'theme' | 'routing' | 'agents' | 'search' | 'skills' | 'mcp' | 'capabilities' | 'about' | 'engine'
 
 type WebSearchProviderId = 'duckduckgo' | 'firecrawl' | 'tinyfish'
 
@@ -45,6 +48,91 @@ interface WebSearchProviderMeta {
   description: string
   requiresKey: boolean
   keyHint: string
+}
+
+/* ─── Skills tab types (skills plan D5) ────────────────── */
+
+interface GlobalSkillView {
+  name: string
+  description: string
+  path: string
+  root: '.agents' | '.claude'
+  /** frontmatter metadata.source stamp (P2 provenance badge). */
+  provenance?: string
+}
+
+/** Candidate folder from a GitHub repo scan (skills plan P1). */
+interface GithubSkillCandidate {
+  name: string
+  path: string
+  fileCount: number
+}
+
+/** Pending "skill already exists — overwrite?" request (create/import/github paths). */
+interface SkillOverwriteRequest {
+  /** Which install path is waiting for confirmation. */
+  kind: 'create' | 'import' | 'github'
+  createPayload?: { name: string; description: string; body: string }
+  /** Import source paths that hit an existing skill. */
+  importPaths?: string[]
+  /** Pending GitHub download that hit an existing skill. */
+  githubPayload?: { repo: string; path: string }
+  label: string
+}
+
+const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+
+const DEFAULT_SKILL_BODY = `## When to use this skill
+
+## Instructions
+
+## Notes
+`
+
+/**
+ * Decode one frontmatter line's scalar value for the edit form.
+ * Double-quoted YAML text is JSON-compatible; single-quoted doubles the
+ * quote ('' → ') and never escapes; plain scalars stop at a ` #` comment.
+ * Keeps `Say "hi"` from growing backslashes on every save round-trip.
+ */
+const decodeYamlScalar = (raw: string): string => {
+  const line = raw.trim()
+  if (line.startsWith('"')) {
+    const m = line.match(/^"(?:[^"\\]|\\.)*"/)
+    if (m) {
+      try {
+        const parsed: unknown = JSON.parse(m[0])
+        if (typeof parsed === 'string') return parsed
+      } catch {
+        // not JSON-compatible escapes — fall back to the raw quoted text
+      }
+      return m[0].slice(1, -1)
+    }
+    return line.slice(1)
+  }
+  if (line.startsWith("'")) {
+    const m = line.match(/^'(?:[^']|'')*'/)
+    return m ? m[0].slice(1, -1).replace(/''/g, "'") : line.slice(1)
+  }
+  if (line.startsWith('#')) return '' // `description: # note` — value is empty
+  return line.replace(/\s+#.*$/, '').trim() // plain scalar: ` #` starts a comment
+}
+
+/** True for a YAML block-scalar header (`>`, `|-`, `|2+`, `>-2`, …). */
+const isYamlBlockHeader = (value: string): boolean => /^[|>][0-9+-]*[ \t]*(#.*)?$/.test(value.trim())
+
+/**
+ * The lines after `descIdx` that belong to the description's VALUE — a block
+ * scalar (`>`/`|`) or a folded multi-line plain scalar — i.e. everything
+ * blank or indented until the next top-level key. Returns [start, end),
+ * end exclusive. The edit save must replace this whole range: leaving the
+ * continuation lines behind makes YAML fold the OLD description text onto the
+ * end of the new one (or fail to parse) — skills review finding 2.
+ */
+const descValueLineRange = (fmLines: string[], descIdx: number): [number, number] => {
+  let end = descIdx + 1
+  while (end < fmLines.length && (fmLines[end].trim() === '' || /^[ \t]/.test(fmLines[end]))) end++
+  return [descIdx + 1, end]
 }
 
 /* ─── MCP Tools tab types ──────────────────────────────── */
@@ -546,6 +634,55 @@ export default function SettingsModal({
   const [webSearchHasKey, setWebSearchHasKey] = useState<Record<string, boolean>>({})
   const [searchApiKeys, setSearchApiKeys] = useState<Record<string, string>>({})
   const [deleteSearchKeys, setDeleteSearchKeys] = useState<WebSearchProviderId[]>([])
+  // Skills settings tab (skills plan D5)
+  /** Home-dir global-skills scan toggle (default ON — D2). Echoed in saveState. */
+  const [globalSkillsEnabled, setGlobalSkillsEnabled] = useState(true)
+  /** DERIVED host scope (D6): false on Desktop (shared dir → read-only list,
+   *  "Show in file explorer" only), true on Android (managed dir → Edit/Delete). */
+  const [globalSkillsEditable, setGlobalSkillsEditable] = useState(false)
+  const [globalSkills, setGlobalSkills] = useState<GlobalSkillView[]>([])
+  const [loadingSkills, setLoadingSkills] = useState(false)
+  /** Non-null when the last list load FAILED — shown instead of the "no
+   *  skills" empty state (a transport error is not an empty folder). */
+  const [skillsError, setSkillsError] = useState<string | null>(null)
+  const [skillNotice, setSkillNotice] = useState<{ text: string; ok: boolean } | null>(null)
+  // New-skill form
+  const [showSkillForm, setShowSkillForm] = useState(false)
+  const [skillDraft, setSkillDraft] = useState({ name: '', description: '', body: DEFAULT_SKILL_BODY })
+  const [skillFormError, setSkillFormError] = useState<string | null>(null)
+  const [skillSaving, setSkillSaving] = useState(false)
+  // Exists-confirm flow (installSkill returns { exists: true })
+  const [skillOverwrite, setSkillOverwrite] = useState<SkillOverwriteRequest | null>(null)
+  const [skillOverwriteBusy, setSkillOverwriteBusy] = useState(false)
+  // Edit modal (managed scope only)
+  const [editingSkill, setEditingSkill] = useState<GlobalSkillView | null>(null)
+  const [editDescription, setEditDescription] = useState('')
+  const [editBody, setEditBody] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  // Delete confirm (managed scope only)
+  const [deletingSkill, setDeletingSkill] = useState<GlobalSkillView | null>(null)
+  const [skillDeleting, setSkillDeleting] = useState(false)
+  const [importingSkills, setImportingSkills] = useState(false)
+  // GitHub download (skills plan P1)
+  const [githubRepoInput, setGithubRepoInput] = useState('')
+  const [githubSkills, setGithubSkills] = useState<GithubSkillCandidate[]>([])
+  /** A scan has completed at least once (distinguishes "no candidates" from "not scanned"). */
+  const [githubScanned, setGithubScanned] = useState(false)
+  const [githubScanLoading, setGithubScanLoading] = useState(false)
+  const [githubScanError, setGithubScanError] = useState<string | null>(null)
+  /** Quota/truncation warnings from the last scan or download (P1 D3). */
+  const [githubWarning, setGithubWarning] = useState<string | null>(null)
+  /** Folder path currently downloading (disables the other Download buttons). */
+  const [githubDownloading, setGithubDownloading] = useState<string | null>(null)
+  /** Repo string the candidate list came from — downloads always pair with it,
+   *  so editing the input after a scan can't mismatch paths and repo. */
+  const [githubScannedRepo, setGithubScannedRepo] = useState('')
+  // GitHub token (P2) — only the typed draft and a boolean flag live here;
+  // the persisted value never leaves the host vault (ADR-11/12).
+  const [githubTokenDraft, setGithubTokenDraft] = useState('')
+  const [githubTokenSet, setGithubTokenSet] = useState(false)
+  const [deleteGithubToken, setDeleteGithubToken] = useState(false)
   // MCP Tools settings tab
   const [mcpServers, setMcpServers] = useState<McpServerView[]>([])
   const [loadingMcp, setLoadingMcp] = useState(false)
@@ -682,6 +819,9 @@ export default function SettingsModal({
           agentRouting?: Record<string, { model: string; reasoningEffort?: string; reasoningLadders?: Record<string, string[]> }>
           webSearchProvider?: WebSearchProviderId
           webSearchHasKey?: Record<string, boolean>
+          globalSkillsEnabled?: boolean
+          globalSkillsEditable?: boolean
+          githubTokenSet?: boolean
         }
         agentIds?: string[]
       }
@@ -702,6 +842,9 @@ export default function SettingsModal({
       )
       setWebSearchProvider(s?.webSearchProvider ?? 'duckduckgo')
       setWebSearchHasKey(s?.webSearchHasKey ?? {})
+      setGlobalSkillsEnabled(s?.globalSkillsEnabled ?? true)
+      setGlobalSkillsEditable(s?.globalSkillsEditable ?? false)
+      setGithubTokenSet(s?.githubTokenSet ?? false)
       setAllAgentIds(state.agentIds ?? [])
       setCwd((state as { cwd?: string }).cwd ?? '')
       if ((state as { cwd?: string }).cwd) {
@@ -811,6 +954,26 @@ export default function SettingsModal({
           keyErrors.push(`Could not remove the ${provider} key from the device keychain.`)
         }
       }
+      // GitHub token (skills P2) — same keychain convention, id `github-token`.
+      // Native leg runs DELETE BEFORE SAVE, mirroring the host's ordering in
+      // handlers-app (delete→save): a re-type within the Remove→save debounce
+      // window used to save T2 and then delete it out of the Keystore, while
+      // the host overlay kept T2 — silent token loss on the next reboot
+      // (skills review #1).
+      const trimmedGithubToken = githubTokenDraft.trim()
+      let channelGithubToken: string | undefined
+      if (deleteGithubToken && nativeDeleteKey && !(await nativeDeleteKey('github-token'))) {
+        keyErrors.push('Could not remove the GitHub token from the device keychain.')
+      }
+      if (trimmedGithubToken) {
+        if (nativeSaveKey) {
+          const ok = await nativeSaveKey('github-token', trimmedGithubToken)
+          if (!ok) keyErrors.push('Could not store the GitHub token in the device keychain.')
+          else channelGithubToken = trimmedGithubToken
+        } else {
+          channelGithubToken = trimmedGithubToken
+        }
+      }
 
       const result = (await window.AnyBuff.saveSettings({
         providers: normalizedProviders.map((p) => ({
@@ -833,13 +996,26 @@ export default function SettingsModal({
         deleteKeys,
         agentRouting: Object.fromEntries(Object.entries(agentRouting).filter(([, r]) => r.model.trim())),
         webSearchProvider,
+        // Skills plan R3: must be echoed on EVERY save or the toggle silently
+        // resets to the default (MC-0 save-payload race lesson).
+        globalSkillsEnabled,
         searchApiKeys: channelSearchKeys,
-        deleteSearchKeys
+        deleteSearchKeys,
+        // GitHub token (skills P2): sent only when a new value was typed this
+        // session; the delete flag clears the vault (host orders delete→save,
+        // so a re-type after a removal still lands).
+        ...(channelGithubToken ? { githubToken: channelGithubToken } : {}),
+        ...(deleteGithubToken ? { deleteGithubToken: true } : {})
       })) as {
         ok?: boolean
         keyErrors?: string[]
         configHealth?: { dropped?: string[]; rejection?: string }
-        settings?: { hasProvider?: boolean; providerHasKey?: Record<string, boolean>; webSearchHasKey?: Record<string, boolean> }
+        settings?: {
+          hasProvider?: boolean
+          providerHasKey?: Record<string, boolean>
+          webSearchHasKey?: Record<string, boolean>
+          githubTokenSet?: boolean
+        }
         error?: string
       }
 
@@ -859,13 +1035,24 @@ export default function SettingsModal({
       // deletes alike (drives the "Key Set" badges and placeholders).
       if (result.settings?.providerHasKey) setProviderHasKey(result.settings.providerHasKey)
       if (result.settings?.webSearchHasKey) setWebSearchHasKey(result.settings.webSearchHasKey)
+      if (result.settings?.githubTokenSet !== undefined) setGithubTokenSet(result.settings.githubTokenSet)
+      // Retire the one-shot delete flag once the host confirms the vault is
+      // empty OR when a fresh token was sent in this same save (the host
+      // orders delete→save, so a Remove→retype within the debounce window
+      // landed; keeping the flag would wedge it "on" forever and every later
+      // save would re-delete the Keystore copy — skills review #1). The typed
+      // draft is kept until the user hits Remove, matching how search-API-key
+      // drafts behave in this same effect.
+      if (deleteGithubToken && (result.settings?.githubTokenSet === false || channelGithubToken)) {
+        setDeleteGithubToken(false)
+      }
       onSaved?.({ hasProvider: Boolean(result.settings?.hasProvider) })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error('Settings auto-save failed:', err)
       setError(`Save failed: ${message}`)
     }
-  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, webSearchProvider, searchApiKeys, deleteSearchKeys, onSaved])
+  }, [isLoaded, providers, activeModel, reasoningEffort, approvalMode, apiKeys, deleteKeys, agentRouting, webSearchProvider, globalSkillsEnabled, searchApiKeys, deleteSearchKeys, githubTokenDraft, deleteGithubToken, onSaved])
 
   const isInitialMount = useRef(true)
   useEffect(() => {
@@ -900,6 +1087,394 @@ export default function SettingsModal({
       setLocalAgentErrors((res.validationErrors ?? []).map((e) => ({ agentId: e.agentId, message: e.message })))
     } finally {
       setLoadingAgents(false)
+    }
+  }
+
+  /* ─── Skills tab handlers (skills plan D5) ─────────────────────────── */
+
+  const refreshGlobalSkills = async () => {
+    if (typeof window.AnyBuff === 'undefined') {
+      setGlobalSkills([])
+      return
+    }
+    setLoadingSkills(true)
+    setSkillsError(null)
+    try {
+      const res = (await window.AnyBuff.listGlobalSkills()) as
+        | GlobalSkillView[]
+        | { ok?: boolean; error?: string }
+      if (Array.isArray(res)) {
+        setGlobalSkills(res)
+      } else {
+        // Transport/handler failure — report it rather than claiming the
+        // folder is empty (skills review: minor finding 4).
+        setGlobalSkills([])
+        setSkillsError(
+          res && typeof res === 'object' && typeof res.error === 'string' && res.error
+            ? res.error
+            : 'Could not load global skills.',
+        )
+      }
+    } catch (err) {
+      setGlobalSkills([])
+      setSkillsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingSkills(false)
+    }
+  }
+
+  // Load the list when the tab first opens (works with no project open).
+  const skillsLoadedOnce = useRef(false)
+  useEffect(() => {
+    if (activeTab !== 'skills') return
+    if (skillsLoadedOnce.current) return
+    skillsLoadedOnce.current = true
+    void refreshGlobalSkills()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
+
+  const openSkillForm = () => {
+    setSkillDraft({ name: '', description: '', body: DEFAULT_SKILL_BODY })
+    setSkillFormError(null)
+    setShowSkillForm(true)
+  }
+
+  /** createSkill → { ok } | { exists: true } → confirm-overwrite flow. */
+  const submitNewSkill = async (confirm?: boolean) => {
+    if (typeof window.AnyBuff === 'undefined') {
+      setSkillFormError('Skill installation is unavailable in browser preview.')
+      return
+    }
+    const name = skillDraft.name.trim()
+    if (!SKILL_NAME_RE.test(name)) {
+      setSkillFormError('Use 1-64 lowercase letters, digits, and single hyphens (no leading/trailing hyphen).')
+      return
+    }
+    if (!skillDraft.description.trim()) {
+      setSkillFormError('A short description is required — the model picks skills by it.')
+      return
+    }
+    setSkillFormError(null)
+    setSkillSaving(true)
+    try {
+      const res = (await window.AnyBuff.createSkill({
+        name,
+        description: skillDraft.description,
+        body: skillDraft.body,
+        confirm
+      })) as { ok?: boolean; exists?: boolean; error?: string; path?: string }
+      if (res.ok) {
+        setShowSkillForm(false)
+        setSkillNotice({ text: `Installed "${name}" → ${res.path ?? ''}`, ok: true })
+        await refreshGlobalSkills()
+        return
+      }
+      if (res.exists && !confirm) {
+        setSkillOverwrite({
+          kind: 'create',
+          createPayload: { name, description: skillDraft.description, body: skillDraft.body },
+          label: name
+        })
+        return
+      }
+      setSkillFormError(res.error ?? 'Could not install the skill.')
+    } catch (err) {
+      setSkillFormError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSkillSaving(false)
+    }
+  }
+
+  /** Import picked markdown files — bad files report individually, never block good ones. */
+  const importSkillFiles = async (confirmPaths?: string[]) => {
+    if (typeof window.AnyBuff === 'undefined') return
+    setImportingSkills(true)
+    setSkillNotice(null)
+    try {
+      let paths = confirmPaths
+      if (!paths) {
+        const picked = (await window.AnyBuff.selectFiles()) as string[]
+        paths = Array.isArray(picked) ? picked : []
+        if (paths.length === 0) return
+      }
+      const installed: string[] = []
+      const failed: { file: string; error: string }[] = []
+      const exists: string[] = []
+      for (const sourcePath of paths) {
+        const res = (await window.AnyBuff.importSkillFile({ sourcePath, confirm: Boolean(confirmPaths) })) as {
+          ok?: boolean
+          exists?: boolean
+          name?: string
+          error?: string
+        }
+        if (res.ok && res.name) installed.push(res.name)
+        else if (res.exists && !confirmPaths) exists.push(sourcePath)
+        else failed.push({ file: sourcePath.split(/[\\/]/).pop() ?? sourcePath, error: res.error ?? 'unknown error' })
+      }
+      if (exists.length > 0) {
+        setSkillOverwrite({ kind: 'import', importPaths: exists, label: `${exists.length} existing skill(s)` })
+      }
+      if (installed.length > 0) await refreshGlobalSkills()
+      if (installed.length > 0 || failed.length > 0) {
+        const parts: string[] = []
+        if (installed.length > 0) parts.push(`Installed: ${installed.join(', ')}.`)
+        for (const f of failed) parts.push(`${f.file}: ${f.error}`)
+        setSkillNotice({ text: parts.join(' '), ok: failed.length === 0 })
+      }
+    } catch (err) {
+      setSkillNotice({ text: err instanceof Error ? err.message : String(err), ok: false })
+    } finally {
+      setImportingSkills(false)
+    }
+  }
+
+  /** Edit modal save — host re-validates frontmatter; name stays locked. */
+  const saveSkillEdit = async () => {
+    if (!editingSkill) return
+    setEditError(null)
+    setEditSaving(true)
+    try {
+      // Rebuild the document: keep the original frontmatter block, swap only
+      // the description line and the body (name is locked to the folder name).
+      const content = (await window.AnyBuff.readSkillFile(editingSkill.path)) as {
+        ok?: boolean
+        content?: string
+      }
+      if (!content.ok || typeof content.content !== 'string') {
+        setEditError('Could not read the skill file.')
+        return
+      }
+      const fm = content.content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
+      if (!fm) {
+        setEditError('The file has no frontmatter block — edit it in a text editor instead.')
+        return
+      }
+      const desc = editDescription.trim()
+      if (!desc) {
+        setEditError('A short description is required — the model picks skills by it.')
+        return
+      }
+      // Re-emit description safely: JSON string is valid YAML when the text
+      // carries colons/#; plain otherwise (mirrors host buildSkillDocument).
+      const plainSafe = /^[A-Za-z0-9][\w\s.,()'"!/?-]*$/.test(desc) && !desc.includes(': ')
+      const fmLines = fm[1].split(/\r?\n/)
+      const descIdx = fmLines.findIndex((l) => /^description:/.test(l))
+      const descLine = `description: ${plainSafe ? desc : JSON.stringify(desc)}`
+      if (descIdx >= 0) {
+        // Replace the description line AND its value continuation (block
+        // scalar `>-`/`|` or folded plain lines) in one splice: leaving the
+        // continuation lines behind makes YAML fold the OLD text onto the end
+        // of the new description — or fail to parse — on the host's re-read.
+        const [, cEnd] = descValueLineRange(fmLines, descIdx)
+        fmLines.splice(descIdx, cEnd - descIdx, descLine)
+      } else {
+        fmLines.push(descLine)
+      }
+      const rebuilt = `---\n${fmLines.join('\n')}\n---\n\n${editBody.trim()}\n`
+      const res = (await window.AnyBuff.saveSkillFile({ path: editingSkill.path, content: rebuilt })) as {
+        ok?: boolean
+        error?: string
+      }
+      if (!res.ok) {
+        setEditError(res.error ?? 'Could not save the skill.')
+        return
+      }
+      setEditingSkill(null)
+      setSkillNotice({ text: `Saved "${editingSkill.name}".`, ok: true })
+      await refreshGlobalSkills()
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  const startEditSkill = async (skill: GlobalSkillView) => {
+    setEditError(null)
+    // Clear BEFORE the read: a failed read must never leave the PREVIOUS
+    // skill's description/body in the modal — a later Save would write those
+    // stale values over THIS file (skills review: low finding 3).
+    setEditDescription('')
+    setEditBody('')
+    setEditingSkill(skill)
+    try {
+      const res = (await window.AnyBuff.readSkillFile(skill.path)) as { ok?: boolean; content?: string }
+      if (!res.ok || typeof res.content !== 'string') {
+        setEditError('Could not read the skill file.')
+        return
+      }
+      const fm = res.content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+      if (fm) {
+        const fmLines = fm[1].split(/\r?\n/)
+        const descIdx = fmLines.findIndex((l) => /^description:/.test(l))
+        if (descIdx >= 0) {
+          const rawValue = fmLines[descIdx].replace(/^description:[ \t]?/, '')
+          const [, cEnd] = descValueLineRange(fmLines, descIdx)
+          const continuation = fmLines.slice(descIdx + 1, cEnd).filter((l) => l.trim() !== '')
+          if (isYamlBlockHeader(rawValue)) {
+            // Block scalar (`>-`, `|`): show its folded text — the <input> is
+            // single-line, and the save writes it back as a plain scalar with
+            // the continuation lines removed (see saveSkillEdit).
+            setEditDescription(continuation.map((l) => l.trim()).join(' '))
+          } else if (continuation.length > 0) {
+            // Multi-line plain scalar — YAML folds the lines with spaces.
+            setEditDescription(`${decodeYamlScalar(rawValue)} ${continuation.map((l) => l.trim()).join(' ')}`.trim())
+          } else {
+            setEditDescription(decodeYamlScalar(rawValue))
+          }
+        } else {
+          setEditDescription(skill.description)
+        }
+        setEditBody(fm[2].trim())
+      } else {
+        setEditDescription(skill.description)
+        setEditBody(res.content)
+      }
+    } catch {
+      setEditError('Could not read the skill file.')
+    }
+  }
+
+  const confirmDeleteSkill = async () => {
+    if (!deletingSkill) return
+    setSkillDeleting(true)
+    try {
+      const res = (await window.AnyBuff.deleteSkill({ path: deletingSkill.path })) as {
+        ok?: boolean
+        error?: string
+      }
+      if (!res.ok) {
+        setSkillNotice({ text: res.error ?? 'Could not delete the skill.', ok: false })
+        return
+      }
+      setSkillNotice({ text: `Deleted "${deletingSkill.name}".`, ok: true })
+      setDeletingSkill(null)
+      await refreshGlobalSkills()
+    } catch (err) {
+      setSkillNotice({ text: err instanceof Error ? err.message : String(err), ok: false })
+    } finally {
+      setSkillDeleting(false)
+    }
+  }
+
+  /* ─── GitHub download handlers (skills plan P1) ───────────────────── */
+
+  /** Scan a repository for skill folders (folders holding SKILL.md). */
+  const scanGithubSkills = async () => {
+    if (typeof window.AnyBuff === 'undefined') {
+      setGithubScanError('GitHub downloads are unavailable in browser preview.')
+      return
+    }
+    const repo = githubRepoInput.trim()
+    if (!repo) {
+      setGithubScanError('Enter a repository as owner/repo (for example anthropics/skills).')
+      return
+    }
+    setGithubScanLoading(true)
+    setGithubScanError(null)
+    setGithubWarning(null)
+    setGithubSkills([])
+    setGithubScanned(false)
+    try {
+      const res = (await window.AnyBuff.listGithubSkills({ repo })) as {
+        ok?: boolean
+        skills?: GithubSkillCandidate[]
+        warning?: string
+        error?: string
+      }
+      if (!res.ok) {
+        setGithubScanError(res.error ?? 'Could not scan the repository.')
+        return
+      }
+      setGithubSkills(res.skills ?? [])
+      setGithubScannedRepo(repo)
+      setGithubScanned(true)
+      if (res.warning) setGithubWarning(res.warning)
+    } catch (err) {
+      setGithubScanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGithubScanLoading(false)
+    }
+  }
+
+  /** downloadGithubSkill → { ok } | { exists: true } → confirm-overwrite flow. */
+  const downloadGithubSkillFromRepo = async (repo: string, folderPath: string, confirm?: boolean) => {
+    if (typeof window.AnyBuff === 'undefined') {
+      setGithubScanError('GitHub downloads are unavailable in browser preview.')
+      return
+    }
+    setGithubScanError(null)
+    setGithubWarning(null)
+    setGithubDownloading(folderPath)
+    try {
+      const res = (await window.AnyBuff.downloadGithubSkill({ repo, path: folderPath, confirm })) as {
+        ok?: boolean
+        exists?: boolean
+        name?: string
+        path?: string
+        warning?: string
+        error?: string
+      }
+      if (res.ok) {
+        setGithubWarning(res.warning ?? null)
+        setSkillNotice({ text: `Installed "${res.name}" → ${res.path ?? ''}`, ok: true })
+        await refreshGlobalSkills()
+        return
+      }
+      if (res.exists && !confirm) {
+        setSkillOverwrite({
+          kind: 'github',
+          githubPayload: { repo, path: folderPath },
+          // Prefer the FRONTMATTER name the host echoes back — the folder tail
+          // / repo string can be a bare `skills/…` dir or the whole repo name
+          // and mislabels the overwrite dialog (skills review #2).
+          label: res.name ?? (folderPath ? folderPath.split('/').pop()! : repo),
+        })
+        return
+      }
+      setGithubScanError(res.error ?? 'Download failed.')
+    } catch (err) {
+      setGithubScanError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGithubDownloading(null)
+    }
+  }
+
+  /** Confirm-overwrite modal → re-run the pending install with confirm: true. */
+  const confirmSkillOverwrite = async () => {
+    if (!skillOverwrite) return
+    setSkillOverwriteBusy(true)
+    try {
+      if (skillOverwrite.kind === 'create' && skillOverwrite.createPayload) {
+        const p = skillOverwrite.createPayload
+        const res = (await window.AnyBuff.createSkill({ ...p, confirm: true })) as {
+          ok?: boolean
+          error?: string
+          path?: string
+        }
+        if (res.ok) {
+          setSkillOverwrite(null)
+          setShowSkillForm(false)
+          setSkillNotice({ text: `Installed "${p.name}" → ${res.path ?? ''}`, ok: true })
+          await refreshGlobalSkills()
+        } else {
+          setSkillFormError(res.error ?? 'Could not install the skill.')
+          setSkillOverwrite(null)
+        }
+      } else if (skillOverwrite.kind === 'import' && skillOverwrite.importPaths) {
+        const paths = skillOverwrite.importPaths
+        setSkillOverwrite(null)
+        await importSkillFiles(paths)
+      } else if (skillOverwrite.kind === 'github' && skillOverwrite.githubPayload) {
+        const p = skillOverwrite.githubPayload
+        setSkillOverwrite(null)
+        await downloadGithubSkillFromRepo(p.repo, p.path, true)
+      }
+    } catch (err) {
+      setSkillNotice({ text: err instanceof Error ? err.message : String(err), ok: false })
+      setSkillOverwrite(null)
+    } finally {
+      setSkillOverwriteBusy(false)
     }
   }
 
@@ -1626,6 +2201,11 @@ export default function SettingsModal({
         icon: <SearchIcon size={16} />
       },
       {
+        id: 'skills',
+        label: 'Skills',
+        icon: <NotePenIcon size={16} />
+      },
+      {
         id: 'mcp',
         label: 'MCP Tools',
         icon: <PlugIcon size={16} />
@@ -1784,6 +2364,7 @@ export default function SettingsModal({
               {activeTab === 'capabilities' && 'Model Capabilities'}
               {activeTab === 'agents' && 'Custom Agents'}
               {activeTab === 'search' && 'Web Search'}
+              {activeTab === 'skills' && 'Skills'}
               {activeTab === 'mcp' && 'MCP Tools'}
               {activeTab === 'about' && 'About'}
             </h2>
@@ -1804,6 +2385,8 @@ export default function SettingsModal({
                 'Manage local agents loaded from .agents/ directories in your project or home.'}
               {activeTab === 'search' &&
                 'Choose which provider the web_search tool uses. DuckDuckGo needs no key; Firecrawl works keyless; Tinyfish requires an API key.'}
+              {activeTab === 'skills' &&
+                'Install reusable instruction files the agent can load on demand. Global skills live in your home folder and work across every project.'}
               {activeTab === 'mcp' &&
                 'Connect Model Context Protocol servers and choose which agents can use their tools. Inline secrets are stored encrypted (DPAPI); $VAR references resolve at runtime.'}
             </p>
@@ -2738,6 +3321,384 @@ export default function SettingsModal({
             </div>
           )}
 
+          {/* 6b. Skills Tab (skills plan D5) */}
+          {activeTab === 'skills' && (
+            <div className="settings-tab-content">
+              {/* Global skills scan toggle (D2) */}
+              <div className="settings-section-card">
+                <div className="settings-section-head">
+                  <span>Global Skills</span>
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12
+                  }}
+                >
+                  <label className="settings-field-label" style={{ margin: 0 }}>
+                    Scan home directory skills
+                  </label>
+                  <label
+                    className="mcp-server-toggle"
+                    title={
+                      globalSkillsEnabled
+                        ? 'Home directory skills are loaded'
+                        : 'Only the current project’s skills are loaded'
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={globalSkillsEnabled}
+                      onChange={(e) => setGlobalSkillsEnabled(e.target.checked)}
+                    />
+                    <span className="mcp-toggle-track" />
+                  </label>
+                </div>
+                <p className="hint">
+                  Also scan your home directory’s global skills folder (<code>~/.agents/skills</code>,
+                  plus the Claude Code compatible <code>~/.claude/skills</code>), shared across all
+                  projects. When off, only the current project’s skills are loaded. Applies from your
+                  next message; typing <code>/skill:name</code> always works.
+                </p>
+              </div>
+
+              {/* Installed global skills list */}
+              <div className="settings-section-card" style={{ marginTop: '14px' }}>
+                <div className="settings-section-head">
+                  <span>Installed Global Skills</span>
+                  <div className="settings-section-actions">
+                    <button
+                      type="button"
+                      className="btn accent small"
+                      onClick={openSkillForm}
+                      title="Write a new SKILL.md into your global skills folder"
+                    >
+                      <PlusIcon size={12} /> New Skill
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => void importSkillFiles()}
+                      disabled={importingSkills}
+                      title="Install a SKILL.md from a local file"
+                    >
+                      <ClipboardIcon size={12} />
+                      {importingSkills ? 'Importing…' : 'Import from File'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => void refreshGlobalSkills()}
+                      disabled={loadingSkills}
+                      title="Reload the global skills list"
+                    >
+                      <RefreshIcon size={12} className={loadingSkills ? 'spin-icon' : ''} />
+                      {loadingSkills ? 'Loading…' : 'Reload'}
+                    </button>
+                  </div>
+                </div>
+                <p className="hint">
+                  {globalSkillsEditable
+                    ? 'These skills are stored in your app’s private folder and work across every project.'
+                    : 'These skills are shared with other tools on this machine (for example Claude Code), so AnyBuff keeps the list read-only — change them in your file manager. Each skill is a folder containing a SKILL.md file.'}
+                </p>
+
+                {skillNotice && (
+                  <div
+                    className={`test-msg ${skillNotice.ok ? 'success' : 'fail'}`}
+                    style={{ marginBottom: '8px' }}
+                  >
+                    {skillNotice.text}
+                  </div>
+                )}
+
+                {/* New skill form (inline) */}
+                {showSkillForm && (
+                  <div className="settings-field-group" style={{ marginBottom: '12px' }}>
+                    <div
+                      style={{
+                        border: '1px solid var(--border, rgba(128,128,128,0.35))',
+                        borderRadius: 8,
+                        padding: '12px'
+                      }}
+                    >
+                      {skillFormError && <div className="test-msg fail">{skillFormError}</div>}
+                      <div className="settings-field-group">
+                        <label className="settings-field-label">Name</label>
+                        <input
+                          value={skillDraft.name}
+                          onChange={(e) =>
+                            setSkillDraft((d) => ({ ...d, name: e.target.value.trim() }))
+                          }
+                          placeholder="e.g. pdf-forms"
+                          spellCheck={false}
+                        />
+                        <p className="hint">
+                          Lowercase letters, digits, single hyphens — becomes the folder name
+                          (<code>{skillDraft.name.trim() || 'your-skill'}/SKILL.md</code>).
+                        </p>
+                      </div>
+                      <div className="settings-field-group">
+                        <label className="settings-field-label">Description</label>
+                        <input
+                          value={skillDraft.description}
+                          onChange={(e) =>
+                            setSkillDraft((d) => ({ ...d, description: e.target.value }))
+                          }
+                          placeholder="One line: when should the agent use this skill?"
+                        />
+                      </div>
+                      <div className="settings-field-group">
+                        <label className="settings-field-label">Instructions (Markdown)</label>
+                        <textarea
+                          className="mcp-json-textarea"
+                          value={skillDraft.body}
+                          onChange={(e) => setSkillDraft((d) => ({ ...d, body: e.target.value }))}
+                          rows={8}
+                          spellCheck={false}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="btn ghost small"
+                          onClick={() => setShowSkillForm(false)}
+                          disabled={skillSaving}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn accent small"
+                          onClick={() => void submitNewSkill()}
+                          disabled={skillSaving}
+                        >
+                          {skillSaving ? 'Installing…' : 'Install Skill'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {globalSkills.length === 0 && !loadingSkills ? (
+                  <div className="settings-empty-card">
+                    <p>
+                      {skillsError
+                        ? `Could not load global skills: ${skillsError}`
+                        : globalSkillsEditable
+                          ? 'No global skills installed yet. Use New Skill or Import from File to add one.'
+                          : `No global skills found. Drop a <name>/SKILL.md folder into ~/.agents/skills, or use New Skill / Import from File.`}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="local-agent-list">
+                    {globalSkills.map((s) => (
+                      <div key={s.path} className="local-agent-card">
+                        <div className="local-agent-card-header">
+                          <div className="local-agent-title-box">
+                            <div className="local-agent-icon-mark">
+                              <NotePenIcon size={16} />
+                            </div>
+                            <div>
+                              <div className="local-agent-name-row">
+                                <strong className="local-agent-name">{s.name}</strong>
+                                <span className="local-agent-scope-badge global">{s.root}</span>
+                                {/* Provenance badge — ONLY for values this app
+                                    writes (manual/file/github). Foreign SKILL.md
+                                    `metadata.source` values (upstream URLs, repo
+                                    names, arbitrary strings) must not be claimed
+                                    as "created in AnyBuff" (skills review #7). */}
+                                {s.provenance === 'github' || s.provenance === 'file' || s.provenance === 'manual' ? (
+                                  <span
+                                    className="local-agent-scope-badge global"
+                                    title={
+                                      s.provenance === 'github'
+                                        ? 'Installed from GitHub'
+                                        : s.provenance === 'file'
+                                          ? 'Imported from a file'
+                                          : 'Created in AnyBuff'
+                                    }
+                                  >
+                                    {s.provenance === 'github'
+                                      ? 'github'
+                                      : s.provenance === 'file'
+                                        ? 'imported'
+                                        : 'created'}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {s.description && <p className="local-agent-desc">{s.description}</p>}
+                            </div>
+                          </div>
+                          <div className="local-agent-card-actions">
+                            {globalSkillsEditable ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn ghost small"
+                                  onClick={() => void startEditSkill(s)}
+                                  title="Edit this skill"
+                                >
+                                  <EditIcon size={12} />
+                                  <span>Edit</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn ghost danger-hover small"
+                                  onClick={() => setDeletingSkill(s)}
+                                  title="Delete this skill"
+                                >
+                                  <TrashIcon size={12} />
+                                  <span>Delete</span>
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn ghost small"
+                                onClick={() => {
+                                  // Browser preview has no bridge — no-op.
+                                  if (typeof window.AnyBuff === 'undefined') return
+                                  void window.AnyBuff.revealFile(s.path)
+                                }}
+                                title="Reveal SKILL.md in your file manager"
+                              >
+                                <FolderOpenIcon size={12} />
+                                <span>Show in File Explorer</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="local-agent-card-footer">
+                          <span className="local-agent-path-label">File:</span>
+                          <code className="local-agent-filepath">{s.path}</code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* From GitHub (skills plan P1/P2) — repo scan, whole-folder
+                  install, and the optional rate-limit token field. */}
+              <div className="settings-section-card" style={{ marginTop: '14px' }}>
+                <div className="settings-section-head">
+                  <span>From GitHub</span>
+                </div>
+                <p className="hint">
+                  Install a whole skill folder — SKILL.md plus its references and assets — from a
+                  public repository. Up to 30 files, 200KB per file, 2MB total per skill.
+                </p>
+
+                <div className="settings-field-group">
+                  <label className="settings-field-label">Repository</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      value={githubRepoInput}
+                      onChange={(e) => setGithubRepoInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !githubScanLoading) void scanGithubSkills()
+                      }}
+                      placeholder="owner/repo or github.com/owner/repo"
+                      spellCheck={false}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="btn accent small"
+                      onClick={() => void scanGithubSkills()}
+                      disabled={githubScanLoading}
+                    >
+                      {githubScanLoading ? 'Scanning…' : 'Scan'}
+                    </button>
+                  </div>
+                </div>
+
+                {githubScanError && <div className="test-msg fail">{githubScanError}</div>}
+                {githubWarning && <div className="test-msg warn">{githubWarning}</div>}
+
+                {githubScanned && !githubScanError && githubSkills.length === 0 && !githubWarning && (
+                  <div className="settings-empty-card">
+                    <p>No skill folders found (folders containing a SKILL.md file).</p>
+                  </div>
+                )}
+
+                {githubSkills.length > 0 && (
+                  <div className="local-agent-list">
+                    {githubSkills.map((s) => (
+                      <div key={s.path || '(repo-root)'} className="local-agent-card">
+                        <div className="local-agent-card-header">
+                          <div className="local-agent-title-box">
+                            <div className="local-agent-icon-mark">
+                              <NotePenIcon size={16} />
+                            </div>
+                            <div>
+                              <div className="local-agent-name-row">
+                                <strong className="local-agent-name">{s.name}</strong>
+                                <span className="local-agent-scope-badge global">github</span>
+                              </div>
+                              <p className="local-agent-desc">
+                                {s.path || 'repository root'} · {s.fileCount} file
+                                {s.fileCount === 1 ? '' : 's'}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="local-agent-card-actions">
+                            <button
+                              type="button"
+                              className="btn accent small"
+                              onClick={() => void downloadGithubSkillFromRepo(githubScannedRepo, s.path)}
+                              disabled={githubDownloading !== null}
+                              title="Download and install this skill folder"
+                            >
+                              {githubDownloading === s.path ? 'Downloading…' : 'Download'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="settings-field-group" style={{ marginTop: '14px' }}>
+                  <label className="settings-field-label">GitHub token (optional)</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      type="password"
+                      value={githubTokenDraft}
+                      onChange={(e) => setGithubTokenDraft(e.target.value)}
+                      placeholder={githubTokenSet ? '••••••••••  (saved)' : 'ghp_…'}
+                      spellCheck={false}
+                      style={{ flex: 1 }}
+                    />
+                    {githubTokenSet && (
+                      <button
+                        type="button"
+                        className="btn ghost small"
+                        onClick={() => {
+                          setGithubTokenDraft('')
+                          setDeleteGithubToken(true)
+                        }}
+                        disabled={deleteGithubToken}
+                        title="Remove the stored GitHub token"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <p className="hint">
+                    Unauthenticated GitHub requests allow 60 per hour; a personal access token
+                    (no scopes needed for public repositories) raises that to 5,000. Stored in your
+                    OS keychain and only ever sent to GitHub&apos;s own endpoints
+                    (api.github.com and raw.githubusercontent.com).
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 7. MCP Tools Tab */}
           {activeTab === 'mcp' && (
             <div className="settings-tab-content">
@@ -3535,6 +4496,193 @@ export default function SettingsModal({
                 disabled={mcpDeleteInProgress}
               >
                 {mcpDeleteInProgress ? 'Deleting…' : 'Delete Server'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Skill Modal (managed scope — Android; skills plan D6) */}
+      {editingSkill && (
+        <div
+          className="modal-backdrop mcp-modal-backdrop"
+          onClick={() => !editSaving && setEditingSkill(null)}
+        >
+          <div className="modal mcp-form-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mcp-form-header">
+              <div className="mcp-form-title">
+                <NotePenIcon size={17} />
+                <span>Edit Skill</span>
+                <span className="route-agent">{editingSkill.name}</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setEditingSkill(null)}
+                disabled={editSaving}
+                title="Close"
+              >
+                <XIcon size={15} />
+              </button>
+            </div>
+            <div className="mcp-form-body">
+              {editError && <div className="test-msg fail">{editError}</div>}
+              <div className="settings-field-group">
+                <label className="settings-field-label">Name</label>
+                <input value={editingSkill.name} disabled spellCheck={false} />
+                <p className="hint">
+                  The name is the folder name and cannot change here — deleting and reinstalling is
+                  how you rename a skill.
+                </p>
+              </div>
+              <div className="settings-field-group">
+                <label className="settings-field-label">Description</label>
+                <input
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  placeholder="One line: when should the agent use this skill?"
+                />
+              </div>
+              <div className="settings-field-group">
+                <label className="settings-field-label">Instructions (Markdown)</label>
+                <textarea
+                  className="mcp-json-textarea"
+                  value={editBody}
+                  onChange={(e) => setEditBody(e.target.value)}
+                  rows={12}
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+            <div className="mcp-form-footer">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setEditingSkill(null)}
+                disabled={editSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn accent"
+                onClick={() => void saveSkillEdit()}
+                disabled={editSaving}
+              >
+                {editSaving ? 'Saving…' : 'Save Skill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Skill Confirmation Modal (managed scope — Android) */}
+      {deletingSkill && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !skillDeleting && setDeletingSkill(null)}
+        >
+          <div className="modal agent-delete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="agent-delete-header">
+              <div className="agent-delete-title">
+                <TrashIcon size={18} />
+                <span>Delete Skill</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setDeletingSkill(null)}
+                disabled={skillDeleting}
+                title="Cancel"
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="agent-delete-body">
+              <p>
+                Delete <strong>{deletingSkill.name}</strong> and all of its files? Conversations
+                will no longer be able to load this skill.
+              </p>
+              <p className="hint">
+                <code>{deletingSkill.path}</code>
+              </p>
+            </div>
+            <div className="agent-delete-footer">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setDeletingSkill(null)}
+                disabled={skillDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={() => void confirmDeleteSkill()}
+                disabled={skillDeleting}
+              >
+                {skillDeleting ? 'Deleting…' : 'Delete Skill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Already Exists — Overwrite Confirmation (create/import paths) */}
+      {skillOverwrite && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !skillOverwriteBusy && setSkillOverwrite(null)}
+        >
+          <div className="modal agent-delete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="agent-delete-header">
+              <div className="agent-delete-title">
+                <AlertCircleIcon size={18} />
+                <span>Skill Already Exists</span>
+              </div>
+              <button
+                type="button"
+                className="mini-btn"
+                onClick={() => setSkillOverwrite(null)}
+                disabled={skillOverwriteBusy}
+                title="Cancel"
+              >
+                <XIcon size={14} />
+              </button>
+            </div>
+            <div className="agent-delete-body">
+              <p>
+                {skillOverwrite.kind === 'import'
+                  ? `${skillOverwrite.label} already exist in your global skills folder.`
+                  : (
+                    <>
+                      A skill named <strong>{skillOverwrite.label}</strong> already exists.
+                    </>
+                  )}
+              </p>
+              <p className="hint">
+                {skillOverwrite.kind === 'github'
+                  ? 'Overwriting replaces the existing skill folder with the downloaded one.'
+                  : 'Overwriting replaces the existing SKILL.md file(s).'}
+              </p>
+            </div>
+            <div className="agent-delete-footer">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setSkillOverwrite(null)}
+                disabled={skillOverwriteBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn accent"
+                onClick={() => void confirmSkillOverwrite()}
+                disabled={skillOverwriteBusy}
+              >
+                {skillOverwriteBusy ? 'Installing…' : 'Overwrite'}
               </button>
             </div>
           </div>

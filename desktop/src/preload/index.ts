@@ -129,6 +129,19 @@ const api = {
   saveLocalAgentFile: (payload: { filePath: string; content: string }) =>
     ipcRenderer.invoke('AnyBuff:saveLocalAgentFile', payload),
   readSkillFile: (path: string) => ipcRenderer.invoke('AnyBuff:readSkillFile', path),
+  /* Skills page (skills plan D3) — global-skills list/install/edit/delete */
+  listGlobalSkills: () => ipcRenderer.invoke('AnyBuff:listGlobalSkills'),
+  createSkill: (payload: { name: string; description: string; body: string; confirm?: boolean }) =>
+    ipcRenderer.invoke('AnyBuff:createSkill', payload),
+  importSkillFile: (payload: { sourcePath: string; confirm?: boolean }) =>
+    ipcRenderer.invoke('AnyBuff:importSkillFile', payload),
+  saveSkillFile: (payload: { path: string; content: string }) =>
+    ipcRenderer.invoke('AnyBuff:saveSkillFile', payload),
+  deleteSkill: (payload: { path: string }) => ipcRenderer.invoke('AnyBuff:deleteSkill', payload),
+  /* GitHub download (skills plan P1) — repo scan + whole-folder install */
+  listGithubSkills: (payload: { repo: string }) => ipcRenderer.invoke('AnyBuff:listGithubSkills', payload),
+  downloadGithubSkill: (payload: { repo: string; path: string; confirm?: boolean }) =>
+    ipcRenderer.invoke('AnyBuff:downloadGithubSkill', payload),
   listProjects: () => ipcRenderer.invoke('AnyBuff:listProjects'),
   /** Persist the currently open project folder (restored by getState on reload). */
   saveCwd: (cwd: string) => ipcRenderer.invoke('AnyBuff:saveCwd', cwd),

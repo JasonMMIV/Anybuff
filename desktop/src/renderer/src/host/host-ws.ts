@@ -459,7 +459,17 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
         // host-bridge returns the envelope), never as thrown exceptions. The
         // renderer branches on `.ok` either way — only a true transport failure
         // (timeout / dead socket) resolves an error envelope.
-        else p.resolve({ ok: false, error: msg.error ?? 'WS request failed' })
+        else {
+          // The server echoes the full failure envelope under `result`
+          // (createSkill's `exists: true` drives the confirm-overwrite flow;
+          // skills review finding 1). Merge it, then force ok/error LAST so a
+          // stray field in the envelope can never masquerade as success.
+          const extras =
+            msg.result && typeof msg.result === 'object'
+              ? (msg.result as Record<string, unknown>)
+              : {}
+          p.resolve({ ...extras, ok: false, error: msg.error ?? 'WS request failed' })
+        }
       }
     }
   }
@@ -579,6 +589,17 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     readLocalAgentFile: (payload: { filePath: string }) => call('readLocalAgentFile', payload),
     saveLocalAgentFile: (payload: { filePath: string; content: string }) => call('saveLocalAgentFile', payload),
     readSkillFile: (path: string) => call('readSkillFile', path),
+    /* Skills page (skills plan D3) — global-skills list/install/edit/delete */
+    listGlobalSkills: () => call('listGlobalSkills'),
+    createSkill: (payload: { name: string; description: string; body: string; confirm?: boolean }) =>
+      call('createSkill', payload),
+    importSkillFile: (payload: { sourcePath: string; confirm?: boolean }) => call('importSkillFile', payload),
+    saveSkillFile: (payload: { path: string; content: string }) => call('saveSkillFile', payload),
+    deleteSkill: (payload: { path: string }) => call('deleteSkill', payload),
+    /* GitHub download (skills plan P1) — repo scan + whole-folder install */
+    listGithubSkills: (payload: { repo: string }) => call('listGithubSkills', payload),
+    downloadGithubSkill: (payload: { repo: string; path: string; confirm?: boolean }) =>
+      call('downloadGithubSkill', payload),
     listProjects: () => call('listProjects'),
     saveCwd: (cwd: string) => call('saveCwd', cwd),
     touchProject: (cwd: string) => call('touchProject', cwd),

@@ -36,15 +36,18 @@ import {
 import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
 import { runBashCommand } from '../run/bash-command'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
-import { listLocalAgents, listMentionAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile } from './handlers-agents'
+import { listLocalAgents, listMentionAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile, listGlobalSkills, createSkill, importSkillFileChannel, saveSkillFileChannel, deleteSkillChannel, listGithubSkillsChannel, downloadGithubSkillChannel } from './handlers-agents'
 import { listFiles, listDir, readFile, readFileData, pathInfo, gitBranch, gitDiff, gitAccept, gitRevert, projectName } from './handlers-files'
 import { attachEventSink } from '../run/start-run'
 import { bridgeEventBus, type EventBus } from '../events'
 
-/** Result envelope every channel resolves to (mirrors the renderer's expectations). */
+/** Result envelope every channel resolves to (mirrors the renderer's expectations).
+ *  Failure envelopes MAY carry extra fields (createSkill/importSkillFile's
+ *  `exists: true` drives the renderer's confirm-overwrite flow) — transports
+ *  must pass them through, never rebuild the object as `{ ok, error }` only. */
 export type ChannelResult =
   | { ok: true; [k: string]: unknown }
-  | { ok: false; error: string }
+  | { ok: false; error: string; [k: string]: unknown }
 
 // Deliberately `any[]`: handlers have heterogeneous positional signatures and
 // are only invoked through dispatch() which spreads unknown[] args at runtime.
@@ -100,6 +103,15 @@ const registry: Record<string, Handler> = {
   saveLocalAgentFile,
   listSkills,
   readSkillFile,
+  // Skills page (skills plan D3)
+  listGlobalSkills,
+  createSkill,
+  importSkillFile: importSkillFileChannel,
+  saveSkillFile: saveSkillFileChannel,
+  deleteSkill: deleteSkillChannel,
+  // GitHub download (skills plan P1)
+  listGithubSkills: listGithubSkillsChannel,
+  downloadGithubSkill: downloadGithubSkillChannel,
   // Files & git
   listFiles,
   listDir,

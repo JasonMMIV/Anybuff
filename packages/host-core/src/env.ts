@@ -53,6 +53,23 @@ export interface HostEnv {
     save(providerId: string, plain: string): void
     remove(providerId: string): void
   }
+  /**
+   * Who may mutate the global skills dir (~/.agents/skills) — the Skills
+   * page's edit/delete gate (skills plan D6).
+   *
+   *   'shared'  — the dir is shared with other harnesses on the same machine
+   *               (Desktop: ~/.agents/skills is the cross-tool convention
+   *               directory; Claude Code and `npx skills add` read and write
+   *               it too): the Skills list is read-only in AnyBuff — edits
+   *               and deletions belong in a file manager / the other harness.
+   *   'managed' — the dir is app-private (Android rootfs: no other harness
+   *               or app can reach it), so AnyBuff may offer full edit/delete.
+   *
+   * ABSENT = 'shared' (fail-safe): a shell that never declares gets read-only,
+   * so a mis-wired registration can only ever REMOVE capability, never expose
+   * a shared directory to mutation. Both real shells declare explicitly.
+   */
+  globalSkillsScope?: 'shared' | 'managed'
 }
 
 let env: HostEnv | null = null
@@ -88,4 +105,12 @@ export function hostKeyOverrides(): Record<string, string> {
 /** Shell-backed key persistence (undefined when the shell does not provide one). */
 export function hostKeyPersistence(): HostEnv['keyPersistence'] {
   return env?.keyPersistence ?? undefined
+}
+
+/**
+ * Who may mutate the global skills dir. Absent = 'shared' (fail-safe:
+ * unregistered shells get the read-only view — see HostEnv.globalSkillsScope).
+ */
+export function globalSkillsScope(): 'shared' | 'managed' {
+  return env?.globalSkillsScope ?? 'shared'
 }

@@ -2,7 +2,7 @@ import { writeFileAtomic } from '../files/atomic-write'
 import { existsSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
-import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence } from '../env'
+import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence, globalSkillsScope } from '../env'
 import {
   findVerifiedReasoningLadder,
   getVerifiedReasoningLadderRows,
@@ -117,6 +117,18 @@ export interface AppSettings {
   webSearchProvider: WebSearchProviderId
   /** Whether a Tinyfish/Firecrawl search key is stored (DPAPI). */
   webSearchHasKey: Record<WebSearchProviderId, boolean>
+  /** Whether a GitHub token is stored (DPAPI) — Skills tab GitHub download. */
+  githubTokenSet: boolean
+  /** Skills page: scan the home dir's global skills folders (~/.agents/skills,
+   * ~/.claude/skills) when starting a run — drives SDK includeHomeSkills
+   * (default ON; see the skills plan D2). */
+  globalSkillsEnabled: boolean
+  /** DERIVED from HostEnv.globalSkillsScope (skills plan D6) — never
+   * persisted, never part of a save payload. Desktop ('shared') = false: the
+   * global skills dir is shared with other harnesses, so the Skills list is
+   * read-only. Android ('managed') = true: app-private rootfs, edit/delete
+   * allowed. */
+  globalSkillsEditable: boolean
   /** #17 max agent steps per run (0 = SDK default). Drives the loop fuse. */
   maxAgentSteps: number
   /** #17 cost mode flag forwarded to the SDK run. */
@@ -140,6 +152,8 @@ interface PersistedSettings {
   agentRouting?: Record<string, AgentRoute>
   /** Active web search provider (default duckduckgo). */
   webSearchProvider?: WebSearchProviderId
+  /** Global-skills scan opt-in (default true; omitted = legacy → true). */
+  globalSkillsEnabled?: boolean
   /** #17 max agent steps per run (0 = SDK default; omitted = legacy). */
   maxAgentSteps?: number
   /** #17 SDK cost mode ('normal' | 'max' | 'lite'). */
@@ -254,6 +268,7 @@ function defaultSettings(): PersistedSettings {
     approvalMode: 'balanced',
     projects: [],
     webSearchProvider: 'duckduckgo',
+    globalSkillsEnabled: true,
     maxAgentSteps: 0,
     costMode: 'normal'
   }
@@ -305,6 +320,12 @@ export function loadSettings(): PersistedSettings {
     // Web search provider (default duckduckgo; validate against the known set)
     if (parsed.webSearchProvider === 'firecrawl' || parsed.webSearchProvider === 'tinyfish' || parsed.webSearchProvider === 'duckduckgo') {
       base.webSearchProvider = parsed.webSearchProvider
+    }
+    // Global skills opt-in (default true; explicit boolean wins — a corrupt
+    // non-boolean value falls back to the ON default rather than silently
+    // disabling the whole home-dir skill scan).
+    if (typeof parsed.globalSkillsEnabled === 'boolean') {
+      base.globalSkillsEnabled = parsed.globalSkillsEnabled
     }
     // #17 run guardrails (clamped so a corrupt settings file can never send
     // a runaway or negative step cap into the SDK).
@@ -527,6 +548,8 @@ export function getAppSettings(): AppSettings {
     projects: s.projects ?? [],
     agentRouting: s.agentRouting ?? {},
     webSearchProvider: s.webSearchProvider ?? 'duckduckgo',
+    globalSkillsEnabled: s.globalSkillsEnabled ?? true,
+    globalSkillsEditable: globalSkillsScope() === 'managed',
     maxAgentSteps: s.maxAgentSteps ?? 0,
     costMode: s.costMode ?? 'normal',
     reasoningLadders: buildReasoningLadders(s.providers),
@@ -534,7 +557,8 @@ export function getAppSettings(): AppSettings {
       duckduckgo: false,
       firecrawl: getSearchApiKey('firecrawl') !== undefined,
       tinyfish: getSearchApiKey('tinyfish') !== undefined
-    }
+    },
+    githubTokenSet: getGithubToken() !== undefined
   }
 }
 
@@ -601,6 +625,58 @@ export function getSearchApiKey(provider: WebSearchProviderId): string | undefin
   }
 }
 
+/** Vault id for the optional GitHub token (ADR-11 channel, mirrors searchApiKey). */
+const GITHUB_TOKEN_ID = 'github-token'
+
+/**
+ * Save the GitHub token used by the Skills tab's GitHub download (raises the
+ * api.github.com limit from 60/hr unauthenticated to 5,000/hr). Empty string
+ * deletes it. Same DPAPI-mandatory policy as every other secret (ADR-11),
+ * same Android keyPersistence seam as search keys (ADR-17).
+ */
+export function saveGithubToken(token: string): void {
+  const id = GITHUB_TOKEN_ID
+  const persistence = hostKeyPersistence()
+  if (persistence) {
+    if (token) persistence.save(id, token)
+    else persistence.remove(id)
+    const overlays = hostKeyOverrides()
+    if (token) overlays[id] = token
+    else delete overlays[id]
+    return
+  }
+  const s = loadSettings()
+  s.encryptedKeys = s.encryptedKeys ?? {}
+  if (!token) {
+    delete s.encryptedKeys[id]
+  } else if (hostSecrets().isEncryptionAvailable()) {
+    s.encryptedKeys[id] = hostSecrets().encryptString(token).toString('base64')
+  } else {
+    throw new Error(
+      'OS credential encryption (DPAPI) is unavailable, so the GitHub token cannot be stored safely. Downloads work without a token at 60 requests per hour.'
+    )
+  }
+  saveSettings(s)
+}
+
+/** Decrypt the stored GitHub token (undefined when absent). Never logged. */
+export function getGithubToken(): string | undefined {
+  const overlay = hostKeyOverrides()[GITHUB_TOKEN_ID]
+  if (overlay !== undefined) return overlay
+  const s = loadSettings()
+  const enc = s.encryptedKeys?.[GITHUB_TOKEN_ID]
+  if (!enc) return undefined
+  if (enc.startsWith('plain:')) {
+    console.warn('[anybuff] stored GitHub token is legacy plaintext; re-entry required')
+    return undefined
+  }
+  try {
+    return hostSecrets().decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return undefined
+  }
+}
+
 /** Generic DPAPI vault helper (ADR-11) — used by MCP server inline secrets. Empty value deletes. */
 export function saveSecret(key: string, value: string): void {
   const s = loadSettings()
@@ -654,6 +730,13 @@ export function getWebSearchConfig(): {
 export function setWebSearchProvider(provider: WebSearchProviderId): void {
   const s = loadSettings()
   s.webSearchProvider = provider
+  saveSettings(s)
+}
+
+/** Toggle the home-dir global-skills scan (default ON). */
+export function setGlobalSkillsEnabled(enabled: boolean): void {
+  const s = loadSettings()
+  s.globalSkillsEnabled = enabled
   saveSettings(s)
 }
 

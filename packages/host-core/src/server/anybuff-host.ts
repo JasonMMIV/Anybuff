@@ -138,6 +138,11 @@ async function main(): Promise<void> {
     secrets: noDiskSecrets(),
     keyOverrides,
     keyPersistence,
+    // D6: the Android home dir is the SANDBOX's /root — app-private inside
+    // the proot rootfs, unreachable by any other harness or app — so the
+    // Skills page may offer full edit/delete here. Contrast Desktop, which
+    // declares 'shared' (host-bridge.ts).
+    globalSkillsScope: 'managed',
   })
 
   const bus = createEventBus()

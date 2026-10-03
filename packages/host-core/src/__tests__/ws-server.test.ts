@@ -208,6 +208,24 @@ describe('request envelope routing', () => {
     expect(view.exists).toBe(false)
     ws.close()
   })
+
+  test('FAILURE-envelope extras (createSkill exists) survive the WS transport', async () => {
+    // Skills review finding 1: the renderer's confirm-overwrite flow branches
+    // on `exists` — a failure envelope must arrive WHOLE over WS (parity with
+    // the Electron host-bridge, which now passes failures through too).
+    // The client-side merge lives in host-ws call(); this locks the server leg.
+    const ws = await openWs(wsUrl())
+    const payload = { name: 'ws-exists-skill', description: 'For the exists test.', body: 'Do it.' }
+    const first = await roundTrip(ws, 300, 'createSkill', [payload])
+    expect(first.ok).toBe(true)
+    const second = await roundTrip(ws, 301, 'createSkill', [payload])
+    expect(second.ok).toBe(false)
+    if (!second.ok) expect(second.error).toContain('already exists')
+    const envelope = second.result as { ok?: boolean; exists?: boolean } | undefined
+    expect(envelope?.ok).toBe(false)
+    expect(envelope?.exists).toBe(true)
+    ws.close()
+  })
 })
 
 describe('event broadcast', () => {

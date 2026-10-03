@@ -1145,6 +1145,14 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // Web search provider config (provider + optional search API keys).
         // Keys travel via this run-options channel (ADR-12), never process.env.
         webSearch: getWebSearchConfig(),
+        // Skills page toggle (skills plan D4): one SDK flag governs BOTH the
+        // startup skill loader and fileContext (run-state), so the skill
+        // tool's disk lookup always matches the injected list. Default ON —
+        // this host process belongs to the user whose skills these are (the
+        // SDK's documented opt-in condition; its `false` default guards
+        // SERVER processes, which AnyBuff is not). Legacy settings files have
+        // no field → undefined → `?? true`.
+        includeHomeSkills: currentSettings.globalSkillsEnabled ?? true,
         // Upstream emits full RunState snapshots every ~5s while in flight;
         // #1 資安級防護：敏感檔（.env、SSH 金鑰、kubeconfig、憑證…）一律
         // 擋在 agent 可讀範圍外，避免金鑰內容隨 LLM context 離開本機。

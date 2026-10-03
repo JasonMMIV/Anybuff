@@ -7253,9 +7253,22 @@ select option {
   background: var(--green-soft);
 }
 
+/* `success` is the wording several notices use — keep it an alias of .ok so
+   those messages are actually green (they previously fell back to base). */
+.test-msg.success {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
 .test-msg.fail {
   color: var(--red);
   background: var(--red-soft);
+}
+
+/* Quota / truncation warnings (skills GitHub download). */
+.test-msg.warn {
+  color: var(--yellow);
+  background: var(--yellow-soft);
 }
 
 /* ─── Light theme refinements ────────────────────────── */

@@ -15,7 +15,9 @@ import {
   updateAgentRouting,
   updateRunGuardrails,
   saveSearchApiKey,
+  saveGithubToken,
   setWebSearchProvider,
+  setGlobalSkillsEnabled,
   type ProviderConfig,
   type ReasoningEffort,
   type ApprovalMode,
@@ -35,8 +37,17 @@ export interface SaveSettingsPayload {
   deleteKeys?: string[]
   agentRouting?: Record<string, AgentRoute>
   webSearchProvider?: WebSearchProviderId
+  /** Skills page: home-dir global-skills scan opt-in (default true).
+   *  The renderer echoes this field on every Settings save; omission is a
+   *  NO-OP (the typeof guard in saveSettings), so partial saves — App.tsx's
+   *  guardrail saves — never reset it (ADR-27 MC-0 save-payload race lesson). */
+  globalSkillsEnabled?: boolean
   searchApiKeys?: Partial<Record<WebSearchProviderId, string>>
   deleteSearchKeys?: WebSearchProviderId[]
+  /** Skills tab GitHub download: token typed this save (trimmed non-empty). */
+  githubToken?: string
+  /** Skills tab GitHub download: remove the stored token. */
+  deleteGithubToken?: boolean
   /** #17 per-run step cap (0 = SDK default) + cost mode flag. */
   maxAgentSteps?: number
   costMode?: RunCostMode
@@ -93,6 +104,7 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
   }
   if (payload.agentRouting) updateAgentRouting(payload.agentRouting)
   if (payload.webSearchProvider) setWebSearchProvider(payload.webSearchProvider)
+  if (typeof payload.globalSkillsEnabled === 'boolean') setGlobalSkillsEnabled(payload.globalSkillsEnabled)
   if (payload.maxAgentSteps !== undefined || payload.costMode !== undefined) {
     updateRunGuardrails(payload.maxAgentSteps ?? 0, payload.costMode ?? 'normal')
   }
@@ -112,6 +124,22 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
       saveSearchApiKey(provider, '')
     } catch (error) {
       keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  // GitHub token (skills P1/P2): delete BEFORE save so re-typing right after
+  // a removal lands — the renderer's delete flag is sticky within a session.
+  if (payload.deleteGithubToken) {
+    try {
+      saveGithubToken('')
+    } catch (error) {
+      keyErrors.push(`github-token: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (typeof payload.githubToken === 'string' && payload.githubToken.trim()) {
+    try {
+      saveGithubToken(payload.githubToken.trim())
+    } catch (error) {
+      keyErrors.push(`github-token: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   return {

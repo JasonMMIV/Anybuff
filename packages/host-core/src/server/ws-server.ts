@@ -194,11 +194,18 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
             // shapes the renderer has always seen over IPC:
             //   bare      → result: <bare value>
             //   envelope  → result: <the full envelope, ok included>
+            //   failure   → error + <the full envelope under result>
             const { ok, result: inner, ...rest } = result as { ok: true } & Record<string, unknown>
             if (inner !== undefined) resp.result = inner
             else resp.result = { ok: true, ...rest }
           } else {
             resp.error = result.error
+            // Failure envelopes may carry extra fields (createSkill/
+            // importSkillFile's `exists: true` → renderer confirm-overwrite).
+            // Echo the whole envelope under `result` so nothing is dropped
+            // (skills review finding 1); host-ws merges it into what the
+            // renderer sees, keeping ok/error authoritative.
+            resp.result = result
           }
           sendJson(ws, resp)
         })

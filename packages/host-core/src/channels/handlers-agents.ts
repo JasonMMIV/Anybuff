@@ -22,45 +22,90 @@ import type { MentionAgentInfo } from '../contracts/types'
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import {
+  buildSkillDocument,
+  deleteSkill,
+  globalSkillRoots,
+  importSkillFile,
+  installSkill,
+  saveSkillFile,
+} from '../skills/install-skill'
+import {
+  downloadGithubSkill,
+  listGithubSkills,
+} from '../skills/github-skills'
 
 export interface SkillInfo {
   name: string
   description: string
   path: string
   source: 'project' | 'home'
+  /** Convention root the skill lives under. */
+  root: '.agents' | '.claude'
+  /** frontmatter metadata.source stamp (P2 provenance badge). */
+  provenance?: string
 }
 
 const SKILL_ROOTS = ['.agents', '.claude'] as const
 
+/** frontmatter `metadata.source` (P2 provenance badge) — block form only. */
+function extractProvenance(fmBody: string): string | undefined {
+  const lines = fmBody.split(/\r?\n/)
+  const idx = lines.findIndex((l) => /^metadata:/.test(l))
+  if (idx < 0) return undefined
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    if (!/^[ \t]/.test(line)) break // next top-level key
+    const m = line.match(/^[ \t]+source:\s*(.+)$/)
+    if (m) return m[1].trim().replace(/^["']|["']$/g, '')
+  }
+  return undefined
+}
+
+function scanSkillsDir(skillsDir: string, source: 'project' | 'home', root: '.agents' | '.claude'): SkillInfo[] {
+  const out: SkillInfo[] = []
+  if (!existsSync(skillsDir)) return out
+  let names: string[]
+  try {
+    names = (readdirSync(skillsDir, { withFileTypes: true }) as { name: string; isDirectory(): boolean }[])
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+  } catch {
+    return out
+  }
+  for (const name of names) {
+    const skillFile = join(skillsDir, name, 'SKILL.md')
+    if (!existsSync(skillFile)) continue
+    try {
+      const content = readFileSync(skillFile, 'utf-8')
+      const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+      let description = ''
+      let provenance: string | undefined
+      if (fm) {
+        const descMatch = fm[1].match(/^description:\s*(.+)$/m)
+        description = descMatch ? descMatch[1].trim() : ''
+        provenance = extractProvenance(fm[1])
+      }
+      out.push({
+        name,
+        description,
+        path: skillFile,
+        source,
+        root,
+        ...(provenance ? { provenance } : {}),
+      })
+    } catch {
+      // skip unreadable skill
+    }
+  }
+  return out
+}
+
 function scanSkillRoot(dir: string, source: 'project' | 'home'): SkillInfo[] {
   const out: SkillInfo[] = []
   for (const rootName of SKILL_ROOTS) {
-    const skillsDir = join(dir, rootName, 'skills')
-    if (!existsSync(skillsDir)) continue
-    let names: string[]
-    try {
-      names = (readdirSync(skillsDir, { withFileTypes: true }) as { name: string; isDirectory(): boolean }[])
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name)
-    } catch {
-      continue
-    }
-    for (const name of names) {
-      const skillFile = join(skillsDir, name, 'SKILL.md')
-      if (!existsSync(skillFile)) continue
-      try {
-        const content = readFileSync(skillFile, 'utf-8')
-        const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-        let description = ''
-        if (fm) {
-          const descMatch = fm[1].match(/^description:\s*(.+)$/m)
-          description = descMatch ? descMatch[1].trim() : ''
-        }
-        out.push({ name, description, path: skillFile, source })
-      } catch {
-        // skip unreadable skill
-      }
-    }
+    out.push(...scanSkillsDir(join(dir, rootName, 'skills'), source, rootName))
   }
   return out
 }
@@ -81,6 +126,57 @@ export function readSkillFile(path: string): unknown {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** AnyBuff:listGlobalSkills — Skills page list: HOME roots only (no cwd
+ *  dependency, so the tab works before a project is opened). */
+export function listGlobalSkills(): SkillInfo[] {
+  const out: SkillInfo[] = []
+  for (const { root, dir } of globalSkillRoots()) {
+    out.push(...scanSkillsDir(dir, 'home', root))
+  }
+  return out
+}
+
+/** AnyBuff:createSkill — form → composed SKILL.md → installSkill. */
+export function createSkill(payload: {
+  name: string
+  description: string
+  body: string
+  confirm?: boolean
+}): unknown {
+  const content = buildSkillDocument(payload.name, payload.description ?? '', payload.body ?? '')
+  return installSkill({ name: payload.name, content, confirm: payload.confirm, source: 'manual' })
+}
+
+/** AnyBuff:importSkillFile — picked markdown file → verbatim install. */
+export function importSkillFileChannel(payload: { sourcePath: string; confirm?: boolean }): unknown {
+  return importSkillFile(payload)
+}
+
+/** AnyBuff:saveSkillFile — edit an existing global skill (D6 gate host-side). */
+export function saveSkillFileChannel(payload: { path: string; content: string }): unknown {
+  return saveSkillFile(payload)
+}
+
+/** AnyBuff:deleteSkill — remove a global skill folder (D6 gate host-side). */
+export function deleteSkillChannel(payload: { path: string }): unknown {
+  return deleteSkill(payload)
+}
+
+/** AnyBuff:listGithubSkills — repo scan for skill folders (P1, async). */
+export function listGithubSkillsChannel(payload: { repo?: string }): Promise<unknown> {
+  return listGithubSkills(payload ?? {})
+}
+
+/** AnyBuff:downloadGithubSkill — whole-subfolder install (P1, async).
+ *  Failure envelopes keep `exists` so the UI's overwrite-confirm works. */
+export function downloadGithubSkillChannel(payload: {
+  repo?: string
+  path?: string
+  confirm?: boolean
+}): Promise<unknown> {
+  return downloadGithubSkill(payload ?? {})
 }
 
 /** AnyBuff:listLocalAgents */

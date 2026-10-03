@@ -58,6 +58,15 @@ export const CHANNELS = [
   'saveLocalAgentFile',
   'listSkills',
   'readSkillFile',
+  // Skills page (skills plan D3) — global-skills list/install/edit/delete
+  'listGlobalSkills',
+  'createSkill',
+  'importSkillFile',
+  'saveSkillFile',
+  'deleteSkill',
+  // GitHub download (skills plan P1)
+  'listGithubSkills',
+  'downloadGithubSkill',
   // File system / git
   'listFiles',
   'listDir',
@@ -93,7 +102,9 @@ export interface WsRequest {
 export interface WsResponse {
   id: number
   ok: boolean
-  /** Result when ok; error message otherwise. */
+  /** Result when ok. On failure: the full failure envelope when the handler
+   *  returned extra fields (host-ws merges it; e.g. createSkill's `exists`),
+   *  otherwise just `error` below. */
   result?: unknown
   error?: string
 }

@@ -82,6 +82,11 @@ export function registerHostIpc(): { host: Host; bus: EventBus } {
               throw new Error('OS credential encryption (DPAPI) is unavailable')
             },
           },
+    // D6: %USERPROFILE%\.agents\skills is the cross-tool convention
+    // directory (Claude Code, `npx skills add`, … read and write it) — the
+    // Skills page list is READ-ONLY here; edits/deletions belong in a file
+    // manager or the other harness. Explicit even though absent='shared'.
+    globalSkillsScope: 'shared',
   })
 
   const bus = createEventBus()
@@ -99,7 +104,12 @@ export function registerHostIpc(): { host: Host; bus: EventBus } {
         if ('result' in result) return result.result
         return result
       }
-      return { ok: false, error: result.error }
+      // Failure envelopes pass through WHOLE: createSkill/importSkillFile
+      // carry `exists: true` here, which drives the renderer's confirm-
+      // overwrite flow — rebuilding `{ ok, error }` silently dropped it
+      // (skills review finding 1). A superset of the old shape; the renderer
+      // still just branches on `.ok` / `.error`.
+      return result
     })
   }
 
