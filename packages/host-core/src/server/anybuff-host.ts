@@ -143,6 +143,12 @@ async function main(): Promise<void> {
     // Skills page may offer full edit/delete here. Contrast Desktop, which
     // declares 'shared' (host-bridge.ts).
     globalSkillsScope: 'managed',
+    // The SAF picker copies each pick FLAT into the guest /upload staging dir
+    // (NativeBridge.copyToUpload), so a picked file's parent is the staging
+    // area — not the skill folder. Declared explicitly (absent would also be
+    // false) so the reason travels with the value: folder-aware import is a
+    // Desktop capability until the Android picker preserves structure.
+    pickedFilesShareFolder: false,
   })
 
   const bus = createEventBus()

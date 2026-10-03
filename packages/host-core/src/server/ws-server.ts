@@ -201,10 +201,11 @@ export function startWsHost(options: WsHostOptions): Promise<WsHost> {
           } else {
             resp.error = result.error
             // Failure envelopes may carry extra fields (createSkill/
-            // importSkillFile's `exists: true` → renderer confirm-overwrite).
-            // Echo the whole envelope under `result` so nothing is dropped
-            // (skills review finding 1); host-ws merges it into what the
-            // renderer sees, keeping ok/error authoritative.
+            // importSkillFile's `exists: true` → renderer confirm-overwrite,
+            // and the `folderConfirm` folder preview, whose envelope has no
+            // `error` at all). Echo the whole envelope under `result` so
+            // nothing is dropped (skills review finding 1); host-ws merges it
+            // into what the renderer sees, keeping ok/error authoritative.
             resp.result = result
           }
           sendJson(ws, resp)

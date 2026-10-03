@@ -5922,6 +5922,50 @@ select option {
   white-space: nowrap;
 }
 
+.local-agent-files-badge {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Folder-import preview inside the consent modal — the exact file list the
+   user approves before anything is written. Scroll instead of growing. */
+.skill-folder-preview {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.skill-folder-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.skill-folder-file-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.skill-folder-file-list li code {
+  background: none;
+  padding: 0;
+  color: var(--text-2);
+}
+
 .local-agent-errors {
   display: flex;
   flex-direction: column;

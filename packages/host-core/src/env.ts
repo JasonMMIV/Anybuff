@@ -70,6 +70,22 @@ export interface HostEnv {
    * a shared directory to mutation. Both real shells declare explicitly.
    */
   globalSkillsScope?: 'shared' | 'managed'
+  /**
+   * Does a path handed to the host by the shell's FILE PICKER still sit inside
+   * the folder the user picked from?
+   *
+   *   true  — Desktop: the Electron dialog returns real paths, so a picked
+   *           `<skill>/SKILL.md` is still surrounded by that skill's own files.
+   *   false — Android: the SAF picker copies every pick FLAT into the guest
+   *           `/upload` staging dir, so a file's parent holds the whole pick
+   *           history, not its skill's attachments.
+   *
+   * Folder-aware skill import (importSkillFile) keys on this: reading a "parent
+   * folder" that is really a staging area would sweep unrelated attachments
+   * into a skill. ABSENT = false (fail-safe: an undeclared shell keeps the
+   * plain single-file import).
+   */
+  pickedFilesShareFolder?: boolean
 }
 
 let env: HostEnv | null = null
@@ -113,4 +129,13 @@ export function hostKeyPersistence(): HostEnv['keyPersistence'] {
  */
 export function globalSkillsScope(): 'shared' | 'managed' {
   return env?.globalSkillsScope ?? 'shared'
+}
+
+/**
+ * Whether a picked file arrives inside its original folder (see
+ * HostEnv.pickedFilesShareFolder). Absent = false — folder-wide operations
+ * stay off unless a shell vouches for them.
+ */
+export function pickedFilesShareFolder(): boolean {
+  return env?.pickedFilesShareFolder ?? false
 }

@@ -1,6 +1,8 @@
 # AnyBuff Skills 設定頁實作計畫
 
-> **文檔版本**：v1.3（2026-10-03——v1.3：**P0＋P1＋P2 全部實作完成**並通過 §9 自動化測試與評審修復（8 findings 全修）；P1 含 `listGithubSkills`／`downloadGithubSkill` 雙通道、≤30 檔／200KB／2MB 配額與 warning、api.github.com＋raw.githubusercontent.com 白名單、整包原子安裝；P2 含 frontmatter `metadata.source` provenance（manual/file/github＋列表徽章）與 `github-token` DPAPI vault（saveSettings payload：delete 先於 save）；真 API 實測通過（trees HEAD／raw HEAD／UA header，2026-10-03）；ADR-29 尚未補進維護手冊；v1.2：**編輯/刪除改平台分流**（Desktop 唯讀、Android 可編輯刪除，依 `HostEnv.globalSkillsScope` 單一來源、host 端強制；§10 待決的 Android 移除管道缺口以 D6 解決）；v1.1 評審修訂：① 列表改唯讀（全域目錄與其他 harness 共用）；② GitHub 下載改為整個 skill 子目錄安裝（含 reference 附檔）；③ 移除 Android 公開資料夾掛載（Skills 頁內建通道即足）；④ UI 說明文字改英文）
+> **文檔版本**：v1.7（2026-10-04——**整包安裝加「安裝前同意閘」（folderConfirm → confirmFolder）與大小寫變體修復**：評審實測挑 `~/Downloads/SKILL.md` 會把整個 Downloads（25MB 雜物）無聲裝成 skill；現在第一次呼叫只回預覽信封（逐檔清單、`SKILL.md` 恆首位、附是否會覆寫），UI 用同一個對話框一次問完才帶 `confirmFolder` 重送——閘在 host 端，與 `exists` 同形，忘記處理的 client 只會少做事。`skill.md`／`Skill.md` 變體不再靜默退回單檔（`planSkillFolder` 把被挑那份正規化為 `SKILL.md`，同層另一變體跳過並回報）。清掉三處過期註解（GitHub 已無傳輸預算、repo-root 已不產 skip、跳檔訊息改為名詞片語）並修「already exist」文法。2026-10-03——v1.6：**GitHub 下載也一併解除配額**。v1.5 只解除本地匯入與 `readSkillFile`，留了「≤30 檔／5MB 傳輸預算」；該預算與 v1.4 的 200KB 是同一類錯誤：截斷只會製造半套的 skill，而且違反 ADR-29 決策 3「整包落地或整包不落地」。現已全數移除——GitHub 下載整個子目錄的所有檔案，無檔案數／位元組上限，唯一的 warning 是 GitHub 自己的 `truncated` tree 旗標（不丟檔）。v1.5：**移除 skill 內容的大小限制**。v1.4 把 `readSkillFile` 的 200KB IPC 護欄延伸成安裝配額是錯的：skill 的 `references/`／`scripts/` 是模型在 run 期間讀的資料，不是要塞進提示詞的散文。實測 1MB 的資料檔（fortune-master 的筆畫 JSON）被跳過 → 又是半套的 skill。**本地檔案匯入完全沒有配額**（無單檔上限、無總量上限、無檔案數上限）；`readSkillFile` 一併解除，否則會「裝得進卻開不了／注不了」。v1.4：**檔案感知匯入（folder-aware import）**：`importSkillFile` 偵測到挑的是某 skill 自己的 `SKILL.md` 時改走整資料夾 `installSkillMulti`（references／scripts／assets 一併落地），解決「帶 references 的 skill 匯入後只剩 SKILL.md、模型照著讀不存在的檔」這個**靜默半套**缺陷。新增 shell 接縫 `HostEnv.pickedFilesShareFolder`（Desktop `true`／Android `false`，缺省 false）——Android 的 SAF picker 把每次挑選**平鋪**複製進 `/upload`，父層是整個挑選歷史而非該 skill 的附檔，照抄父層會把無關附件掃進 skill。skills 列表每列顯示檔案數（`fileCount`）；`installSkillMulti` 的資料夾 rename 改用 ADR-13 退避重試（原為裸 `renameSync`，Windows 上 EPERM 會讓覆寫失敗——測試實測重現）。見 D3 §3.1、D5、§6、§7 R9）
+>
+> v1.3（2026-10-03——**P0＋P1＋P2 全部實作完成**並通過 §9 自動化測試與評審修復（8 findings 全修）；P1 含 `listGithubSkills`／`downloadGithubSkill` 雙通道、≤30 檔／200KB／2MB 配額與 warning、api.github.com＋raw.githubusercontent.com 白名單、整包原子安裝；P2 含 frontmatter `metadata.source` provenance（manual/file/github＋列表徽章）與 `github-token` DPAPI vault（saveSettings payload：delete 先於 save）；真 API 實測通過（trees HEAD／raw HEAD／UA header，2026-10-03）；ADR-29 尚未補進維護手冊；v1.2：**編輯/刪除改平台分流**（Desktop 唯讀、Android 可編輯刪除，依 `HostEnv.globalSkillsScope` 單一來源、host 端強制；§10 待決的 Android 移除管道缺口以 D6 解決）；v1.1 評審修訂：① 列表改唯讀（全域目錄與其他 harness 共用）；② GitHub 下載改為整個 skill 子目錄安裝（含 reference 附檔）；③ 移除 Android 公開資料夾掛載（Skills 頁內建通道即足）；④ UI 說明文字改英文）
 > **對應 App 版本**：`1.1.0` 後續
 > **適用對象**：專案維護者、核心開發者、AI 協作 Coding Agent。
 > **關聯文件**：《AnyBuff 專案全貌與維護者指南.md》（§2 不可退讓、ADR-11/13/21/27）、《AnyBuff Android 版實作計畫.md》。
@@ -64,7 +66,7 @@ Android 引擎跑在 proot 沙箱（`ProotRunner.kt`）：`HOME=/root`、`ANYBUF
    - **Global skills 開關**（原 `includeHomeSkills` 重新命名，**預設開啟**）＋英文說明文字；
    - **已安裝全域 skills 列表**——**Desktop 唯讀**（共用目錄，見 D6）；**Android 可編輯／刪除**（app 私有目錄，管理權回給 App，並補上移除管道）；
    - **手動新增 skill**（表單 → 產生 `SKILL.md`，雙端）；
-   - **從檔案匯入**（挑選 md 檔 → 安裝進全域目錄，雙端）；
+   - **從檔案匯入**（挑選 md 檔 → 安裝進全域目錄，雙端）；**挑的是某 skill 自己的 `SKILL.md` 時，整個資料夾（references／scripts／assets）一併安裝**（v1.4 檔案感知匯入，見 §3.1）；
    - **從 GitHub 下載**（owner/repo → 掃描 repo 內的 skill 資料夾 → 選擇安裝，**整目錄下載、含 reference 附檔**，雙端）。
 3. 接通 run 的 `includeHomeSkills`：開關開啟時，**模型的 `skill` 工具自動看見全域 skill**（不再只是手動 `/` 可呼叫）。
 4. **雙端一致的安裝體驗**：Desktop 落 `%USERPROFILE%\.agents\skills`（檔案總管同時可見可手動放）；Android 落沙箱內 app-private 目錄（Skills 頁即為操作介面，**無 AFA 依賴、無額外掛載**）。
@@ -111,7 +113,7 @@ Android 引擎跑在 proot 沙箱（`ProotRunner.kt`）：`HOME=/root`、`ANYBUF
 |---|---|---|
 | `listGlobalSkills` | `()` → `GlobalSkillInfo[]`（`{name, description, path, root: '.agents'\|'.claude'}`） | 只掃全域兩根（`homedir()/.agents/skills`、`homedir()/.claude/skills`），不依賴 cwd（Skills 頁在未開專案時也要能用） |
 | `createSkill` | `{name, description, body}` → 安裝結果 | 表單新增：組 `SKILL.md`（frontmatter + body）→ `installSkill`。**雙端可用**（安裝是本計畫目的） |
-| `importSkillFile` | `{sourcePath}` → 安裝結果 | 讀 picked 檔（desktop 絕對路徑／Android `/upload/…` guest 路徑，host 行程皆可讀）→ `parseSkillFileContent` → `installSkill`。**雙端可用** |
+| `importSkillFile` | `{sourcePath}` → 安裝結果（`{ok,name,path,fileCount?,warning?}`／`{ok:false,exists?,name?,error}`） | 讀 picked 檔（desktop 絕對路徑／Android `/upload/…` guest 路徑，host 行程皆可讀）→ `parseSkillFileContent` → **檔案感知分流**（§3.1）：挑的是該 skill 自己的 `SKILL.md` 且資料夾有附檔 → `installSkillMulti` 整包落地；否則 `installSkill` 單檔逐字安裝。**雙端可用**（整包分支僅 Desktop，見 §3.1 接縫） |
 | `saveSkillFile` | `{path, content}` → 寫入結果 | **編輯既有 skill（僅 `managed` scope，D6 gate）**：path 限全域根內、`SkillFrontfrontmatterSchema.safeParse` 先驗後寫（**失敗拒絕、保留舊檔**）、ADR-13 原子寫入 |
 | `deleteSkill` | `{path}` → 刪除結果 | **刪除 skill 資料夾（僅 `managed` scope，D6 gate）**：限全域根的**直接子資料夾**且含 `SKILL.md`（防 `..`、防刪全域根本身）→ `fs.rm(dir, {recursive})` |
 | `listGithubSkills` | `{repo}` → `{skills: [{name, path, fileCount}], warning?}` | GitHub API `git/trees/HEAD?recursive=1`，收集**含 `SKILL.md` 的資料夾**（＝一個 skill 單位；僅 `api.github.com`／`raw.githubusercontent.com` 兩個固定 host，不接受任意 URL）。**雙端可用** |
@@ -131,8 +133,39 @@ Android 引擎跑在 proot 沙箱（`ProotRunner.kt`）：`HOME=/root`、`ANYBUF
 
 - `listGithubSkills` 回傳的候選是**資料夾**（不是單一檔案），`fileCount` 顯示在 UI；
 - `downloadGithubSkill` 依 trees API 取該資料夾前綴下**所有檔案**（`SKILL.md` ＋ `references/`、`assets/`、`scripts/` 等同目錄附檔）逐一 raw 下載後**整包原子安裝**；
-- **上限**：≤30 檔／單檔 ≤200KB（對齊 `readSkillFile` 上限）／總量 ≤2MB（依 trees 的 size 欄在下載前過濾，超限檔案跳過並在結果回報 `warning`）；
+- **無任何預算**：整個 skill 子目錄的**所有檔案**都下載並安裝，不設檔案數或位元組上限。舊的 ≤30 檔／≤2MB 配額只會製造半套的 skill——它會載入、會向模型自我介紹，而 SKILL.md 指向的檔案已被靜默丟棄。`listGithubSkills` 已回報每個候選的檔案數，選哪個資料夾是使用者的事；**整包落地或整包不落地**。
 - **已知限制**：`SKILL.md` 內相對連結指向 skill 資料夾**之外**（`../../shared/…`）的檔案不涵蓋——跨目錄 reference 不在任何 skill 安裝慣例內，文件註明即可。
+
+### D3.1：檔案感知匯入（folder-aware import，2026-10-03）
+
+- **缺陷**：skill 是**資料夾**（`references/`、`scripts/`、`assets/`），但匯入只寫 `SKILL.md` 一個檔（`installSkill`）。references **不報錯也不警告**地消失 → skill 看似載入成功，模型卻照著 SKILL.md 的指示去讀不存在的檔。這是本頁能產生的最糟失敗型態（靜默半套），也是「skill 為何是資料夾」的根本理由。（實測：本機 4 個全域 skill 有 2 個帶 `references/`。）
+- **決策：不新增「Import from Folder」按鈕，改讓既有檔案匯入具備資料夾感知**。理由：(a) GitHub 路徑已證明 `installSkillMulti` 是正確原語，資料夾匯入只是第二個呼叫者，**零新 primitive**；(b) 不必新增 shell 檔案夾挑選器（Desktop 已有 `selectFolder`，但它會 `saveCwd`＋`touchProject` **順手切換專案**——不可重用；Android 則根本沒有保留結構的挑選器）；(c) 使用者點「檔案」時心裡的物件通常就是 `SKILL.md` 本身。
+- **觸發條件**（四條全中才會**寫入**；前三條決定「構成整包」，第四條是同意，缺任一條都退回單檔或只回預覽）：
+  1. 檔名為慣例名 `SKILL.md`（大小寫不拘）；
+  2. shell 宣告 `pickedFilesShareFolder === true`（見下）；
+  3. 該資料夾除 `SKILL.md` 外**還有其他檔案**（`files.length > 1`）；
+  4. 使用者確認了檔案清單（`confirmFolder: true`）——否則 host 只回 `folderConfirm` 預覽，**一個位元組都不寫**（見下方「安裝前同意閘」）。
+- **新 shell 接縫 `HostEnv.pickedFilesShareFolder`**（`env.ts`，缺省 `false`＝fail-safe）：
+
+  | shell | 值 | 理由 |
+  |---|---|---|
+  | Desktop `host-bridge.ts` | `true` | Electron 對話框回真實路徑，`<skill>/SKILL.md` 的父層就是該 skill 自己的資料夾 |
+  | Android `anybuff-host.ts` | `false` | `NativeBridge.copyToUpload` 把每次挑選**平鋪**複製進 guest `/upload`，父層是整個挑選歷史——照掃會把先前挑的附件（照片、PDF）灌進 skill |
+
+  缺省 false＝未宣告的 shell 維持單檔語意，誤配方向永遠是「少做事」。
+- **另一道護欄**：檔案位於**慣例 skills 根**（`<…>/.agents/SKILL.md`、`<…>/.claude/SKILL.md`）時不走整包——根是「skills 的容器」，不是一個 skill，掃父層會把使用者的其他 skill 併進新資料夾。
+- **走查規則**（`scanSkillFolder`）：
+  - **不跟隨任何 link**（symlink／Windows junction，`lstat` 皆視為 link）——否則會讀到挑選範圍外的內容，且 link 環會永不終止；
+  - **不進入 `.git`／`node_modules`**；
+  - **沒有任何大小或檔案數配額**——使用者挑了什麼就裝什麼。邊界只由上面兩條與「檔案確實讀得到」構成；
+  - 跳過項（link／讀不到）以 `warning` 回報，**封頂引述前 5 條＋「and N more」**（沿用 P1 規則，`formatSkipWarnings` 兩路共用）。
+- **回報擴充**：`{ok:true, name, path, fileCount?, warning?}`——UI 顯示「Installed: fortune-master (12 files)」並在有跳檔時附上 warning；`exists` 失敗信封帶 `name`（frontmatter 名）供覆寫確認框標籤；**新 `folderConfirm` 失敗信封**（v1.7）＝整包預覽：`{ok:false, folderConfirm:true, name, files[], fileCount, warning?, exists, error?: undefined}`，`files` 即「確認後會寫入的路徑」（`SKILL.md` 恆為首位）。
+- **安裝前同意閘（v1.7）**：整包安裝**第一次呼叫絕不落地**——host 回 `folderConfirm`（上面那份清單＋是否會覆寫既有 skill），UI 用**同一個**同意對話框一次問完（含覆寫），點「Install」/「Overwrite」後才帶 `confirmFolder: true` 重送。這道閘**在 host 端**（與 `exists` 同形）：忘記處理的 client 只會「少做事」（退回單檔），不會「多做事」（靜默掃資料夾）。對話框純顯示上限 100 筆＋「and N more」，**安裝仍整包**；跳過項（link／讀不到）在預覽階段就顯示，不必等事後。
+- **大小寫變體修復（v1.7）**：挑到 `skill.md`／`Skill.md` 過去因 gate 用 `f.path === 'SKILL.md'` 精確比對而**靜默退回單檔**（附件又掉了，正是本功能要消滅的缺陷）。`planSkillFolder` 現在把**被挑選的那份**正規化為 `SKILL.md`（loader 唯一認得的名字），同層另一個變體**跳過並回報 warning**——Windows/macOS 上兩者是同一個檔，寫兩個會在驗證之後互相覆蓋。
+- **列表檔案數**：`SkillInfo.fileCount`＝skill 資料夾的檔案數（`countSkillFiles`），列表在 `>1` 時於 footer 顯示徽章。原本「匯入掉了 references」完全無跡象，現在一眼可見。
+- **大小／數量限制全部移除（v1.5／v1.6）**：本地檔案匯入與 GitHub 下載都不設單檔／總量／檔案數上限；`installSkill`／`saveSkillFile`／`importSkillFile`／`readSkillFile` 的 200KB 檢查全部刪除，GitHub 的 30 檔／2MB 預過濾整段移除。**唯一的硬失敗是內容不合法或網路失敗**（frontmatter 壞、name 不符、host 不在白名單、路徑 traversal），不是「它太大了」。
+- **`Downloads/SKILL.md` 已由同意閘處理（v1.7 取代舊取捨）**：舊版把「skill 檔與雜物同資料夾會整包掃入」記為已知取捨，並把「安裝前預覽 N 個檔案？」列為 P2。現在**預覽就是第一步**：清單先擺在眼前、使用者不點 Install 就什麼都不寫（`SKILL.md` 置於 Downloads 根目錄實測：預覽列出 `invoice.pdf`／`photos/trip.jpg` 等同層雜物，未經同意零落地）。原本的三項緩解（明示檔案數＋列表徽章＋檔案總管）保留，作為**同意之後**的可見性。
+- **附帶修復**：`installSkillMulti` 的三處資料夾 `renameSync` 改用 `atomic-write.ts` 的 `renameWithRetry`（ADR-13 第 4 點要求 EPERM/EBUSY 退避重試）。原實作是裸 rename——**Windows 上對剛寫完的資料夾 rename 會 EPERM**，本測試實測重現（覆寫安裝直接失敗）。
 
 ### D4：run wiring（一行）
 
@@ -159,7 +192,7 @@ includeHomeSkills: currentSettings.globalSkillsEnabled,
      - Android（`true`）：**Edit**（modal：name 欄**唯讀**＝資料夾名、description＋body 可編輯，儲存走 `saveSkillFile`；frontmatter 壞值被擋時顯示錯誤並保留舊檔）＋ **Delete**（confirm 對話框 → `deleteSkill`）；
      - 空狀態英文文案（Desktop 提示可把 `<name>/SKILL.md` 直接放進顯示的路徑；Android 提示用下方按鈕安裝）；
    - **New skill** 按鈕（雙端）→ 表單（name 即時 regex 驗證＋路徑預覽、description、body 範本預填 frontmatter 骨架）→ `createSkill`；
-   - **Import from file** 按鈕（雙端）→ `window.AnyBuff.selectFiles()`（Desktop 對話框／Android SAF picker——Android 已由 NativeBridge `copyToUpload` 把檔案帶進沙箱）→ 逐檔 `importSkillFile`（**壞檔不擋好檔**，逐檔回報結果，鏡像 `importModelCapabilities` 模式）；
+   - **Import from file** 按鈕（雙端）→ `window.AnyBuff.selectFiles()`（Desktop 對話框／Android SAF picker——Android 已由 NativeBridge `copyToUpload` 把檔案帶進沙箱）→ 逐檔 `importSkillFile`（**壞檔不擋好檔**，逐檔回報結果，鏡像 `importModelCapabilities` 模式）。按鈕 tooltip 與空狀態文案說明「挑某 skill 自己的 `SKILL.md` 會連 references／scripts 一起安裝」（v1.4）；結果顯示 `Installed: name (N files)`，有跳檔時附 warning；列表每列在檔案數 >1 時顯示檔案數徽章；
    - **From GitHub**（雙端）：輸入 `owner/repo`（或 `github.com/owner/repo` URL）→ `listGithubSkills` → 候選列表（name ＋ fileCount）勾選 → `downloadGithubSkill` → 完成後列表刷新；有 `warning`（超限跳檔）時明確顯示。
 5. **skill 檔案寫入一律走獨立 channels，絕不經 `saveSettings`**（skill 內容是任意文字，混進 settings JSON 會破壞單一檔案解析——ADR-27 #1「解析失敗致命」同形考量）；
 6. **host-ws shim**（`desktop/src/renderer/src/host/host-ws.ts`）與 **preload 型別**加新方法（Android 走 WS、Desktop 走 IPC，兩者介面需對齊）。
@@ -216,7 +249,8 @@ SettingsModal 'skills' tab
   │
   ├─ 新增/匯入/GitHub（雙端）→ createSkill | importSkillFile | downloadGithubSkill
   │        → installSkill（name regex + frontmatter 驗證 + exists-confirm + ADR-13 原子寫入
-  │           + traversal 拒絕 + 多檔整包原子安裝）
+  │           + traversal 拒絕）；資料夾形態（GitHub 下載、檔案感知匯入）走 installSkillMulti
+  │           （整包原子安裝，無任何配額；回報 fileCount／warning）
   │        → Desktop：落 %USERPROFILE%\.agents\skills\<name>\（檔案總管即時可見，與其他 harness 共用）
   │        → Android：落沙箱 /root/.agents/skills/<name>/（app 私有，Skills 頁即唯一介面）
   │
@@ -224,7 +258,7 @@ SettingsModal 'skills' tab
            → saveSkillFile / deleteSkill → 全域根內驗證 → 原子寫入 / 遞迴刪除
 ```
 
-匯入來源路徑相容性：Desktop `selectFiles()` 回絕對路徑（host 直接可讀）；Android `pickFiles` 已由 `copyToUpload` 複製到 `/upload`（guest 路徑，host 綁定可讀）——**同一個 `importSkillFile` channel 雙端通吃，無分支**。
+匯入來源路徑相容性：Desktop `selectFiles()` 回絕對路徑（host 直接可讀）；Android `pickFiles` 已由 `copyToUpload` 複製到 `/upload`（guest 路徑，host 綁定可讀）——**同一個 `importSkillFile` channel 雙端通吃**。v1.4 的資料夾感知是唯一的分支點，且由 shell 接縫 `pickedFilesShareFolder` 表達（Desktop true／Android false），**不是路徑字串比對**（見 D3.1）。
 
 ---
 
@@ -282,14 +316,25 @@ SettingsModal 'skills' tab
   - **fail-safe**：未宣告 scope 的測試 host（缺省 `shared`）呼叫 save/delete → 拒絕。
 - [ ] 手動新增（雙端）→ 檔案落在全域根 `\<name>\SKILL.md`（Desktop 檔案總管驗證；Android 由列表與 run 行為驗證）→ 下一則訊息模型可見；非法名稱（大寫／底線）被即時擋下。
 - [ ] 檔案匯入（雙端）：合法 md 裝成 skill；**壞檔（無 frontmatter／名稱非法）回明確錯誤且不影響同批其他檔**；同名已存在走 confirm 流程。
+- [ ] **檔案感知匯入（v1.4）**：
+  - Desktop 挑 `<skill>/SKILL.md`（該資料夾含 `references/`）→ **references 一併落地**（檔案總管可見）、notice 顯示檔案數、列表顯示檔案數徽章；
+  - 覆寫已安裝 skill 時 confirm 後**整包替換**（上游已刪的檔案不得殘留）；
+  - Android（`pickedFilesShareFolder: false`）挑 `SKILL.md` → **只裝該檔**，不掃 `/upload` 的其他挑選；
+  - 挑非 `SKILL.md` 的檔 → 單檔語意不變；資料夾內有 symlink／junction／`.git`／`node_modules` → 不被帶入；**單檔 300KB 照樣完整安裝（v1.5：無大小限制）**。
+- [ ] **安裝前同意閘（v1.7）**：
+  - 挑 `<skill>/SKILL.md`（資料夾有附檔）→ **第一次呼叫不落地**：Notice 不出現、`~/.agents/skills/<name>` 不存在，UI 出對話框列出**逐檔清單＋總數**（`SKILL.md` 恆首位、超過 100 筆顯示「and N more」、跳過項在預覽就顯示）；
+  - 對話框說「會覆寫既有 skill」且按鈕為 Overwrite 時，按一次即完成「安裝資料夾」＋「覆寫同名」兩件事（**不出第二個對話框**）；按 Cancel → 一個位元組都不寫；
+  - **`~/Downloads/SKILL.md`（同層有 `invoice.pdf`、`photos/` 等雜物）**→ 清單逐條列出雜物、未經同意零落地；
+  - 大小寫變體 `skill.md`／`Skill.md` → 仍走資料夾模式（附件不掉）、落地名為 `SKILL.md`、同層另一變體被跳過且 warning 可見；
+  - Android（`pickedFilesShareFolder: false`）→ 不會出現該對話框（單檔語意）。
 - [ ] **R3 驗收線**：`globalSkillsEnabled: false` 設定後，隨便在任一 Settings 分頁存一次檔，回讀仍為 `false`（不被 save payload 抹除）；`globalSkillsEditable` 不出現在存檔內容（派生值不持久化）。
 - [ ] 安裝檔一律原子寫入（ADR-13）；路徑 traversal 測試全數拒絕（含 delete 的「全域根本身」「`..` 子路徑」個案）。
 - [ ] **Android**：Skill 頁安裝後，列表、`/` 選單、模型 `skill` 工具三處可見（**無需重啟引擎**——不涉及掛載）；全程無 AFA 依賴。
 
 ### P1
 
-- [ ] `owner/repo`（或完整 URL）→ 列出 repo 內含 `SKILL.md` 的資料夾（含 fileCount）→ 勾選下載 → **SKILL.md 與同目錄 references/assets 附檔一併安裝**（多檔整包原子落地）→ 列表出現。
-- [ ] 超限（>30 檔／>200KB 單檔／>2MB 總量）：跳過超限檔並回 `warning`，UI 明確顯示；安裝結果仍可用。
+- [ ] `owner/repo`（或完整 URL）→ 列出 repo 內含 `SKILL.md` 的資料夾（含 fileCount）→ 勾選下載 → **SKILL.md 與同目錄所有 references/assets 附檔一併安裝**（多檔整包原子落地）→ 列表出現。
+- [ ] **無配額（v1.5）**：42 檔（含 2MB 附檔）的資料夾**全部落地**、無 warning；沒有任何檔案因為大小或數量被丟棄。GitHub `truncated` tree 才會回 warning（且不丟檔）。
 - [ ] rate limit（403/429）回明確訊息（含 60/hr unauthenticated 說明）；traversal 路徑、非 `SKILL.md` 資料夾、白名單外 host 一律拒絕。
 - [ ] 同名已存在走 confirm 流程（覆寫＝整包原子替換）。
 
@@ -307,6 +352,8 @@ SettingsModal 'skills' tab
 | **R6** | **scope gate 誤配**：Android 漏設 `'managed'` → Edit/Delete 消失（fail-safe 方向、無資料風險）；**Desktop 誤設 `'managed'` → 共用目錄暴露編輯面** | 兩 shell 的 `installHostEnv` 帶**顯式**欄位＋註解；handler gate 測試（shared 拒絕／managed 允許／缺省拒絕）鎖定；UI 只是鏡像、host gate 才是安全線 |
 | **R7** | Agent 理論上可經檔案工具寫 `/root/.agents/skills`（沙箱內可寫）種 skill | AnyBuff 未給 agent 任何 home-skill 寫入通道或提示（agent prompt 一律指向**專案** `.agents/skills/`）；P2 provenance 可觀察；接受 |
 | **R8** | 上游 merge | 改動全在 AnyBuff 自有層（host-core env/settings/channels/start-run、desktop renderer/shell）——上游無對應檔案；**SDK／agent-runtime／Android Kotlin 零改動** |
+| **R9** | **檔案感知匯入走錯分支**（v1.4）：① 若無 `pickedFilesShareFolder` 接縫，Android 的 `/upload` 平鋪暫存區會被當成 skill 資料夾，把使用者先前挑的附件一併灌進 skill；② 若不錨定慣例檔名，`Downloads/SKILL.md` 會掃進整個下載資料夾 | 接縫缺省 `false`（fail-safe＝不做）；錨定 `SKILL.md` 慣例名；skills 根（`.agents`／`.claude`）層的 `SKILL.md` 不走整包；配額上限約束；安裝結果與列表均顯示檔案數供事後辨識。**接受**「skill 檔與雜物同資料夾」會一併安裝（見 D3.1 已知取捨） |
+| **R10** | 資料夾 rename 在 Windows 遭 EPERM（AV／索引器鎖）→ 覆寫安裝失敗（ADR-13 第 4 點要求退避重試，原本的 `installSkillMulti` 未實作） | 三處 rename 改用 `atomic-write.ts` 的 `renameWithRetry`（50ms 起、×2、6 次）；重試耗盡保留備份並回報失敗 |
 
 ---
 
@@ -319,6 +366,10 @@ SettingsModal 'skills' tab
 5. **上游 merge 觸及** `sdk/src/skills/load-skills.ts`／`run-state.ts` 時：本計畫零改動 SDK，但需複查 run-state「一個 flag 管 loader 與 fileContext」的通道是否仍成立（`run-state.ts:741`）。
 6. `listSkills`（Composer `/` 選單）行為**不變**（專案＋home 兩層）；Skills 頁用獨立的 `listGlobalSkills`（不依賴 cwd，未開專案也能用）。
 7. **本計畫不動 Android 殼層的 proot/掛載面**（`ProotRunner`／`NativeBridge`／`file_paths.xml` 零改動）；`anybuff-host.ts` 僅加一行 scope 注⼊。舊 `/skills` bind 維持現狀（空接線，無害）。日後若真要掛公開資料夾，另立計畫。
+8. **`pickedFilesShareFolder` 是安全線接縫，不得為省事改成路徑字串比對**（v1.4）：Android 的 `/upload` 是**平鋪暫存區**，父層內容＝整個挑選歷史；一旦有人用「看起來像 skill 資料夾」的路徑啟發式取代接縫，用户的附件（照片、PDF）會被灌進全域 skill——而全域 skill 會**自動餵給模型**（ADR-29 決策 1），等於把附件內容洩漏進 prompt。兩 shell 都必須顯式宣告。
+9. **skill 內容沒有任何限制**（v1.5／v1.6）：本地匯入、GitHub 下載、`installSkill`、`saveSkillFile`、`readSkillFile` 一律不設單檔／總量／檔案數上限。**不要重新引入截斷式配額**——被截斷的 skill 會載入、會自我介紹、而 SKILL.md 指向的檔案已消失，比直接失敗更糟。`GITHUB_MAX_FILES`／`GITHUB_MAX_TOTAL_BYTES` 已不存在（grep 零命中是預期的）。
+10. **列表檔案數就是真實檔案數**（v1.5）：`countSkillFiles` 與安裝走同一支無配額走查，兩者永远一致。
+11. **無配額的對價是「同意閘」，兩者是一組設計，不得只留一半**（v1.7）：把配額全部拿掉之後，唯一擋住「挑一個檔卻裝進整個資料夾」的東西就是 `importSkillFile` 的 `folderConfirm` 預覽——**它在 host 端，與 `exists` 同形**。**不要**把預覽改成 client 主動詢問（opt-in）：忘記呼叫的 client 會直接靜默整包安裝，正是本計畫要消滅的缺陷；**也不要**讓 folder 分支在沒讀到 `confirmFolder` 時往下走。UI 顯示的 100 筆是**純顯示上限**，安裝清單仍整包——不要拿它當配額用。
 
 ---
 
@@ -343,6 +394,10 @@ bun run test:host-core      # channel contract tests ＋ 下列新增測試
 - `listGlobalSkills`：雙根掃描（`.agents` 勝 `.claude` 同名）、無目錄回空陣列；
 - `start-run` wiring：run options 收到 `includeHomeSkills === settings.globalSkillsEnabled`；
 - `importSkillFile`：壞檔不擋好檔（逐檔回報）；
+- **檔案感知匯入（v1.4／v1.5）**：整資料夾落地＋回報 `fileCount`；資料夾名取 frontmatter（解壓縮殘留名如 `anthropics-skills-1.2.3/`）；非 `SKILL.md` 的檔維持單檔語意；只有 SKILL.md 的資料夾維持單檔路徑；**`pickedFilesShareFolder` 未宣告（Android）只裝該檔**；skills 根層的 `SKILL.md` 不掃兄弟 skill；**300KB 附檔完整安裝且無 warning**；`.git`／`node_modules` 不走查；**link 不跟隨**（無權限建 symlink 的主機自動略過該斷言）；exists 信封帶 frontmatter name、confirm 後整包替換（上游刪掉的檔不得殘留）；壞 frontmatter 不落地半套；
+- **安裝前同意閘（v1.7）**：首呼回 `folderConfirm` 且**零落地**（`files`＝安裝清單、`SKILL.md` 恆首位、`fileCount`、`exists` 預告覆寫、link 跳檔在預覽即可見）、`confirmFolder` 後才落地；同層雜物（`invoice.pdf`／`photos/`）逐條出現在預覽而未經同意零落地；大小寫變體 `Skill.md` 走資料夾模式並落地為 `SKILL.md`、同層另一變體被跳過並回報；`folderConfirm` 信封**穿過 dispatcher 完整無缺**（superset failure 不被重建）；
+- **檔案數**：`countSkillFiles` 回真實檔案數（41 檔的資料夾回 41）、`listGlobalSkills` 帶 `fileCount`；
+- **GitHub 無配額**：42 檔（含 2MB 附檔）全數落地、無 warning；`truncated` tree 只回 warning 不丟檔；
 - P1：`listGithubSkills` 資料夾級收集、`downloadGithubSkill` 子目錄下載上限／跳檔 warning／多檔整包原子、host 白名單與 traversal 拒絕。
 
 **手動驗收**：§6 P0（雙端，含平台分流個案）→ P1。

@@ -59,6 +59,8 @@ interface GlobalSkillView {
   root: '.agents' | '.claude'
   /** frontmatter metadata.source stamp (P2 provenance badge). */
   provenance?: string
+  /** Files in the skill folder (SKILL.md + references/scripts/assets). */
+  fileCount?: number
 }
 
 /** Candidate folder from a GitHub repo scan (skills plan P1). */
@@ -68,13 +70,41 @@ interface GithubSkillCandidate {
   fileCount: number
 }
 
-/** Pending "skill already exists — overwrite?" request (create/import/github paths). */
+/** One import the host runs once the user has consented to it. */
+interface ImportRequest {
+  sourcePath: string
+  /** Replace an existing skill with this name (already explained in the dialog). */
+  confirm?: boolean
+  /** Install the WHOLE folder listed in SkillOverwriteRequest.folders. */
+  confirmFolder?: boolean
+}
+
+/** A folder-shaped pick, previewed before anything is written. */
+interface FolderImportPreview {
+  /** Frontmatter name — the skill an install would create or replace. */
+  name: string
+  /** Install paths, SKILL.md first — exactly what a confirmed install writes. */
+  files: string[]
+  fileCount: number
+  /** Skips the walk already knows about (links, unreadable files). */
+  warning?: string
+  /** Confirming replaces an existing skill with this name. */
+  exists: boolean
+}
+
+/** Pending "install needs consent" request (create/import/github paths): either
+ *  an overwrite question or — for a folder-shaped import — the whole file list
+ *  shown before the first byte is written. */
 interface SkillOverwriteRequest {
   /** Which install path is waiting for confirmation. */
   kind: 'create' | 'import' | 'github'
   createPayload?: { name: string; description: string; body: string }
-  /** Import source paths that hit an existing skill. */
-  importPaths?: string[]
+  /** Import requests to run when the user confirms (folder + overwrite mixes). */
+  importRequests?: ImportRequest[]
+  /** Folder-shaped picks among them — drives the preview body. */
+  folders?: FolderImportPreview[]
+  /** True when confirming replaces at least one existing skill. */
+  willOverwrite?: boolean
   /** Pending GitHub download that hit an existing skill. */
   githubPayload?: { repo: string; path: string }
   label: string
@@ -1141,40 +1171,110 @@ export default function SettingsModal({
     }
   }
 
-  /** Import picked markdown files — bad files report individually, never block good ones. */
-  const importSkillFiles = async (confirmPaths?: string[]) => {
+  /**
+   * Import picked markdown files — bad files report individually, never block
+   * good ones. Called with no args to run the picker; called with requests to
+   * run the ones the user just consented to (folder preview / overwrite).
+   */
+  const importSkillFiles = async (requests?: ImportRequest[]) => {
     if (typeof window.AnyBuff === 'undefined') return
     setImportingSkills(true)
     setSkillNotice(null)
     try {
-      let paths = confirmPaths
-      if (!paths) {
+      let reqs = requests
+      if (!reqs) {
         const picked = (await window.AnyBuff.selectFiles()) as string[]
-        paths = Array.isArray(picked) ? picked : []
+        const paths = Array.isArray(picked) ? picked : []
         if (paths.length === 0) return
+        reqs = paths.map((sourcePath) => ({ sourcePath }))
       }
       const installed: string[] = []
       const failed: { file: string; error: string }[] = []
-      const exists: string[] = []
-      for (const sourcePath of paths) {
-        const res = (await window.AnyBuff.importSkillFile({ sourcePath, confirm: Boolean(confirmPaths) })) as {
+      // Skipped attachments (links) are reported, never hidden: a
+      // partially-installed skill must not read as a clean install.
+      const skipped: string[] = []
+      const consent: ImportRequest[] = []
+      const folders: FolderImportPreview[] = []
+      const singleFileExists: { path: string; name?: string }[] = []
+      let willOverwrite = false
+      for (const req of reqs) {
+        const res = (await window.AnyBuff.importSkillFile({
+          sourcePath: req.sourcePath,
+          confirm: Boolean(req.confirm),
+          confirmFolder: Boolean(req.confirmFolder),
+        })) as {
           ok?: boolean
+          folderConfirm?: boolean
           exists?: boolean
           name?: string
           error?: string
+          files?: string[]
+          fileCount?: number
+          warning?: string
         }
-        if (res.ok && res.name) installed.push(res.name)
-        else if (res.exists && !confirmPaths) exists.push(sourcePath)
-        else failed.push({ file: sourcePath.split(/[\\/]/).pop() ?? sourcePath, error: res.error ?? 'unknown error' })
+        if (res.ok && res.name) {
+          // "name (12 files)" — folder-aware imports bring references/scripts
+          // along, and the count is how the user confirms that happened.
+          installed.push(
+            typeof res.fileCount === 'number' && res.fileCount > 1
+              ? `${res.name} (${res.fileCount} files)`
+              : res.name,
+          )
+          if (res.warning) skipped.push(`${res.name}: ${res.warning}`)
+        } else if (res.folderConfirm && res.name && res.files) {
+          // Folder-shaped pick: the host returned its install plan and wrote
+          // NOTHING. Ask first — a SKILL.md sitting in an ordinary folder would
+          // otherwise sweep that whole folder into a skill unasked.
+          folders.push({
+            name: res.name,
+            files: res.files,
+            fileCount: res.fileCount ?? res.files.length,
+            ...(res.warning ? { warning: res.warning } : {}),
+            exists: Boolean(res.exists),
+          })
+          // One dialog covers both consent questions: install the folder, and
+          // (when it says so) replace the skill of the same name.
+          consent.push({
+            sourcePath: req.sourcePath,
+            confirm: Boolean(res.exists),
+            confirmFolder: true,
+          })
+          if (res.exists) willOverwrite = true
+        } else if (res.exists && !req.confirm && !req.confirmFolder) {
+          singleFileExists.push({ path: req.sourcePath, name: res.name })
+          consent.push({ sourcePath: req.sourcePath, confirm: true })
+          willOverwrite = true
+        } else {
+          failed.push({
+            file: req.sourcePath.split(/[\\/]/).pop() ?? req.sourcePath,
+            error: res.error ?? 'unknown error',
+          })
+        }
       }
-      if (exists.length > 0) {
-        setSkillOverwrite({ kind: 'import', importPaths: exists, label: `${exists.length} existing skill(s)` })
+      if (consent.length > 0) {
+        setSkillOverwrite({
+          kind: 'import',
+          importRequests: consent,
+          ...(folders.length > 0 ? { folders } : {}),
+          willOverwrite,
+          // Prefer the frontmatter name the host echoes back — it names the
+          // skill that will actually be replaced.
+          label:
+            folders.length === 1
+              ? `"${folders[0].name}"`
+              : folders.length > 1
+                ? `${folders.length} skill folders`
+                : singleFileExists.length === 1 && singleFileExists[0].name
+                  ? `"${singleFileExists[0].name}"`
+                  : `${singleFileExists.length} existing skill(s)`,
+        })
       }
       if (installed.length > 0) await refreshGlobalSkills()
-      if (installed.length > 0 || failed.length > 0) {
+      if (installed.length > 0 || failed.length > 0 || skipped.length > 0) {
         const parts: string[] = []
         if (installed.length > 0) parts.push(`Installed: ${installed.join(', ')}.`)
         for (const f of failed) parts.push(`${f.file}: ${f.error}`)
+        for (const s of skipped) parts.push(`${s}.`)
         setSkillNotice({ text: parts.join(' '), ok: failed.length === 0 })
       }
     } catch (err) {
@@ -1396,7 +1496,8 @@ export default function SettingsModal({
     }
   }
 
-  /** Confirm-overwrite modal → re-run the pending install with confirm: true. */
+  /** Consent modal (overwrite and/or folder preview) → run the pending imports
+   *  with the flags each one was queued with. */
   const confirmSkillOverwrite = async () => {
     if (!skillOverwrite) return
     setSkillOverwriteBusy(true)
@@ -1417,10 +1518,13 @@ export default function SettingsModal({
           setSkillFormError(res.error ?? 'Could not install the skill.')
           setSkillOverwrite(null)
         }
-      } else if (skillOverwrite.kind === 'import' && skillOverwrite.importPaths) {
-        const paths = skillOverwrite.importPaths
+      } else if (skillOverwrite.kind === 'import' && skillOverwrite.importRequests) {
+        // The consent dialog's answer: folder previews run with
+        // confirmFolder, plain hits with confirm — each request carries its
+        // own flags, so one dialog can cover a mixed selection.
+        const reqs = skillOverwrite.importRequests
         setSkillOverwrite(null)
-        await importSkillFiles(paths)
+        await importSkillFiles(reqs)
       } else if (skillOverwrite.kind === 'github' && skillOverwrite.githubPayload) {
         const p = skillOverwrite.githubPayload
         setSkillOverwrite(null)
@@ -3338,7 +3442,7 @@ export default function SettingsModal({
                       className="btn ghost small"
                       onClick={() => void importSkillFiles()}
                       disabled={importingSkills}
-                      title="Install a SKILL.md from a local file"
+                      title="Install a SKILL.md from a local file — picking a skill’s own SKILL.md lists its whole folder (references and scripts included) for you to confirm"
                     >
                       <ClipboardIcon size={12} />
                       {importingSkills ? 'Importing…' : 'Import from File'}
@@ -3444,8 +3548,8 @@ export default function SettingsModal({
                       {skillsError
                         ? `Could not load global skills: ${skillsError}`
                         : globalSkillsEditable
-                          ? 'No global skills installed yet. Use New Skill or Import from File to add one.'
-                          : `No global skills found. Drop a <name>/SKILL.md folder into ~/.agents/skills, or use New Skill / Import from File.`}
+                          ? 'No global skills installed yet. Use New Skill, or Import from File — picking a skill’s own SKILL.md installs its whole folder, references and scripts included.'
+                          : `No global skills found. Drop a <name>/SKILL.md folder into ~/.agents/skills, or use New Skill / Import from File — picking a skill’s own SKILL.md installs its whole folder, references and scripts included.`}
                     </p>
                   </div>
                 ) : (
@@ -3530,6 +3634,17 @@ export default function SettingsModal({
                         <div className="local-agent-card-footer">
                           <span className="local-agent-path-label">File:</span>
                           <code className="local-agent-filepath">{s.path}</code>
+                          {/* Attachment count — only when there IS something
+                              beyond SKILL.md, which is exactly the case an
+                              import can silently get wrong. */}
+                          {typeof s.fileCount === 'number' && s.fileCount > 1 ? (
+                            <span
+                              className="local-agent-files-badge"
+                              title="SKILL.md plus references, scripts or assets in this skill folder"
+                            >
+                              {s.fileCount} files
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -3545,7 +3660,8 @@ export default function SettingsModal({
                 </div>
                 <p className="hint">
                   Install a whole skill folder — SKILL.md plus its references and assets — from a
-                  public repository. Up to 30 files, 200KB per file, 2MB total per skill.
+                  public repository. The whole folder is installed — every file it contains, at
+                  any size.
                 </p>
 
                 <div className="settings-field-group">
@@ -4551,7 +4667,8 @@ export default function SettingsModal({
         </div>
       )}
 
-      {/* Skill Already Exists — Overwrite Confirmation (create/import paths) */}
+      {/* Import Consent — folder preview and/or overwrite confirmation
+          (create/import/github paths). Nothing is written before this. */}
       {skillOverwrite && (
         <div
           className="modal-backdrop"
@@ -4561,7 +4678,11 @@ export default function SettingsModal({
             <div className="agent-delete-header">
               <div className="agent-delete-title">
                 <AlertCircleIcon size={18} />
-                <span>Skill Already Exists</span>
+                <span>
+                  {skillOverwrite.folders?.length
+                    ? 'Install Whole Skill Folder?'
+                    : 'Skill Already Exists'}
+                </span>
               </div>
               <button
                 type="button"
@@ -4574,20 +4695,61 @@ export default function SettingsModal({
               </button>
             </div>
             <div className="agent-delete-body">
-              <p>
-                {skillOverwrite.kind === 'import'
-                  ? `${skillOverwrite.label} already exist in your global skills folder.`
-                  : (
-                    <>
-                      A skill named <strong>{skillOverwrite.label}</strong> already exists.
-                    </>
-                  )}
-              </p>
-              <p className="hint">
-                {skillOverwrite.kind === 'github'
-                  ? 'Overwriting replaces the existing skill folder with the downloaded one.'
-                  : 'Overwriting replaces the existing SKILL.md file(s).'}
-              </p>
+              {skillOverwrite.folders?.length ? (
+                <>
+                  {/* Folder preview — the host wrote nothing until this is
+                      answered, so the list IS what an install would create. */}
+                  <p>
+                    {skillOverwrite.folders.length === 1
+                      ? `"${skillOverwrite.folders[0].name}" is a folder, not just a file. Installing brings all ${skillOverwrite.folders[0].fileCount} of its files:`
+                      : `${skillOverwrite.folders.length} picks are folders. Installing brings every file in each of them:`}
+                  </p>
+                  {skillOverwrite.folders.map((f) => (
+                    <div className="skill-folder-preview" key={f.name}>
+                      <div className="skill-folder-preview-title">
+                        <strong>{f.name}</strong>
+                        <span className="local-agent-files-badge">{f.fileCount} files</span>
+                      </div>
+                      {/* Display cap only: the plan and the install stay whole,
+                          a long list just scrolls instead of growing the modal. */}
+                      <ul className="skill-folder-file-list">
+                        {f.files.slice(0, 100).map((p) => (
+                          <li key={p}>
+                            <code>{p}</code>
+                          </li>
+                        ))}
+                      </ul>
+                      {f.files.length > 100 ? (
+                        <p className="hint">…and {f.files.length - 100} more files.</p>
+                      ) : null}
+                      {f.warning ? <p className="hint">Skipped: {f.warning}</p> : null}
+                    </div>
+                  ))}
+                  <p className="hint">
+                    Links and .git / node_modules are never installed.
+                    {skillOverwrite.willOverwrite
+                      ? ' An existing skill with this name will be replaced.'
+                      : ''}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    {skillOverwrite.kind === 'import'
+                      ? `${skillOverwrite.label} already exists in your global skills folder.`
+                      : (
+                        <>
+                          A skill named <strong>{skillOverwrite.label}</strong> already exists.
+                        </>
+                      )}
+                  </p>
+                  <p className="hint">
+                    {skillOverwrite.kind === 'github'
+                      ? 'Overwriting replaces the existing skill folder with the downloaded one.'
+                      : 'Overwriting replaces the existing SKILL.md file(s).'}
+                  </p>
+                </>
+              )}
             </div>
             <div className="agent-delete-footer">
               <button
@@ -4604,7 +4766,13 @@ export default function SettingsModal({
                 onClick={() => void confirmSkillOverwrite()}
                 disabled={skillOverwriteBusy}
               >
-                {skillOverwriteBusy ? 'Installing…' : 'Overwrite'}
+                {skillOverwriteBusy
+                  ? 'Installing…'
+                  : skillOverwrite.folders?.length
+                    ? skillOverwrite.willOverwrite
+                      ? 'Overwrite'
+                      : 'Install'
+                    : 'Overwrite'}
               </button>
             </div>
           </div>

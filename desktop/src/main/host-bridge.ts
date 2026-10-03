@@ -87,6 +87,11 @@ export function registerHostIpc(): { host: Host; bus: EventBus } {
     // Skills page list is READ-ONLY here; edits/deletions belong in a file
     // manager or the other harness. Explicit even though absent='shared'.
     globalSkillsScope: 'shared',
+    // The Electron file dialog returns the file's REAL path, so a picked
+    // `<skill>/SKILL.md` is still surrounded by that skill's own attachments
+    // — folder-aware skill import can read them (Android's flat /upload
+    // staging cannot; see HostEnv.pickedFilesShareFolder).
+    pickedFilesShareFolder: true,
   })
 
   const bus = createEventBus()
@@ -106,9 +111,11 @@ export function registerHostIpc(): { host: Host; bus: EventBus } {
       }
       // Failure envelopes pass through WHOLE: createSkill/importSkillFile
       // carry `exists: true` here, which drives the renderer's confirm-
-      // overwrite flow — rebuilding `{ ok, error }` silently dropped it
-      // (skills review finding 1). A superset of the old shape; the renderer
-      // still just branches on `.ok` / `.error`.
+      // overwrite flow, and importSkillFile's `folderConfirm` preview —
+      // rebuilding `{ ok, error }` silently dropped `exists` (skills review
+      // finding 1) and would break consent for folder-shaped imports.
+      // A superset of the old shape; the renderer still just branches on
+      // `.ok` / `.error`.
       return result
     })
   }

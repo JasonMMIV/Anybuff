@@ -25,15 +25,26 @@ function sleepSync(ms: number): void {
   }
 }
 
-function renameReplaceWithRetry(
-  tempPath: string,
-  filePath: string,
+/**
+ * Bounded-backoff `rename` per spec points 4-5: EPERM/EACCES/EBUSY (and
+ * EEXIST, which a replace may legitimately race) get short retries for AV /
+ * indexer locks; anything else — or an exhausted budget — propagates so the
+ * caller keeps the old target and reports the failure.
+ *
+ * Exported for the multi-file skill installer, whose atomic unit is a DIRECTORY
+ * rename (temp folder → `<skills>/<name>`). Same rules, same backoff: a Windows
+ * lock on a just-written folder is routine, and failing the install on the
+ * first EPERM would make folder installs flaky exactly when they are used.
+ */
+export function renameWithRetry(
+  fromPath: string,
+  toPath: string,
   attempts = 6,
 ): void {
   let delayMs = 50
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      renameSync(tempPath, filePath)
+      renameSync(fromPath, toPath)
       return
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? ''
@@ -75,5 +86,5 @@ export function writeFileAtomic(filePath: string, content: string): void {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(tempPath, content, 'utf-8')
   fsyncFile(tempPath)
-  renameReplaceWithRetry(tempPath, filePath)
+  renameWithRetry(tempPath, filePath)
 }

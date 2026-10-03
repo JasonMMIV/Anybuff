@@ -24,6 +24,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import {
   buildSkillDocument,
+  countSkillFiles,
   deleteSkill,
   globalSkillRoots,
   importSkillFile,
@@ -44,6 +45,10 @@ export interface SkillInfo {
   root: '.agents' | '.claude'
   /** frontmatter metadata.source stamp (P2 provenance badge). */
   provenance?: string
+  /** Files in the skill folder (SKILL.md + references/scripts/assets). The list
+   *  shows it so a skill carrying attachments is visibly more than a lone
+   *  SKILL.md — an import that dropped them used to be invisible. */
+  fileCount?: number
 }
 
 const SKILL_ROOTS = ['.agents', '.claude'] as const
@@ -75,7 +80,8 @@ function scanSkillsDir(skillsDir: string, source: 'project' | 'home', root: '.ag
     return out
   }
   for (const name of names) {
-    const skillFile = join(skillsDir, name, 'SKILL.md')
+    const skillDir = join(skillsDir, name)
+    const skillFile = join(skillDir, 'SKILL.md')
     if (!existsSync(skillFile)) continue
     try {
       const content = readFileSync(skillFile, 'utf-8')
@@ -94,6 +100,7 @@ function scanSkillsDir(skillsDir: string, source: 'project' | 'home', root: '.ag
         source,
         root,
         ...(provenance ? { provenance } : {}),
+        fileCount: countSkillFiles(skillDir),
       })
     } catch {
       // skip unreadable skill
@@ -119,9 +126,12 @@ export function listSkills(cwd: string): SkillInfo[] {
 
 /** AnyBuff:readSkillFile */
 export function readSkillFile(path: string): unknown {
+  // No size cap: this channel serves `/skill:name` injection and the skill
+  // editor, so a cap here would make a large-but-legal SKILL.md installable
+  // and then unreadable by the app itself.
   try {
     const stat = statSync(path)
-    if (!stat.isFile() || stat.size > 200 * 1024) return { ok: false, error: 'Not a file or larger than 200KB' }
+    if (!stat.isFile()) return { ok: false, error: 'Not a file.' }
     return { ok: true, content: readFileSync(path, 'utf-8') }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -149,8 +159,15 @@ export function createSkill(payload: {
   return installSkill({ name: payload.name, content, confirm: payload.confirm, source: 'manual' })
 }
 
-/** AnyBuff:importSkillFile — picked markdown file → verbatim install. */
-export function importSkillFileChannel(payload: { sourcePath: string; confirm?: boolean }): unknown {
+/** AnyBuff:importSkillFile — picked markdown file → verbatim install, or the
+ *  whole skill folder when the pick is that folder's own SKILL.md. A
+ *  folder-shaped pick ANSWERS with `folderConfirm` (the file list) and waits
+ *  for `confirmFolder: true`; the consent gate lives host-side. */
+export function importSkillFileChannel(payload: {
+  sourcePath: string
+  confirm?: boolean
+  confirmFolder?: boolean
+}): unknown {
   return importSkillFile(payload)
 }
 

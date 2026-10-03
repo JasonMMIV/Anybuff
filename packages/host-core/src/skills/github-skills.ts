@@ -10,10 +10,14 @@
  * `parseGithubRepo`'s strict regexes — user input can never steer a request
  * to another host (defense-in-depth check in ghFetch anyway, plan D3).
  *
- * Quotas (plan D3): ≤30 files, ≤200KB per file (readSkillFile's cap), ≤2MB
- * total — filtered on the tree's `size` BEFORE downloading, over-limit files
- * are skipped and reported as `warning`; the SKILL.md itself never gets
- * skipped (it fails hard instead). Rate-limit answers (403/429 with
+ * NO file-count or byte budget (2026-10-03): the whole folder is downloaded and
+ * installed, at any size. The former ≤30 files / ≤2MB caps only ever produced
+ * half-installed skills — which load, advertise themselves to the model, and
+ * point at files that were silently dropped. `listGithubSkills` already reports
+ * each candidate's file count, so the choice of folder is the user's; a skill
+ * is installed whole or not at all. The one remaining warning is GitHub's own
+ * `truncated` tree flag (the trees API cut off a huge repository listing).
+ * Rate-limit answers (403/429 with
  * x-ratelimit-remaining: 0) explain the 60/hr unauthenticated ceiling —
  * requests stay UNAUTHENTICATED by design (the optional P2 token was removed
  * 2026-10-03 as redundant; see the skills plan P2 note).
@@ -37,18 +41,6 @@ import { isValidSkillName, SKILL_FILE_NAME } from '@codebuff/common/constants/sk
 const API_BASE = 'https://api.github.com'
 const RAW_BASE = 'https://raw.githubusercontent.com'
 const ALLOWED_HOSTS = new Set(['api.github.com', 'raw.githubusercontent.com'])
-
-export const GITHUB_MAX_FILES = 30
-export const GITHUB_MAX_FILE_BYTES = 200 * 1024
-export const GITHUB_MAX_TOTAL_BYTES = 2 * 1024 * 1024
-
-/**
- * How many per-file skip reasons are quoted in the returned `warning`.
- * A repo-root install from a large repository would otherwise serialize
- * thousands of entries into one giant string (skills review #5); the count
- * of the rest is appended instead.
- */
-const MAX_QUOTED_SKIPS = 5
 
 const REQUEST_TIMEOUT_MS = 15_000
 
@@ -234,42 +226,12 @@ export async function downloadGithubSkill(input: {
     return { ok: false, error: `No ${SKILL_FILE_NAME} in "${folder || 'the repository root'}" of this repository.` }
   }
 
-  // Quota pre-filter on the tree's size (download only what survives).
-  // SKILL.md is processed first so the skill itself is never quota-skipped.
-  const warnings: string[] = []
-  const ordered = [skillEntry, ...inFolder.filter((b) => b !== skillEntry)]
-  const accepted: TreeEntry[] = []
-  let projected = 0
-  for (const e of ordered) {
-    const size = e.size ?? 0
-    if (accepted.length >= GITHUB_MAX_FILES) {
-      warnings.push(`"${e.path}" exceeds the ${GITHUB_MAX_FILES}-file limit`)
-      continue
-    }
-    if (size > GITHUB_MAX_FILE_BYTES) {
-      warnings.push(`"${e.path}" is larger than 200KB`)
-      continue
-    }
-    if (projected + size > GITHUB_MAX_TOTAL_BYTES) {
-      warnings.push(`"${e.path}" would exceed the 2MB total limit`)
-      continue
-    }
-    accepted.push(e)
-    projected += size
-  }
-  if (!accepted.includes(skillEntry)) {
-    return { ok: false, error: `The skill's ${SKILL_FILE_NAME} exceeds the 200KB single-file install limit.` }
-  }
-
   // SKILL.md first: it carries the frontmatter name the install keys on.
   let skillData: Buffer
   try {
     skillData = await rawFetch(parsed, skillEntry.path)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
-  if (skillData.byteLength > GITHUB_MAX_FILE_BYTES) {
-    return { ok: false, error: `The skill's ${SKILL_FILE_NAME} exceeds the 200KB single-file install limit.` }
   }
   const skillText = skillData.toString('utf-8')
   const name = extractSkillName(skillText)
@@ -302,22 +264,16 @@ export async function downloadGithubSkill(input: {
     }
   }
 
+  // Every other file in the folder, all of it. No file-count budget, no byte
+  // budget: a skill folder is installed whole or not at all, and a truncated
+  // skill is a broken skill — it loads, it advertises itself to the model, and
+  // its SKILL.md points at files that were silently dropped. The candidate list
+  // already shows each folder's file count, so the choice is the user's.
   const files: MultiSkillFile[] = [{ path: SKILL_FILE_NAME, data: skillData }]
-  let downloaded = skillData.byteLength
   try {
-    for (const e of accepted) {
+    for (const e of inFolder) {
       if (e === skillEntry) continue
       const data = await rawFetch(parsed, e.path) // a hard failure aborts: no half-skill
-      // Post-download byte checks — tree `size` is advisory, bytes are truth.
-      if (data.byteLength > GITHUB_MAX_FILE_BYTES) {
-        warnings.push(`"${e.path}" is larger than 200KB`)
-        continue
-      }
-      if (downloaded + data.byteLength > GITHUB_MAX_TOTAL_BYTES) {
-        warnings.push(`"${e.path}" would exceed the 2MB total limit`)
-        continue
-      }
-      downloaded += data.byteLength
       files.push({ path: e.path.slice(prefix.length), data })
     }
   } catch (err) {
@@ -326,17 +282,8 @@ export async function downloadGithubSkill(input: {
 
   const installed = installSkillMulti({ name, files, confirm: input?.confirm, source: 'github' })
   if (!installed.ok) return installed
-  const quotedSkips = warnings.slice(0, MAX_QUOTED_SKIPS)
-  const unquotedSkips = warnings.length - quotedSkips.length
-  const warning = [
-    ...(truncated ? ['repository tree was truncated by GitHub'] : []),
-    ...(warnings.length > 0
-      ? [
-          `skipped ${quotedSkips.join('; ')}${
-            unquotedSkips > 0 ? ` (and ${unquotedSkips} more skipped files)` : ''
-          }`,
-        ]
-      : []),
-  ].join(' — ')
+  // The one warning left is GitHub's own: a repository tree big enough that
+  // the trees API cut it off, so the folder may be missing files we never saw.
+  const warning = truncated ? 'repository tree was truncated by GitHub' : ''
   return { ok: true, name: installed.name, path: installed.path, ...(warning ? { warning } : {}) }
 }

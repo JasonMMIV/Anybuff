@@ -593,7 +593,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     listGlobalSkills: () => call('listGlobalSkills'),
     createSkill: (payload: { name: string; description: string; body: string; confirm?: boolean }) =>
       call('createSkill', payload),
-    importSkillFile: (payload: { sourcePath: string; confirm?: boolean }) => call('importSkillFile', payload),
+    importSkillFile: (payload: { sourcePath: string; confirm?: boolean; confirmFolder?: boolean }) =>
+      call('importSkillFile', payload),
     saveSkillFile: (payload: { path: string; content: string }) => call('saveSkillFile', payload),
     deleteSkill: (payload: { path: string }) => call('deleteSkill', payload),
     /* GitHub download (skills plan P1) — repo scan + whole-folder install */

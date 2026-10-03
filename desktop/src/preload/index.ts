@@ -135,7 +135,7 @@ const api = {
   listGlobalSkills: () => ipcRenderer.invoke('AnyBuff:listGlobalSkills'),
   createSkill: (payload: { name: string; description: string; body: string; confirm?: boolean }) =>
     ipcRenderer.invoke('AnyBuff:createSkill', payload),
-  importSkillFile: (payload: { sourcePath: string; confirm?: boolean }) =>
+  importSkillFile: (payload: { sourcePath: string; confirm?: boolean; confirmFolder?: boolean }) =>
     ipcRenderer.invoke('AnyBuff:importSkillFile', payload),
   saveSkillFile: (payload: { path: string; content: string }) =>
     ipcRenderer.invoke('AnyBuff:saveSkillFile', payload),

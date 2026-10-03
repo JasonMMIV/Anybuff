@@ -355,14 +355,18 @@ describe('downloadGithubSkill', () => {
     expect(readFileSync(join(agentsRoot, 'demo-skill', 'SKILL.md'), 'utf-8')).toContain('Demo v2')
   })
 
-  test('quota skips are reported as warning (file cap + single-file cap)', async () => {
+  test('a large skill folder installs whole — no file-count or byte budget', async () => {
     install()
     const tree: Array<{ path: string; size: number }> = [
       { path: 'skills/demo/SKILL.md', size: 1024 },
-      { path: 'skills/demo/too-big.md', size: 300 * 1024 }, // > 200KB → skipped
     ]
     const files: Record<string, Uint8Array | string> = { 'skills/demo/SKILL.md': SKILL_MD }
-    for (let i = 1; i <= 31; i++) {
+    // 2MB attachment + 40 files: comfortably past the old 30-file / 2MB caps.
+    // Everything must land — a truncated skill is a broken skill.
+    const big = new Uint8Array(2 * 1024 * 1024).fill(3)
+    tree.push({ path: 'skills/demo/big-assets.bin', size: big.byteLength })
+    files['skills/demo/big-assets.bin'] = big
+    for (let i = 1; i <= 40; i++) {
       const p = `skills/demo/f${i}.md`
       tree.push({ path: p, size: 10_240 })
       files[p] = `file ${i}`
@@ -372,72 +376,34 @@ describe('downloadGithubSkill', () => {
     const res = await downloadGithubSkill(downloadPayload({ confirm: true }))
     expect(res.ok).toBe(true)
     if (!res.ok) return
-    expect(res.warning).toContain('larger than 200KB')
-    expect(res.warning).toContain('exceeds the 30-file limit')
+    expect(res.warning).toBeUndefined()
 
-    // 30 files landed: SKILL.md + 29 of the small ones (too-big never fetched).
     const dir = join(agentsRoot, 'demo-skill')
     const count = (d: string): number =>
       readdirSync(d, { withFileTypes: true }).reduce(
         (n, e) => n + (e.isDirectory() ? count(join(d, e.name)) : 1),
         0,
       )
-    expect(count(dir)).toBe(30)
-    expect(existsSync(join(dir, 'too-big.md'))).toBe(false)
-    expect(fetchedUrls.some((u) => u.includes('too-big.md'))).toBe(false)
+    expect(count(dir)).toBe(42) // SKILL.md + big-assets.bin + f1..f40
+    expect(readFileSync(join(dir, 'big-assets.bin')).byteLength).toBe(big.byteLength)
+    expect(readFileSync(join(dir, 'f40.md'), 'utf-8')).toBe('file 40')
   })
 
-  test('skip warnings are capped: 5 quoted entries + a count of the rest (skills review #5)', async () => {
+  test('a GitHub-truncated tree is reported as a warning (not a budget)', async () => {
     install()
-    // SKILL.md + 40 small files → 30 accepted, 11 skipped: only the first 5
-    // skip reasons are quoted, the remainder become a count — a repo-root
-    // install from a large repo must not serialize thousands of entries.
-    const tree: Array<{ path: string; size: number }> = [
-      { path: 'skills/demo/SKILL.md', size: SKILL_MD.length },
-    ]
-    const files: Record<string, Uint8Array | string> = { 'skills/demo/SKILL.md': SKILL_MD }
-    for (let i = 1; i <= 40; i++) {
-      const p = `skills/demo/g${i}.md`
-      tree.push({ path: p, size: 10_240 })
-      files[p] = `file ${i}`
-    }
-    route({ tree, files })
+    // The trees API cutting off a huge repository listing is GitHub's own
+    // signal that the folder may be missing files we never saw — worth saying
+    // out loud. It is NOT a size policy: nothing is skipped because of it.
+    route({
+      tree: [{ path: 'skills/demo/SKILL.md', size: SKILL_MD.length }],
+      files: { 'skills/demo/SKILL.md': SKILL_MD },
+      truncated: true,
+    })
     const res = await downloadGithubSkill(downloadPayload({ confirm: true }))
     expect(res.ok).toBe(true)
     if (!res.ok) return
-    // First 5 skips (g30..g34) are quoted…
-    expect(res.warning).toContain('"skills/demo/g30.md" exceeds the 30-file limit')
-    expect(res.warning).toContain('"skills/demo/g34.md"')
-    // …the other 6 are only counted…
-    expect(res.warning).toContain('and 6 more skipped files')
-    expect(res.warning).not.toContain('skills/demo/g35.md')
-    // 30 files still landed: SKILL.md + g1..g29 (g30+ never fetched).
-    expect(existsSync(join(agentsRoot, 'demo-skill', 'g29.md'))).toBe(true)
-    expect(existsSync(join(agentsRoot, 'demo-skill', 'g30.md'))).toBe(false)
-  })
-
-  test('a file that would push the total over 2MB is skipped with a warning', async () => {
-    install()
-    // 10 × 200KB passes (1024 + 10×204,800 = 2,049,024 ≤ 2MB); the 11th
-    // would exceed the total — it must be pre-skipped, never fetched.
-    const chunk = new Uint8Array(200 * 1024).fill(7)
-    const tree: Array<{ path: string; size: number }> = [
-      { path: 'skills/demo/SKILL.md', size: 1024 },
-    ]
-    const files: Record<string, Uint8Array | string> = { 'skills/demo/SKILL.md': SKILL_MD }
-    for (let i = 1; i <= 11; i++) {
-      const p = `skills/demo/c${i}.bin`
-      tree.push({ path: p, size: chunk.length })
-      files[p] = chunk
-    }
-    route({ tree, files })
-    const res = await downloadGithubSkill(downloadPayload({ confirm: true }))
-    expect(res.ok).toBe(true)
-    if (!res.ok) return
-    expect(res.warning).toContain('2MB total limit')
-    expect(existsSync(join(agentsRoot, 'demo-skill', 'c10.bin'))).toBe(true)
-    expect(existsSync(join(agentsRoot, 'demo-skill', 'c11.bin'))).toBe(false)
-    expect(readFileSync(join(agentsRoot, 'demo-skill', 'c10.bin')).byteLength).toBe(chunk.length)
+    expect(res.warning).toContain('repository tree was truncated by GitHub')
+    expect(existsSync(join(agentsRoot, 'demo-skill', 'SKILL.md'))).toBe(true)
   })
 
   test('traversal paths and non-skill folders are refused before any network call', async () => {
