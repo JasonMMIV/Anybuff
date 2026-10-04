@@ -625,21 +625,20 @@ export const UserBubble = memo(function UserBubble({ text, onRevert, ts }: { tex
         </div>
         {(ts || onRevert || text.trim()) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
-            {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-            {(onRevert || text.trim()) && (
-              <span className="msg-actions">
-                {onRevert && (
-                  <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
-                    <UndoIcon size={12} />
-                  </button>
-                )}
-                {text.trim() && (
-                  <button className="mini-btn" title="Copy" onClick={() => copyText(text)}>
-                    <CopyIcon size={12} />
-                  </button>
-                )}
-              </span>
-            )}
+            {/* 時間戳與按鈕同一組：整組 hover 才顯現（見 .msg-actions） */}
+            <span className="msg-actions">
+              {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
+              {onRevert && (
+                <button className="mini-btn danger" title="Revert file changes and restore this message for editing" onClick={onRevert}>
+                  <UndoIcon size={12} />
+                </button>
+              )}
+              {text.trim() && (
+                <button className="mini-btn" title="Copy" onClick={() => copyText(text)}>
+                  <CopyIcon size={12} />
+                </button>
+              )}
+            </span>
           </span>
         )}
       </div>
@@ -684,14 +683,15 @@ export const AssistantBubble = memo(function AssistantBubble({
             渲染出字面「0」。 */}
         {(mainText.trim() || Boolean(plan && ts)) && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
-            {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-            {mainText.trim() && (
-              <span className="msg-actions">
+            {/* 時間戳與複製按鈕同一組：整組 hover 才顯現（見 .msg-actions） */}
+            <span className="msg-actions">
+              {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
+              {mainText.trim() && (
                 <button className="mini-btn" title="Copy" onClick={() => copyText(mainText)}>
                   <CopyIcon size={12} />
                 </button>
-              </span>
-            )}
+              )}
+            </span>
           </span>
         )}
       </div>

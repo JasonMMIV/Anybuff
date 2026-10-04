@@ -6850,13 +6850,19 @@ select option {
   align-self: flex-end;
 }
 
-/* #21 訊息 footer 完成時間戳：常駐顯示（細小淡色，與複製按鈕同色） */
+/* #21 訊息 footer 完成時間戳：與複製/還原按鈕同組（包在 .msg-actions 內），
+   預設不顯示、隨整組於 .msg-stack:hover 時浮現（觸控/webview 另有強制顯示覆寫） */
 .msg-time {
   font-size: 11px;
   color: var(--text-2);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+/* 時間與其後按鈕之間留較寬間距（.msg-actions 的 gap 2px 是按鈕之間的距離） */
+.msg-time:has(+ .mini-btn) {
+  margin-right: 4px;
 }
 
 /* ─── Render error boundary（異常/舊版 transcript 不再白屏） ─── */
@@ -6898,7 +6904,7 @@ select option {
   margin-top: 6px;
 }
 
-/* Copy / revert actions are revealed on hover, inside the footer */
+/* Timestamp + copy/revert actions are revealed together on hover, inside the footer */
 .msg-actions {
   display: flex;
   gap: 2px;
