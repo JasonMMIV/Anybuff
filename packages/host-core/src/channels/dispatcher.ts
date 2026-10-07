@@ -33,7 +33,7 @@ import {
   trimTaskLastTurn,
   searchHistory,
 } from './handlers-projects'
-import { runPrompt, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
+import { runPrompt, sendNowChannel, abortRunChannel, approvalResponse, respondAskUserChannel } from './handlers-runs'
 import { runBashCommand } from '../run/bash-command'
 import { listMcpServers, saveMcpServer, deleteMcpServer, updateMcpServerSettings, testMcpServer } from './handlers-mcp'
 import { listLocalAgents, listMentionAgents, createLocalAgent, deleteLocalAgent, readLocalAgentFile, saveLocalAgentFile, listSkills, readSkillFile, listGlobalSkills, createSkill, importSkillFileChannel, saveSkillFileChannel, deleteSkillChannel, listGithubSkillsChannel, downloadGithubSkillChannel } from './handlers-agents'
@@ -83,6 +83,7 @@ const registry: Record<string, Handler> = {
   searchHistory,
   // Runs
   runPrompt,
+  sendNow: sendNowChannel,
   abort: abortRunChannel,
   approvalResponse,
   respondAskUser: respondAskUserChannel,

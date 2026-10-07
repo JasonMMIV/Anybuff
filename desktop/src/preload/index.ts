@@ -169,6 +169,14 @@ const api = {
     content?: Array<{ type: 'image'; image: string; mediaType: string }>
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),
   abort: () => ipcRenderer.invoke('AnyBuff:abort'),
+  /** ADR-30 "Send now" mid-turn steering: hand a plain-text message to the
+   *  active run (host gate accepts only while steering is possible). This is
+   *  the EXPLICIT entry only — the composer calls it from Ctrl/Cmd+Enter or its
+   *  Send now button; plain Enter keeps queueing via runPrompt (#2 queue).
+   *  Resolves { ok: true, pushId } when the run took it — the controlId lets
+   *  the UI retract its echo bubble if the run ends without draining. */
+  sendNow: (payload: { text: string; taskId?: string }) =>
+    ipcRenderer.invoke('AnyBuff:sendNow', payload) as Promise<{ ok: boolean; pushId?: string; error?: string }>,
   /** #9 Bash mode: run a user-initiated `!command` locally (ADR-12b scrubbed env). */
   runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
     ipcRenderer.invoke('AnyBuff:runBashCommand', payload),

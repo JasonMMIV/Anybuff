@@ -23,13 +23,17 @@ export interface QueuedMessage {
 
 interface MessageQueuePanelProps {
   items: QueuedMessage[]
+  /** ADR-30: pause-if-pending after a user interrupt requeued steering leftovers —
+   *  nothing auto-dispatches until the user resumes (or submits a fresh run). */
+  paused?: boolean
+  onResume?: () => void
   onEdit: (id: string, text: string) => void
   onDelete: (id: string) => void
   onMove: (id: string, direction: -1 | 1) => void
   onSendNext: (id: string) => void
 }
 
-export default function MessageQueuePanel({ items, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
+export default function MessageQueuePanel({ items, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -50,12 +54,29 @@ export default function MessageQueuePanel({ items, onEdit, onDelete, onMove, onS
     <div className="queue-panel">
       <button type="button" className="queue-panel-header" onClick={() => setCollapsed((c) => !c)} title={collapsed ? 'Expand' : 'Collapse'}>
         <BoltIcon size={12} />
-        <span>{items.length} queued</span>
-        <span className="queue-panel-hint">sent automatically when the current turn finishes</span>
+        <span>{items.length} queued{paused ? ' (paused)' : ''}</span>
+        <span className="queue-panel-hint">{paused ? 'paused after stop — nothing sends until you resume' : 'sent automatically when the current turn finishes'}</span>
         <ChevronDownIcon size={12} className={`queue-chevron${collapsed ? '' : ' open'}`} />
       </button>
 
-      {!collapsed && (
+      {!collapsed && paused && items.length > 0 && (
+        <div className="queue-paused-row">
+          <span aria-hidden="true">⏸</span>
+          <span>Queue paused — held messages will not auto-send after you stopped the run.</span>
+          <button
+            type="button"
+            className="mini-btn"
+            title="Resume the queue now (starts the first held message)"
+            onClick={() => {
+              onResume?.()
+            }}
+          >
+            Resume
+          </button>
+        </div>
+      )}
+
+      {!collapsed && items.length > 0 && (
         <div className="queue-items">
           {items.map((item, i) => (
             <div key={item.id} className={`queue-item${i === 0 ? ' next' : ''}`}>

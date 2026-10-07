@@ -33,6 +33,7 @@ import { AssistantBubble, ThoughtBlock, TodoCard, ToolCard, UserBubble, type Tod
 import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
 import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
+import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
   AlertCircleIcon,
@@ -73,7 +74,7 @@ interface UiSettings {
 }
 
 type ChatItem =
-  | { kind: 'user'; text: string; ts?: number }
+  | { kind: 'user'; text: string; ts?: number; /** ADR-30: push id of a live "Send now" echo (retractable). */ steeringId?: string }
   | { kind: 'assistant'; text: string; reasoning?: string; ts?: number }
   | { kind: 'tool'; tool: ToolItem }
   | { kind: 'file-changes'; files: FileChange[] }
@@ -457,6 +458,10 @@ export default function App() {
   }, [running])
   /** #2 執行中訊息佇列：messages parked while a run is in flight. */
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
+  /** ADR-30: the queue was paused by a user interrupt that requeued steering
+   *  leftovers (upstream 'pause-if-pending') — nobody auto-dispatches it
+   *  until the user resumes or submits a fresh run. */
+  const [queuePaused, setQueuePaused] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [chatItems, setChatItems] = useState<ChatItem[]>([])
   const [events, setEvents] = useState<UiEvent[]>([])
@@ -1585,6 +1590,36 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * ADR-30: steering entries the settled run never drained were submitted
+   * after its last step boundary — the run never saw them. The host already
+   * retracted their transcript echo rows; retract the live-view echo bubbles
+   * here, then requeue the texts at the FRONT (block-prepend keeps arrival
+   * order = FIFO; utils/send-routing) so nothing the user typed is dropped.
+   *
+   * `pausedByStop`: the leftovers were requeued because the user pressed Stop
+   * (upstream 'pause-if-pending'). Pausing the queue keeps the texts held — a
+   * fresh dispatch would instantly restart the turn the user just tried to
+   * stop; a later send() clears the pause like any normal resume.
+   */
+  const handleSteeredLeftovers = useCallback(
+    (leftovers: { pushId: string; text: string }[] | undefined, pausedByStop: boolean) => {
+      if (!leftovers || leftovers.length === 0) return
+      const leftoverIds = new Set(leftovers.map((l) => l.pushId))
+      setChatItems((prev) =>
+        prev.filter(
+          (item) => !(item.kind === 'user' && typeof (item as { steeringId?: string }).steeringId === 'string' && leftoverIds.has((item as { steeringId: string }).steeringId))
+        )
+      )
+      // Prepend the leftover block (arrival order = FIFO; utils/send-routing).
+      setQueuedMessages((prev) => [...leftoverRequeueItems(leftovers), ...prev])
+      if (pausedByStop) setQueuePaused(true)
+    },
+    []
+  )
+
+  const resumeQueueDispatch = useCallback(() => setQueuePaused(false), [])
+
   /** #6：/init 的聊天氣泡標題（實際送出的 prompt 固定為 '/init'，用於觸發引擎
    *  內建 initPrompt——'User has typed "init"…'，讓 agent 分析專案後建立/更新
    *  根目錄 knowledge.md）。 */
@@ -1592,9 +1627,16 @@ export default function App() {
     'Initialize project knowledge base — analyze the repo and create/update knowledge.md'
 
   const send = useCallback(
-    async (textOverride?: string, prebuiltPrompt?: string, opts?: { mode?: AgentMode }) => {
+    async (
+      textOverride?: string,
+      prebuiltPrompt?: string,
+      opts?: { mode?: AgentMode; steer?: boolean }
+    ) => {
       let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
+      // ADR-30: an explicit user submit unpauses a queue that a Stop left
+      // paused ('pause-if-pending') — the user is driving again.
+      setQueuePaused(false)
 
       /* ── #6：/init → 專案知識庫初始化（取代舊的「開啟 Agent Workshop」快捷）──
        * 舊版把 bare `/init` 當作建立自訂 agent 精靈（Agent Workshop）的隱藏入口，
@@ -1723,13 +1765,73 @@ export default function App() {
             : bakedWithContext)
 
       if (running) {
-        if (isPreview) return
+        if (isPreview) {
+          setChatItems((prev) => [...prev, { kind: 'user', text, ts: Date.now() }])
+          setPrompt('')
+          return
+        }
+        // ADR-30 "Send now" (mid-turn steering): queue-first. An ordinary
+        // submit (plain Enter / the primary button) is parked in the execution
+        // queue exactly as before; `opts.steer` is set ONLY by the composer's
+        // explicit Send now entry (Ctrl/Cmd+Enter or the Send now button). Even
+        // then the upstream router.ts fallback list applies and anything the
+        // steering hook cannot carry verbatim queues instead: attachments,
+        // slash commands (incl. /init, whose baked /init prompt must go through
+        // runPrompt) and pending `!` bash output baked into bashContext above
+        // (only a runPrompt fold-in carries it faithfully). A non-empty queue
+        // does NOT block it: Send now is the user asking for this text in the
+        // LIVE turn, so it deliberately jumps ahead of messages parked for
+        // after the turn. Gate logic: utils/send-routing.ts (unit-tested in
+        // desktop/test/send-routing.test.ts).
+        if (
+          canSteerRunningTurn({
+            sendNowIntent: opts?.steer === true,
+            text,
+            prebuiltPrompt: builtPrompt,
+            interviewWrap,
+            bashContext,
+            attachmentCount: attachments.length,
+            hasSendNowApi: typeof window.AnyBuff.sendNow === 'function'
+          })
+        ) {
+          try {
+            // The host routes the steer to the ACTIVE run (per-process
+            // singleton) regardless of the viewed conversation (ADR-30 單一
+            // run 語意) — no taskId from the renderer.
+            const res = (await window.AnyBuff.sendNow({ text })) as {
+              ok: boolean
+              pushId?: string
+              error?: string
+            }
+            if (res?.ok && res.pushId) {
+              // Echo the user bubble — but only when the view IS the run's
+              // conversation; from another view the steered text belongs to
+              // the run's transcript (host-side echo), which that view loads
+              // on switch. The steeringId lets handleSteeredLeftovers retract
+              // the bubble when the run settles without draining the entry.
+              if (!runningTaskId || runningTaskId === currentTaskRef.current) {
+                setChatItems((prev) => [
+                  ...prev,
+                  { kind: 'user', text, ts: Date.now(), steeringId: res.pushId }
+                ])
+              }
+              setPrompt('')
+              return
+            }
+            // A refusal most plausibly means the run settled between our
+            // `running` check and this call. Fall through to the queue so the
+            // text is parked for the next turn instead of lost.
+          } catch {
+            // Transport-level failure (WS timeout, host down): fall through.
+          }
+        }
         // A run is in flight → park the message in the execution queue instead
         // of rejecting it; the queue drains automatically when the turn ends.
+        const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
         setQueuedMessages((prev) => [
           ...prev,
           {
-            id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+            id,
             text,
             finalPrompt,
             // Snapshot so an inline edit re-bakes with the same files.
@@ -1807,7 +1909,7 @@ export default function App() {
         mode: opts?.mode ?? (initRun ? 'default' : agentMode),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
-      }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string }>
+      }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }>
       // The task record is created synchronously at the start of the main-process
       // handler — refresh the sidebar immediately so the conversation shows up
       // (and is reachable) while it is still streaming.
@@ -1822,6 +1924,7 @@ export default function App() {
           setResumeInfo({ prompt: text, reason: result.reason, errorMessage: result.errorMessage })
         }
       }
+      handleSteeredLeftovers(result.steeredLeftovers, result.interrupted === true && result.reason === 'stopped')
       void window.AnyBuff.gitBranch(cwd).then(setBranch)
     } catch (err) {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
@@ -1834,7 +1937,7 @@ export default function App() {
       setApprovalRequest(null)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, agentMode, buildFinalPrompt, refreshProjects, setViewTask, interviewArmed, attachments])
+  }, [prompt, cwd, running, runningTaskId, agentMode, buildFinalPrompt, refreshProjects, setViewTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -1870,6 +1973,10 @@ export default function App() {
   useEffect(() => {
     if (isPreview) return
     if (running || drainingQueueRef.current) return
+    // ADR-30: a user interrupt requeued steering leftovers and paused the
+    // queue ('pause-if-pending') — it must wait for an explicit resume (or a
+    // fresh user submit) instead of instantly restarting the stopped turn.
+    if (queuePaused) return
     const next = queuedMessages[0]
     if (!next) return
     drainingQueueRef.current = true
@@ -1877,7 +1984,7 @@ export default function App() {
     void send(next.text, next.finalPrompt).finally(() => {
       drainingQueueRef.current = false
     })
-  }, [running, queuedMessages, send])
+  }, [running, queuedMessages, send, queuePaused])
 
   const stop = useCallback(() => {
     setApprovalRequest(null)
@@ -1914,12 +2021,16 @@ export default function App() {
         resume: true,
         taskId,
         mode: agentMode
-      })) as { ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string }
+      })) as { ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }
       if (!result.ok) {
         setChatItems((prev) => [...prev, { kind: 'system', text: result.error ?? 'Resume failed' }])
       } else if (result.interrupted) {
         setResumeInfo({ prompt: info.prompt, reason: result.reason, errorMessage: result.errorMessage })
       }
+      // ADR-30: a resumed run can be steered too — settle its leftovers exactly
+      // like send()'s path (retract echo bubbles, requeue undrained texts,
+      // pause-if-pending after a Stop) or the steered text is silently dropped.
+      handleSteeredLeftovers(result.steeredLeftovers, result.interrupted === true && result.reason === 'stopped')
       void window.AnyBuff.gitBranch(cwd).then(setBranch)
       refreshProjects()
     } catch (err) {
@@ -1931,7 +2042,7 @@ export default function App() {
       setStopping(false)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [resumeInfo, cwd, running, agentMode, refreshProjects])
+  }, [resumeInfo, cwd, running, agentMode, refreshProjects, handleSteeredLeftovers])
 
   // Discard the banner; the preserved state simply stays on disk unused.
   const discardResume = useCallback(() => {
@@ -2913,6 +3024,26 @@ export default function App() {
   const viewRunning = running && runningTaskId !== null && runningTaskId === activeViewTaskId
   const viewStopping = stopping && viewRunning
   const busyElsewhere = running && !viewRunning
+  // ADR-30: the composer offers its separate "Send now" entry only when the
+  // running turn could actually take the draft as a mid-turn steer. This MIRRORS
+  // every refusal in the send() routing gate (utils/send-routing.ts) — plain
+  // text (no slash command / bash draft), nothing staged for the bake
+  // (interview wrapper / pending `!command` output), a non-empty draft and a
+  // shell that actually exposes the channel. Queued messages deliberately do
+  // NOT hide it: Send now answers in the live turn while the parked ones still
+  // dispatch after it. Anything short of the list below would advertise a
+  // steer that silently queues instead.
+  const composerSteerable =
+    viewRunning &&
+    !busyElsewhere &&
+    !isPreview &&
+    typeof window.AnyBuff.sendNow === 'function' &&
+    prompt.trim().length > 0 &&
+    !prompt.trim().startsWith('!') &&
+    !prompt.trim().startsWith('/') &&
+    !interviewArmed &&
+    pendingBashRef.current.length === 0 &&
+    attachments.length === 0
 
   const streaming = viewRunning && chatItems.length > 0
   // 過程收闔 (process folding): every non-prose block (thinking + tool cards) is
@@ -3516,6 +3647,8 @@ export default function App() {
 
                   <MessageQueuePanel
                     items={queuedMessages}
+                    paused={queuePaused}
+                    onResume={() => resumeQueueDispatch()}
                     onEdit={(id, text) => void queueEdit(id, text)}
                     onDelete={queueDelete}
                     onMove={queueMove}
@@ -3525,6 +3658,7 @@ export default function App() {
                     prompt={prompt}
                     onChange={setPrompt}
                     onSend={() => void send()}
+                    onSendNow={() => void send(undefined, undefined, { steer: true })}
                     onStop={stop}
                     onReviewRequest={() => setReviewScopeOpen(true)}
                     onArmInterview={() => setInterviewArmed(true)}
@@ -3533,6 +3667,7 @@ export default function App() {
                     onInitKnowledge={runInitKnowledge}
                     running={viewRunning}
                     stopping={viewStopping}
+                    steerable={composerSteerable}
                     sendBlocked={busyElsewhere}
                     sendBlockedHint="Another task is still running — wait for it to finish or stop it first."
                     disabled={!hasProvider}

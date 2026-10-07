@@ -43,9 +43,17 @@ interface ComposerProps {
   prompt: string
   onChange: (v: string) => void
   onSend: () => void
+  /** ADR-30: the explicit "Send now" entry (Ctrl/Cmd+Enter or the Send now
+   *  button) — injects the draft into the running turn. The primary button and
+   *  plain Enter keep QUEUEING while a run is in flight. */
+  onSendNow?: () => void
   onStop: () => void
   running: boolean
   stopping?: boolean
+  /** ADR-30: this conversation's running turn can take a plain-text "Send
+   *  now" steer (no attachments/no slash/no bash draft) — shows the additive
+   *  Send now button next to the queue button. */
+  steerable?: boolean
   /** Another conversation's run is active — sending is temporarily blocked. */
   sendBlocked?: boolean
   sendBlockedHint?: string
@@ -108,6 +116,14 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+/** ADR-30: label the Send now keyboard twin for the host platform. */
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } }
+  const hint = nav.userAgentData?.platform || navigator.platform || navigator.userAgent || ''
+  return /mac/i.test(hint)
 }
 
 function useIsWebView(): boolean {
@@ -221,9 +237,11 @@ export default function Composer(props: ComposerProps) {
     prompt,
     onChange,
     onSend,
+    onSendNow,
     onStop,
     running,
     stopping,
+    steerable,
     sendBlocked,
     sendBlockedHint,
     disabled,
@@ -253,6 +271,8 @@ export default function Composer(props: ComposerProps) {
     interviewArmed,
     onInitKnowledge
   } = props
+
+  const shortcutLabel = useMemo(() => (isMacPlatform() ? '\u2318+Enter' : 'Ctrl+Enter'), [])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const menuItemRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -633,8 +653,14 @@ export default function Composer(props: ComposerProps) {
             }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              // While a run is in flight App.tsx routes this into the message
-              // queue instead of rejecting it (#2 執行中訊息佇列).
+              // ADR-30 queue-first: plain Enter keeps parking the message in
+              // the execution queue while a run is in flight (#2 執行中訊息佇列).
+              // Ctrl/Cmd+Enter is the explicit "Send now" twin — offered only
+              // when the running turn can actually take the steer.
+              if (steerable && !disabled && onSendNow && (e.metaKey || e.ctrlKey)) {
+                onSendNow()
+                return
+              }
               if (!disabled) onSend()
             }
           }}
@@ -726,13 +752,28 @@ export default function Composer(props: ComposerProps) {
 
         {running ? (
           <>
-            {/* Queue-send stays available mid-run: the message parks in the
-                execution queue and fires when the current turn ends. */}
+            {/* ADR-30 queue-first: while a run is in flight the primary button
+                keeps QUEUEING the message (#2 execution queue) — the arrow only
+                appears on the separate Send now button below when the running
+                turn can take a mid-turn steer. That button hands the draft to
+                the LIVE turn: the agent answers it at the next step boundary
+                and the run keeps running. Ctrl/Cmd+Enter is its keyboard twin
+                (see the textarea keydown). */}
+            {steerable && onSendNow && (
+              <button
+                className="btn send-btn send-now-btn"
+                onClick={onSendNow}
+                disabled={!prompt.trim()}
+                title={`Send now — inject into the running task (${shortcutLabel})`}
+              >
+                <ArrowUpIcon size={14} />
+              </button>
+            )}
             <button
               className="btn primary send-btn queue-send-btn"
               onClick={onSend}
               disabled={!prompt.trim()}
-              title="Queue this message — it will send when the current turn finishes"
+              title="Queue this message — it will send when the current turn finishes (Enter)"
             >
               <PlusIcon size={14} />
             </button>

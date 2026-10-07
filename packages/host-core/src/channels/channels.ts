@@ -38,6 +38,7 @@ export const CHANNELS = [
   'searchHistory',
   // Runs
   'runPrompt',
+  'sendNow',
   'abort',
   'approvalResponse',
   'respondAskUser',

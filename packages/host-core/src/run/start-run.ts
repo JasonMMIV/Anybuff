@@ -18,13 +18,21 @@ import { loadProjectLocalAgents, type LocalAgentsResult } from '../agents/local-
 import {
   applyEvent,
   beginResumeTurn,
+  beginSteeringTurn,
   beginUserTurn,
   buildResumableState,
   classifyFailure,
   finishRun,
   getSession,
-  markRunning
+  markRunning,
+  retractSteeringEcho
 } from '../sessions/session-store'
+import {
+  activateSteering,
+  deactivateSteering,
+  drainSteeringMessages as drainSteeringMailbox,
+  type SteeringEntry
+} from './steering-mailbox'
 import type { QueryIndexData, QueryIndexQuery, QueryIndexResult } from '../contracts/codebase-index'
 import type { EventSink } from '../events'
 import type { FileChange, TodoItem, UiEvent } from '../contracts/types'
@@ -692,6 +700,10 @@ export interface RunResult {
   interrupted?: boolean
   reason?: string
   errorMessage?: string
+  /** ADR-30: steering entries the settled run never drained (submitted
+   *  after its last step boundary), with their push ids so the renderer can
+   *  retract the push-time echo bubbles and requeue the texts. */
+  steeredLeftovers?: { pushId: string; text: string }[]
 }
 
 export interface StartRunOptions {
@@ -882,6 +894,9 @@ export function planOverflowResume(params: {
  */
 export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   const { cwd, prompt, displayText, taskId } = opts
+  // Owner id for the steering mailbox (ADR-30): opens with the run, closes
+  // when it settles; one run at a time is a process-level invariant below.
+  const steeringOwnerId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   // Upstream semantics (ADR-23): the run's root agent comes ONLY from the UI
   // mode — an @agent token in the prompt is handled by the root itself
   // ("Spawn mentioned agents") as a sub-agent spawn, not a root override.
@@ -902,6 +917,19 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   currentAbort = new AbortController()
   activeRunTaskId = taskId
   markRunning(taskId)
+  // ADR-30: open the steering mailbox for THIS run only. The sendNow handler
+  // falls back to the queue before this point (no earlier run may accept
+  // steering). Closed in every settle path below via settleSteering().
+  activateSteering(steeringOwnerId)
+  /** Owner-guarded leftovers capture + transcript-echo retract for this run. */
+  const settleSteering = (): { steeredLeftovers?: { pushId: string; text: string }[] } => {
+    const leftovers: SteeringEntry[] = deactivateSteering(steeringOwnerId)
+    if (leftovers.length > 0) {
+      retractSteeringEcho(taskId, leftovers.map((e) => e.pushId))
+      return { steeredLeftovers: leftovers.map(({ pushId, text }) => ({ pushId, text })) }
+    }
+    return {}
+  }
 
   // Open a fresh assistant bubble in the transcript (and the user message for
   // non-resume turns), then announce the run so any view can show its status.
@@ -1127,6 +1155,16 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // with this turn's user prompt, pass an empty prompt so the runtime
         // does not append a duplicate USER_PROMPT message.
         prompt: resumeFromCheckpoint ? '' : prompt,
+        // ADR-30 mid-turn steering: the agent loop calls this at each step
+        // boundary; texts pushed by sendNow since the last boundary are
+        // injected into the running turn as user prompts. The transcript echo
+        // was already appended at push time (sendNow handler), so this only
+        // hands over the texts. Returning [] on abort leaves the entries in
+        // the mailbox for the leftover handling at settle (settleSteering).
+        drainSteeringMessages: () => {
+          if (currentAbort?.signal.aborted) return []
+          return drainSteeringMailbox(steeringOwnerId)
+        },
         // #4 圖片附件: base64 image parts ride the SDK's multimodal content
         // channel (never the prompt string) so vision-capable models see them.
         ...(imageContent.length > 0 ? { content: imageContent } : {}),
@@ -1180,7 +1218,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         resetOverflowResumeCount(taskId)
         finishRun(taskId, runState, { interrupted: false })
         sendEvent({ type: 'run_status', status: 'idle', taskId })
-        return { ok: true, taskId, interrupted: false }
+        return { ok: true, taskId, interrupted: false, ...settleSteering() }
       }
 
       // Transient failures (network / timeout / rate-limit) auto-retry with
@@ -1200,7 +1238,8 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           taskId,
           interrupted: true,
           reason: failure.reason,
-          errorMessage: failure.errorMessage
+          errorMessage: failure.errorMessage,
+          ...settleSteering()
         }
       }
 
@@ -1230,12 +1269,18 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           taskId,
           interrupted: true,
           reason: 'stopped',
-          errorMessage: failure.errorMessage
+          errorMessage: failure.errorMessage,
+          ...settleSteering()
         }
       }
 
       beginResumeTurn(taskId)
       markRunning(taskId)
+      // A retry attempt start: re-assert this run's mailbox owner. activate is
+      // idempotent per owner (steering-mailbox.ts), so entries pushed since the
+      // failed attempt's last drain survive to the fresh attempt instead of
+      // being wiped or reported as leftovers of a dead attempt.
+      activateSteering(steeringOwnerId)
     }
   } catch (error) {
     // The SDK resolves (not rejects) on abort/API errors, so this only fires on
@@ -1247,7 +1292,8 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       taskId,
       error: error instanceof Error ? error.message : String(error),
       interrupted: true,
-      reason: 'error'
+      reason: 'error',
+      ...settleSteering()
     }
   } finally {
     // ask_user parked across abort/run-end: resolve as skipped

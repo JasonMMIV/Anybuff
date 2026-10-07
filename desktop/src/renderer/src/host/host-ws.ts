@@ -619,6 +619,9 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       mode?: 'default' | 'plan' | 'chat'
       content?: Array<{ type: 'image'; image: string; mediaType: string }>
     }) => call('runPrompt', payload),
+    /** ADR-30 "Send now" mid-turn steering (WS transport mirrors the preload). */
+    sendNow: (payload: { text: string; taskId?: string }) =>
+      call<{ ok: boolean; pushId?: string; error?: string }>('sendNow', payload),
     abort: () => call('abort'),
     runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
       call('runBashCommand', payload),

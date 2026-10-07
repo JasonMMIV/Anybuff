@@ -316,6 +316,46 @@ export function beginResumeTurn(taskId: string): void {
   persistNow(entry)
 }
 
+/** ── Mid-turn steering (ADR-30): push-time echo + leftover retract ── */
+
+/**
+ * Append a steering message as a user transcript row (push-time echo), tag
+ * it with the supplied mailbox push id, and confirm the echo is in place.
+ * The same id lets retractSteeringEcho cut the row back out if the run
+ * never drains the entry (leftover → requeue flows mint their own bubble
+ * instead, matching the upstream bubble-retract semantics).
+ */
+export function beginSteeringTurn(taskId: string, pushId: string, displayText: string): boolean {
+  const entry = sessions.get(taskId)
+  if (!entry) return false
+  entry.transcript.push({
+    kind: 'user',
+    text: displayText,
+    steeringId: pushId,
+    createdAt: Date.now(),
+  })
+  persistSoon(entry)
+  return true
+}
+
+/**
+ * Remove the steering echo rows for the given push ids from the transcript.
+ * Only rows carrying this feature's `steeringId` marker can ever be cut, so
+ * a stray id list can never retract a typed user message.
+ */
+export function retractSteeringEcho(taskId: string, pushIds: string[]): void {
+  const entry = sessions.get(taskId)
+  if (!entry || pushIds.length === 0) return
+  const ids = new Set(pushIds)
+  const before = entry.transcript.length
+  entry.transcript = entry.transcript.filter((item) => {
+    if (item.kind !== 'user') return true
+    const steeringId = (item as TaskMessage & { steeringId?: string }).steeringId
+    return !steeringId || !ids.has(steeringId)
+  })
+  if (entry.transcript.length !== before) persistSoon(entry)
+}
+
 /* ─── Persistence ─── */
 
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()

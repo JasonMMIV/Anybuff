@@ -44,6 +44,9 @@ export interface TaskMessage {
   createdAt?: number
   /** Epoch ms when the message completed (assistant: turn finished). */
   updatedAt?: number
+  /** ADR-30 mid-turn steering: mailbox push id of the row the sendNow echo
+   *  wrote (retractable when the run settles without draining the entry). */
+  steeringId?: string
 }
 
 /** Normalized run event pushed to the renderer (the preload's UiEvent shape). */

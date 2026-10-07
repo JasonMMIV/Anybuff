@@ -51,8 +51,11 @@ Anthropic-compatible provider, and start chatting.
   (planning without writes); `@agent` mentions spawn sub-agents inside the
   running root.
 - **Safety rails** — sensitive-file filter (never reads `.env`, `*.pem`,
-  `*.key`, `id_rsa`, `kubeconfig`, …), terminal-command approval gate, and a
-  message queue while a run is active.
+  `*.key`, `id_rsa`, `kubeconfig`, …), terminal-command approval gate, a
+  message queue while a run is active, and an ADDITIVE "Send now" mid-turn
+  steering entry — Ctrl/Cmd+Enter (or the Send now button) injects a plain-text
+  draft into the running turn so the agent answers it at the next step boundary,
+  while plain Enter keeps queueing the message for after the turn.
 - **Web search** — switchable providers: DuckDuckGo (default, keyless),
   Firecrawl (keyless), Tinyfish (API key); automatic fallback when the active
   provider is rate-limited.
