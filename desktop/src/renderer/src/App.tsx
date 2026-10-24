@@ -34,6 +34,7 @@ import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
 import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
+import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
   AlertCircleIcon,
@@ -522,7 +523,6 @@ export default function App() {
 
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [tokenUsage, setTokenUsage] = useState<{ used: number; max: number } | null>(null)
-  const [totalCost, setTotalCost] = useState(0)
   // #17 保險絲: per-run step cap (0 = SDK default) + cost mode — persisted via settings.
   const [maxAgentSteps, setMaxAgentSteps] = useState(0)
   const [costMode, setCostMode] = useState<'normal' | 'max' | 'lite'>('normal')
@@ -573,6 +573,8 @@ export default function App() {
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
   /** Reactive mirror of currentTaskRef — which conversation is displayed. */
   const [activeViewTaskId, setActiveViewTaskId] = useState<string | null>(null)
+  /** Per-task cost in CREDITS (finish.totalCost is cents), keyed by taskId. */
+  const [taskCosts, setTaskCosts] = useState<TaskCostMap>({})
 
   /** View state: which conversation is displayed (also the event-routing key). */
   const currentTaskRef = useRef<string | null>(null)
@@ -1112,9 +1114,10 @@ export default function App() {
         return
       }
 
-      // Cost accumulates across all runs even when their conversations are not visible.
+      // Per-task cost: `finish.totalCost` is that run's credits (cents). Keep it
+      // per task so background runs never pollute the visible conversation.
       if (event.type === 'finish' && typeof event.totalCost === 'number') {
-        setTotalCost((c) => c + event.totalCost!)
+        setTaskCosts((prev) => addTaskCost(prev, event.taskId, event.totalCost))
       }
 
       /* ── Conversation-scoped events ── */
@@ -1457,7 +1460,6 @@ export default function App() {
       setNotice(null)
       setAttachments([])
       setTokenUsage(null)
-      setTotalCost(0)
       setHistoryTask(null)
       setResumeInfo(null)
       setViewTask(null)
@@ -2096,7 +2098,6 @@ export default function App() {
     accumulatedFileChangesRef.current = []
     setAttachments([])
     setTokenUsage(null)
-    setTotalCost(0)
     setFollowups([])
     setHistoryTask(null)
     setResumeInfo(null)
@@ -2775,7 +2776,6 @@ export default function App() {
       accumulatedFileChangesRef.current = []
       setAttachments([])
       setTokenUsage(null)
-      setTotalCost(0)
       setPreviewFile(null)
       setFileMenu(null)
       setHistoryTask(null)
@@ -2890,6 +2890,7 @@ export default function App() {
           }
         })
       )
+      setTaskCosts((prev) => removeTaskCost(prev, task.id))
       if (historyTask?.id === task.id || currentTaskRef.current === task.id) {
         newTask()
       }
@@ -3685,7 +3686,7 @@ export default function App() {
                     agentMode={agentMode}
                     onAgentModeChange={setAgentMode}
                     tokenUsage={tokenUsage}
-                    totalCost={totalCost}
+                    taskCostUsd={taskCostUsd(taskCosts, activeViewTaskId)}
                     fileCandidates={fileCandidates}
                     skills={skills}
                     agentMentions={agentMentions}

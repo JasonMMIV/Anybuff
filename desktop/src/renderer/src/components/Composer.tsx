@@ -76,7 +76,8 @@ interface ComposerProps {
   agentMode: AgentMode
   onAgentModeChange: (mode: AgentMode) => void
   tokenUsage: { used: number; max: number } | null
-  totalCost: number
+  /** USD cost accumulated for the conversation currently on screen (0 hides it). */
+  taskCostUsd: number
   fileCandidates: string[]
   skills: SkillInfo[]
   /** #20 custom agents offered by the @-mention menu (mode-root spawnables).
@@ -260,7 +261,7 @@ export default function Composer(props: ComposerProps) {
     agentMode,
     onAgentModeChange,
     tokenUsage,
-    totalCost,
+    taskCostUsd,
     fileCandidates,
     skills,
     agentMentions,
@@ -866,7 +867,14 @@ export default function Composer(props: ComposerProps) {
         </div>
 
         <div className="toolbar-right">
-          {totalCost > 0 && <span className="cost-badge" title="Total cost">${totalCost.toFixed(4)}</span>}
+          {taskCostUsd > 0 && (
+            <span
+              className="cost-badge"
+              title="Total cost for this conversation (completed turns, rounded to the cent)"
+            >
+              ${taskCostUsd.toFixed(2)}
+            </span>
+          )}
           {tokenUsage && tokenUsage.max > 0 && (
             <TokenRing used={tokenUsage.used} max={tokenUsage.max} running={running} />
           )}

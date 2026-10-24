@@ -35,7 +35,7 @@ const base = {
   agentMode: 'default' as AgentMode,
   onAgentModeChange: () => {},
   tokenUsage: null,
-  totalCost: 0,
+  taskCostUsd: 0,
   fileCandidates: [],
   skills: [],
   agentMentions: [],
@@ -44,6 +44,19 @@ const base = {
   onDisarmInterview: () => {},
   onInitKnowledge: () => {}
 }
+
+describe('Composer per-task cost badge', () => {
+  test('shows the viewed task cost in USD', () => {
+    const html = renderToStaticMarkup(<Composer {...base} taskCostUsd={0.04} />)
+    expect(html).toContain('$0.04')
+    expect(html).toContain('title="Total cost for this conversation')
+  })
+
+  test('hides the badge when the task has no cost', () => {
+    const html = renderToStaticMarkup(<Composer {...base} />)
+    expect(html).not.toContain('cost-badge')
+  })
+})
 
 describe('Composer queue-first contract (ADR-30)', () => {
   test('mid-run, the primary button still queues the message', () => {
