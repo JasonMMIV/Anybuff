@@ -26,6 +26,7 @@ import {
   resolveConfiguredAgentModelConfig,
   resolveConfiguredProviderModel,
   resolveModelCapabilities,
+  resolveModelCapabilitiesWithSource,
 } from '../provider-config'
 import { resolveModelsToTry } from './failover'
 import {
@@ -33,10 +34,21 @@ import {
   findVerifiedReasoningLadder,
 } from './reasoning-effort'
 import {
-  getHydratedCapabilities,
-  hydrateModelCapabilities,
-  type HydratedCapabilities,
+  catalogContextWindow,
+  catalogOutputTokens,
+  type CatalogModel,
+} from './model-catalog'
+import {
+  getModelCatalog,
+  lookupCatalog,
+  prefetchModelCatalogForModel,
 } from './model-catalog-hydration'
+import {
+  applyOpenAIReasoningWire,
+  resolveReasoningWire,
+  anthropicReasoningProviderOptions,
+  type ReasoningWireDescriptor,
+} from './reasoning-wire'
 import { getSystemProcessEnv } from '../env'
 
 import type {
@@ -54,6 +66,25 @@ export type ModelPricing = {
   inputPerMillionTokens?: number
   outputPerMillionTokens?: number
   cachedInputPerMillionTokens?: number
+  /** ADR-31: cache-write (cache creation) price, USD per 1M tokens. */
+  cacheWritePerMillionTokens?: number
+  /** ADR-31: reasoning-token price when billed separately. */
+  reasoningPerMillionTokens?: number
+  /** ADR-31: legacy long-context (>200k) pricing block. */
+  contextOver200k?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }
+  /** ADR-31: tiered pricing; each tier starts at `minContextTokens`. */
+  tiers?: Array<{
+    minContextTokens: number
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }>
   currency?: string
 }
 
@@ -119,6 +150,12 @@ export interface ModelResult {
    * thinking_budget) declared alongside the ladder; merged into the
    * provider-options namespaces by llm.ts when an effort is sent. */
   reasoningParams?: Record<string, string | number | boolean>
+  /**
+   * ADR-32: the resolved reasoning wire dialect. `llm.ts` only needs the
+   * Anthropic side (provider options); the OpenAI side is applied once, in
+   * this module's fetch wrapper, so every request path shares it.
+   */
+  reasoningWire?: ReasoningWireDescriptor
   effectiveModel: string
   contextWindowTokens?: number
   pricing?: ModelPricing
@@ -229,7 +266,11 @@ function shouldStripStopSequences(params: {
   compatibility: Partial<ProviderCompatibility>
   body: Record<string, unknown>
 }): boolean {
-  if (!('stop' in params.body)) return false
+  // OpenAI-compatible bodies use `stop`; Anthropic Messages uses
+  // `stop_sequences`. A provider that rejects stop sequences rejects both.
+  if (!('stop' in params.body) && !('stop_sequences' in params.body)) {
+    return false
+  }
   const strip = params.compatibility.supportsStopSequences === false
   if (strip) {
     logCompat('stop-strip', params.resolved, 'removed; enforced locally')
@@ -273,18 +314,60 @@ export function applyConfiguredProviderRequestCompatibility(
 
   if (stripStopSequences) {
     delete transformed.stop
+    delete transformed.stop_sequences
   }
 
   return transformed
 }
 
+/**
+ * Compose the final request body for a configured provider (ADR-32 §16.3):
+ *
+ *   dialect write → custom body (escape hatch, LAST) → compatibility strip
+ *
+ * `auto` (or no dialect) keeps the historical order — `{...customBody, ...body}`
+ * with the body winning — so its bytes never move. Only a NAMED dialect flips
+ * the order, which is what makes customBody a genuine escape hatch. The compat
+ * strip always runs last, so even a custom body cannot re-introduce a parameter
+ * the endpoint rejects (只清除、不抑制).
+ */
+export function buildConfiguredProviderRequestBody(params: {
+  body: Record<string, unknown>
+  customBody?: Record<string, unknown>
+  providerType: 'openai-compatible' | 'anthropic-compatible'
+  reasoningWire?: ReasoningWireDescriptor
+  resolved: Pick<ResolvedProviderModel, 'providerId' | 'providerModel'> & {
+    compatibility?: Partial<ProviderCompatibility>
+  }
+}): Record<string, unknown> {
+  const { body, customBody, providerType, reasoningWire } = params
+  if (providerType === 'anthropic-compatible') {
+    // The Anthropic SDK owns the wire shape (thinking/effort arrive through
+    // provider options); customBody is merged last so it can override them.
+    return applyConfiguredProviderRequestCompatibility(
+      { ...body, ...(customBody ?? {}) },
+      params.resolved,
+    )
+  }
+  const namedWire = Boolean(reasoningWire && reasoningWire.dialect !== 'auto')
+  const merged = namedWire
+    ? {
+        ...applyOpenAIReasoningWire(body, reasoningWire),
+        ...(customBody ?? {}),
+      }
+    : { ...(customBody ?? {}), ...body }
+  return applyConfiguredProviderRequestCompatibility(merged, params.resolved)
+}
+
 function createConfiguredProviderFetch(
   resolved: ResolvedProviderModel,
+  reasoningWire?: ReasoningWireDescriptor,
 ): FetchFunction | undefined {
   const inner = createRetryableNetworkErrorFetch(resolved)
 
   const customBody =
-    resolved.provider.type === 'openai-compatible'
+    resolved.provider.type === 'openai-compatible' ||
+    resolved.provider.type === 'anthropic-compatible'
       ? (resolved.provider as { customBody?: Record<string, unknown> })
           .customBody
       : undefined
@@ -298,15 +381,16 @@ function createConfiguredProviderFetch(
     if (init?.body && typeof init.body === 'string') {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>
-        // Compat rules apply to EVERY request (PLAN §9.2): merge optional
-        // per-provider customBody, then strip/downgrade rejected parameters.
         transformedInit = {
           ...init,
           body: JSON.stringify(
-            applyConfiguredProviderRequestCompatibility(
-              { ...(customBody ?? {}), ...body },
+            buildConfiguredProviderRequestBody({
+              body,
+              ...(customBody ? { customBody } : {}),
+              providerType: resolved.provider.type,
+              ...(reasoningWire ? { reasoningWire } : {}),
               resolved,
-            ),
+            }),
           ),
         }
       } catch {
@@ -378,6 +462,7 @@ export function normalizeAnthropicBaseURL(baseURL: string): string {
 
 function createConfiguredOpenAICompatibleModel(
   resolvedModel: ResolvedProviderModel,
+  reasoningWire?: ReasoningWireDescriptor,
 ): LanguageModel {
   const { providerId, provider, providerModel, apiKey } = resolvedModel
   if (provider.type !== 'openai-compatible') {
@@ -398,7 +483,7 @@ function createConfiguredOpenAICompatibleModel(
     provider: providerId,
     url: ({ path: endpoint }: { path: string }) => `${baseURL}${endpoint}`,
     headers: () => createOpenAICompatibleHeaders(apiKey),
-    fetch: createConfiguredProviderFetch(resolvedModel),
+    fetch: createConfiguredProviderFetch(resolvedModel, reasoningWire),
     includeUsage: undefined,
     supportsStructuredOutputs: provider.supportsStructuredOutputs,
     stringifyTextContent: resolvedModel.compatibility.stringifyTextContent,
@@ -474,6 +559,9 @@ function createConfiguredAnthropicModel(
       'user-agent': `ai-sdk/anthropic/${VERSION}/anybuff`,
     },
     name: providerId,
+    // ADR-32: customBody is merged into the Messages API body LAST (after
+    // the SDK's thinking/effort write) so it is a genuine escape hatch.
+    fetch: createConfiguredProviderFetch(resolvedModel),
   })
 
   return anthropic(providerModel)
@@ -503,11 +591,15 @@ function getModelVisionSupport(params: {
   loadedConfig: LoadedProviderConfig
 }): VisionSupport {
   const { configuredProviderModel, effectiveModel, loadedConfig } = params
-  const capabilities = resolveModelCapabilities({
+  // ADR-31: the catalog may upgrade an unknown to `yes` (its `true` is more
+  // reliable than a name regex); its `false` is advisory only — P0 keeps
+  // `unknown` so a wrong catalog entry cannot silently remove vision.
+  const capabilities = resolveModelCapabilitiesWithSource({
     providerId: configuredProviderModel.providerId,
     model: effectiveModel,
     loadedConfig,
-  })
+    catalog: getModelCatalog(),
+  }).capabilities
 
   if (capabilities.input?.image === true) return 'yes'
   if (capabilities.input?.image === false) return 'no'
@@ -828,40 +920,47 @@ export function resolveEffectiveContextWindow(
 // ============================================================================
 
 /**
- * Fire-and-forget hydration for a candidate that has no declared capability.
- * The resolve functions are synchronous, so the network lookup runs in the
- * background: the first request for an unknown model still uses the 1M
- * fallback, but the learned value is available synchronously from the second
- * lookup on (same session, next run, etc.). One-shot per (provider, model)
- * is enforced inside the hydration module, and failures degrade silently.
+ * Fire-and-forget catalog refresh for a candidate the current catalog did not
+ * know (plan §6.3). The sync resolvers keep whatever they already produced
+ * for THIS run; the next lookup sees the refreshed catalog. One-shot per
+ * (provider, model) inside the catalog runtime; failures degrade silently.
  */
 function maybeHydrateCapabilities(params: {
   configured: ResolvedProviderModel
   candidateModel: string
 }): void {
   const { configured, candidateModel } = params
-  void hydrateModelCapabilities({
+  void prefetchModelCatalogForModel({
     providerId: configured.providerId,
-    providerBaseURL: configured.provider.baseURL,
+    baseURL: configured.provider.baseURL,
     model: candidateModel,
-  }).catch(() => {
-    // Hydration must never introduce a new failure mode (plan §5 B1d #5).
+    ...(configured.provider.catalogProvider
+      ? { catalogProvider: configured.provider.catalogProvider }
+      : {}),
+    ...(configured.provider.catalogKeys
+      ? { catalogKeys: configured.provider.catalogKeys }
+      : {}),
   })
 }
 
-/**
- * Synchronous lookup of caps learned by a previous hydration round for a
- * candidate with no declared capability. Present only after the background
- * hydrateModelCapabilities has completed for this pair.
- */
-function getHydratedCapsForCandidate(params: {
-  providerId: string
+/** Catalog facts for a routed candidate (sync; undefined when unknown). */
+function catalogModelForCandidate(params: {
+  configured: ResolvedProviderModel
   candidateModel: string
-}): HydratedCapabilities | undefined {
-  return getHydratedCapabilities({
-    providerId: params.providerId,
-    model: params.candidateModel,
-  })
+}): CatalogModel | undefined {
+  return (
+    lookupCatalog({
+      providerId: params.configured.providerId,
+      baseURL: params.configured.provider.baseURL,
+      model: params.candidateModel,
+      ...(params.configured.provider.catalogProvider
+        ? { catalogProvider: params.configured.provider.catalogProvider }
+        : {}),
+      ...(params.configured.provider.catalogKeys
+        ? { catalogKeys: params.configured.provider.catalogKeys }
+        : {}),
+    })?.model ?? undefined
+  )
 }
 
 /**
@@ -875,6 +974,13 @@ function getHydratedCapsForCandidate(params: {
 export function resolveModelContextWindow(params: {
   agentId?: string
   model?: string
+  /**
+   * Declared config ONLY — no A2 learned overlay, no catalog, no prefetch.
+   * The A2 overflow-trim decision passes this: a window learned from a real
+   * 400 is a measurement and must never be clamped DOWN by a lab-native
+   * catalog value (plan §5.3 — learned beats catalog).
+   */
+  declaredOnly?: boolean
 }): number | undefined {
   const loadedConfig = loadProviderConfigSync()
   const effectiveModel = resolveConfiguredAgentModelConfig({
@@ -896,6 +1002,9 @@ export function resolveModelContextWindow(params: {
         return []
       }
       if (!configured) return []
+      // Order (plan §5.2): explicit config → A2 learned (real measurement) →
+      // catalog → unknown. Learned MUST stay above the catalog: a gateway's
+      // disclosed limit is truth, the lab-native catalog value may be larger.
       const windowTokens = resolveModelCapabilities({
         providerId: configured.providerId,
         model: candidateModel,
@@ -904,18 +1013,18 @@ export function resolveModelContextWindow(params: {
       if (typeof windowTokens === 'number' && Number.isFinite(windowTokens) && windowTokens > 0) {
         return [windowTokens]
       }
+      if (params.declaredOnly) return []
       const learned = learnedContextWindows.get(
         learnedWindowKey(configured.providerId, candidateModel),
       )
       if (learned !== undefined) return [learned]
-      // B1d: caps hydrated earlier this process from the gateway/models.dev
-      // catalogs fill the remaining gap (and schedule hydration for next time).
+      const catalogWindow = catalogContextWindow(
+        catalogModelForCandidate({ configured, candidateModel }),
+      )
+      if (catalogWindow !== undefined) return [catalogWindow]
+      // Unknown to the current catalog: schedule one refresh for next time.
       maybeHydrateCapabilities({ configured, candidateModel })
-      const hydrated = getHydratedCapsForCandidate({
-        providerId: configured.providerId,
-        candidateModel,
-      })
-      return hydrated?.windowTokens !== undefined ? [hydrated.windowTokens] : []
+      return []
     },
   )
   return windows[0]
@@ -962,13 +1071,13 @@ export function resolveModelContextOutputTokens(params: {
       ) {
         return [outputTokens]
       }
-      // B1d: hydrated caps may carry the output cap too.
+      // ADR-31: the catalog fills the output cap when nothing declared one.
+      const catalogOutput = catalogOutputTokens(
+        catalogModelForCandidate({ configured, candidateModel }),
+      )
+      if (catalogOutput !== undefined) return [catalogOutput]
       maybeHydrateCapabilities({ configured, candidateModel })
-      const hydrated = getHydratedCapsForCandidate({
-        providerId: configured.providerId,
-        candidateModel,
-      })
-      return hydrated?.outputTokens !== undefined ? [hydrated.outputTokens] : []
+      return []
     },
   )
   return outputs[0]
@@ -1004,21 +1113,20 @@ export function resolveModelContextWindows(params: {
           })?.context?.windowTokens
         : undefined
       if (typeof value === 'number' && value > 0) return [value]
-      // Learned-from-overflow overlay fills gaps (P0 A2).
+      // Learned-from-overflow overlay fills gaps (P0 A2) — above the catalog.
       const learned = configured
         ? learnedContextWindows.get(
             learnedWindowKey(configured.providerId, candidateModel),
           )
         : undefined
       if (learned !== undefined) return [learned]
-      // B1d: hydrated caps fill the remaining gap (and schedule hydration).
+      // ADR-31: catalog snapshot/cache fills the remaining gap.
       if (configured) {
+        const catalogWindow = catalogContextWindow(
+          catalogModelForCandidate({ configured, candidateModel }),
+        )
+        if (catalogWindow !== undefined) return [catalogWindow]
         maybeHydrateCapabilities({ configured, candidateModel })
-        const hydrated = getHydratedCapsForCandidate({
-          providerId: configured.providerId,
-          candidateModel,
-        })
-        if (hydrated?.windowTokens !== undefined) return [hydrated.windowTokens]
       }
       return []
     },
@@ -1072,13 +1180,26 @@ export async function getModelForRequest(
     reasoningEffort = visionRoute.reasoningEffort
     configuredProviderModel = visionRoute.configuredProviderModel
   }
-  const resolvedCapabilities = configuredProviderModel
+  // ADR-31: `declared` (explicit config only) stays the clamp's first rung;
+  // the resolved view adds the catalog underneath it (context, output,
+  // vision, tools, pricing, effort rungs). Keeping both makes the precedence
+  // explicit: 顯式 > seed > catalog.
+  const declaredCapabilities = configuredProviderModel
     ? resolveModelCapabilities({
         providerId: configuredProviderModel.providerId,
         model: effectiveModel,
         loadedConfig: loadedProviderConfig,
       })
     : undefined
+  const resolvedCapabilityInfo = configuredProviderModel
+    ? resolveModelCapabilitiesWithSource({
+        providerId: configuredProviderModel.providerId,
+        model: effectiveModel,
+        loadedConfig: loadedProviderConfig,
+        catalog: getModelCatalog(),
+      })
+    : undefined
+  const resolvedCapabilities = resolvedCapabilityInfo?.capabilities
   if (!configuredProviderModel) {
     throw new Error(
       `AnyBuff could not route model '${effectiveModel}'${
@@ -1109,9 +1230,10 @@ export async function getModelForRequest(
       agentId,
       supported: resolvedCapabilities?.reasoning?.supported,
       efforts:
-        resolvedCapabilities?.reasoning?.efforts?.length
-          ? resolvedCapabilities.reasoning.efforts
-          : seed?.efforts ?? undefined,
+        declaredCapabilities?.reasoning?.efforts?.length
+          ? declaredCapabilities.reasoning.efforts
+          : (seed?.efforts ??
+            resolvedCapabilityInfo?.catalog?.reasoning?.efforts),
     })
     // ADR-27 (MC-0.7a): the opt-in pick still changes what goes on the wire,
     // so it must be exactly as visible as every other compat decision
@@ -1135,10 +1257,13 @@ export async function getModelForRequest(
   // resolved this far is always a real rung — llm.ts's withConfiguredReasoningEffort
   // keeps the 'default' check for its own string-typed input.)
   if (reasoningEffort) {
+    // Plan §5.2: explicit → seed (with requestMap) → catalog → no clamp.
     const ladder =
-      resolvedCapabilities?.reasoning?.efforts?.length
-        ? resolvedCapabilities.reasoning.efforts
-        : seed?.efforts
+      declaredCapabilities?.reasoning?.efforts?.length
+        ? declaredCapabilities.reasoning.efforts
+        : seed?.efforts?.length
+          ? seed.efforts
+          : resolvedCapabilityInfo?.catalog?.reasoning?.efforts
     if (ladder?.length) {
       const clamped = clampReasoningEffortToLadder(
         reasoningEffort,
@@ -1167,6 +1292,19 @@ export async function getModelForRequest(
 
   const contextWindowTokens = resolvedCapabilities?.context?.windowTokens
   const pricing = resolvedCapabilities?.pricing as ModelPricing | undefined
+  // ADR-32: one descriptor per request — the OpenAI side is applied in the
+  // fetch wrapper (all three request paths share it), the Anthropic side rides
+  // the provider options in llm.ts.
+  const reasoningWire = resolveReasoningWire({
+    protocol:
+      configuredProviderModel.provider.type === 'anthropic-compatible'
+        ? 'anthropic'
+        : 'openai',
+    wire: resolvedCapabilities?.reasoning?.wire,
+    ...(resolvedCapabilities?.reasoning?.budgetTokens !== undefined
+      ? { budgetTokens: resolvedCapabilities.reasoning.budgetTokens }
+      : {}),
+  })
   // ADR-27 (MC-1.5/§3.2): per-model reasoning params (e.g. DashScope
   // thinking_budget) ride the effort pick onto the wire. Only scalar values
   // are legal — the config schema enforces string/number/boolean, and an
@@ -1180,6 +1318,7 @@ export async function getModelForRequest(
       compatibility: configuredProviderModel.compatibility,
       reasoningEffort,
       reasoningParams,
+      reasoningWire,
       effectiveModel,
       contextWindowTokens,
       pricing,
@@ -1187,10 +1326,14 @@ export async function getModelForRequest(
   }
 
   return {
-    model: createConfiguredOpenAICompatibleModel(configuredProviderModel),
+    model: createConfiguredOpenAICompatibleModel(
+      configuredProviderModel,
+      reasoningWire,
+    ),
     compatibility: configuredProviderModel.compatibility,
     reasoningEffort,
     reasoningParams,
+    reasoningWire,
     effectiveModel,
     contextWindowTokens,
     pricing,

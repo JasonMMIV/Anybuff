@@ -2,7 +2,7 @@ import { CodebuffClient, type FileFilter, type PrintModeEvent, type RunState } f
 import {
   UNKNOWN_MODEL_CONTEXT_FALLBACK,
   compactMessagesForResume,
-  hydrateModelCapabilities,
+  prefetchModelCatalogForModel,
   resolveEffectiveContextWindow,
   resolveModelContextOutputTokens,
   toCompactionTriggerTokens,
@@ -795,10 +795,14 @@ export function buildRunContextParams(agentId: string): { maxContextLength: numb
 }
 
 /**
- * P1 B1d: hydrate an unknown routed model's capabilities (gateway /models →
- * models.dev) in the background and persist the result into settings so the
- * generated anybuff.json carries it on the next run. Best-effort and one-shot
- * per (provider, model); failures silently keep the 1M fallback.
+ * ADR-31: prefetch the models.dev catalog for an unknown routed model.
+ *
+ * This used to hydrate from the gateway/models.dev and WRITE the result into
+ * settings. Catalog values are read-only by design (plan D9): persisting them
+ * would make "user declared" and "auto-fetched" indistinguishable and poison
+ * ADR-27 provenance. The resolver reads the catalog directly on every request,
+ * so an event-driven refresh is all this needs to do; failures silently keep
+ * the conservative fallback and never surface as run errors.
  */
 export function hydrateUnknownModelCaps(settings: {
   activeModel?: string
@@ -807,21 +811,10 @@ export function hydrateUnknownModelCaps(settings: {
   const model = resolveRoutedModelForRun(settings, agentId)
   if (!model || !model.includes('/')) return
   const providerId = model.split('/')[0]
-  // Already know the window (declared, learned, or hydrated) — nothing to do.
+  // Already know the window (declared, learned, or resolved from the
+  // snapshot/cache) — nothing to do.
   if (resolveEffectiveContextWindow(model) !== undefined) return
-  void hydrateModelCapabilities({ providerId, model })
-    .then((caps) => {
-      if (!caps) return
-      recordProviderModelCapability({
-        providerId,
-        model,
-        windowTokens: caps.windowTokens,
-        outputTokens: caps.outputTokens,
-      })
-    })
-    .catch(() => {
-      // Best-effort — a hydration failure must never surface as a run error.
-    })
+  void prefetchModelCatalogForModel({ providerId, model })
 }
 
 /**

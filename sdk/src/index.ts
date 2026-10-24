@@ -137,12 +137,53 @@ export {
   setLearnedContextWindowSink,
 } from './impl/model-provider'
 
-// Lazy catalog hydration for unknown models (AnyBuff P1 B1d)
+// models.dev model catalog (ADR-31): build-time snapshot + runtime cache
 export {
+  clearModelCatalogCacheForTest,
   clearModelCatalogHydrationForTest,
+  configureModelCatalogCache,
+  getModelCatalog,
+  getModelCatalogStatus,
   hydrateModelCapabilities,
+  lookupCatalog,
+  prefetchModelCatalogForModel,
+  refreshModelCatalog,
+  refreshModelCatalogIfStale,
+  setModelCatalogOnline,
+  warmModelCatalogCache,
 } from './impl/model-catalog-hydration'
-export type { HydratedCapabilities } from './impl/model-catalog-hydration'
+export type {
+  HydratedCapabilities,
+  ModelCatalogCacheSeam,
+  ModelCatalogStatus,
+} from './impl/model-catalog-hydration'
+export {
+  MODEL_CATALOG_SCHEMA_VERSION,
+  buildModelCatalogIndex,
+  catalogContextWindow,
+  catalogEfforts,
+  catalogOutputTokens,
+  lookupCatalogModel,
+  normalizeApiHost,
+  projectModelsDevCatalog,
+} from './impl/model-catalog'
+export type {
+  CatalogLookupResult,
+  CatalogModel,
+  CatalogProvider,
+  ModelCatalogIndex,
+} from './impl/model-catalog'
+
+// ADR-32: named reasoning wire dialects
+export {
+  applyOpenAIReasoningWire,
+  anthropicReasoningProviderOptions,
+  resolveReasoningWire,
+} from './impl/reasoning-wire'
+export type {
+  ReasoningWireDescriptor,
+  ReasoningWireProtocol,
+} from './impl/reasoning-wire'
 
 // Provider content-policy classification (failover-eligible errors)
 export {

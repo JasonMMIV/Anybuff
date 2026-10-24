@@ -91,11 +91,16 @@ export function decideContextOverflowTrim(params: {
     recordLearnedModelContextWindow(model, learned)
   }
 
-  const declared = resolveModelContextWindow({ model })
+  // ADR-31: the `min` below must use the DECLARED window only — a learned
+  // window is a real measurement and must never be clamped DOWN by a
+  // lab-native catalog value (plan §5.3: learned beats catalog). When nothing
+  // was learned, the full resolver is the fallback so a catalog-known window
+  // still enables the trim (plan §7 maps limit.context → overflow trim).
+  const declared = resolveModelContextWindow({ model, declaredOnly: true })
   const windowTokens =
     learned !== undefined
       ? Math.min(learned, declared ?? learned)
-      : declared
+      : (declared ?? resolveModelContextWindow({ model }))
   if (windowTokens === undefined) {
     logDecision(params.logger, model, 'no-window', {
       learnedWindowTokens: learned,

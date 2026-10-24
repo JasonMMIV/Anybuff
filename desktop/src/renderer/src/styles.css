@@ -4963,6 +4963,13 @@ select option {
   color: var(--success, #2ea043);
 }
 
+/* ADR-31: models.dev catalog provenance — informational, not authoritative. */
+.cap-badge-catalog {
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+}
+
 .cap-badge-unknown {
   background: var(--bg-2);
   color: var(--text-2);
@@ -5005,6 +5012,18 @@ select option {
   font-size: 11.5px;
   color: var(--warning, #f5a623);
   margin: 0;
+}
+
+/* ADR-32: explanatory copy under the reasoning-format picker. */
+.cap-hint {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin: 0;
+  line-height: 1.45;
+}
+
+.cap-hint code {
+  font-size: 11px;
 }
 
 .cap-row-actions {

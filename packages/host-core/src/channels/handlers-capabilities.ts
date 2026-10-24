@@ -58,6 +58,7 @@ export function listModelCapabilities(): unknown {
     overriddenSeed?: ReasoningLadderInfo['overriddenSeed']
     context?: ReasoningLadderInfo['context']
     defaultEffort?: string
+    catalog?: ReasoningLadderInfo['catalog']
   }> = []
   for (const provider of settings.providers) {
     for (const model of provider.models ?? []) {
@@ -79,10 +80,21 @@ export function listModelCapabilities(): unknown {
         ...(info.overriddenSeed !== undefined ? { overriddenSeed: info.overriddenSeed } : {}),
         ...(info.context !== undefined ? { context: info.context } : {}),
         ...(info.defaultEffort !== undefined ? { defaultEffort: info.defaultEffort } : {}),
+        ...(info.catalog !== undefined ? { catalog: info.catalog } : {}),
       })
     }
   }
-  return { ok: true, rows, providers: settings.providers.map((p) => ({ id: p.id, label: p.label })) }
+  return {
+    ok: true,
+    rows,
+    // ADR-32: the editor renders a protocol-specific dialect list, so the UI
+    // needs the provider type alongside the label.
+    providers: settings.providers.map((p) => ({
+      id: p.id,
+      label: p.label,
+      type: p.type,
+    })),
+  }
 }
 
 /** AnyBuff:saveModelCapability — one validated upsert. */

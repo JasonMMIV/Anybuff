@@ -24,6 +24,7 @@ export * from './agents/bundled-agents'
 export * from './files/file-filter'
 export * from './files/fs-utils'
 export * from './files/atomic-write'
+export * from './model-catalog-cache'
 
 /* Channel dispatcher + WS server (M-A2) */
 export * from './channels'

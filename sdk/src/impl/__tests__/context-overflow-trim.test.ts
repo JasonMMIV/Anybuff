@@ -11,6 +11,12 @@ import {
   clearLearnedContextWindowsForTest,
   setLearnedContextWindowSink,
 } from '../model-provider'
+import {
+  clearModelCatalogCacheForTest,
+  lookupCatalog,
+  setModelCatalogOnline,
+} from '../model-catalog-hydration'
+import { catalogContextWindow } from '../model-catalog'
 
 import type { Message } from '@codebuff/common/types/messages/codebuff-message'
 
@@ -179,6 +185,98 @@ function runSinkScenario(
     }
   }
 }
+
+describe('catalog window fallback (ADR-31)', () => {
+  function runCatalogScenario(scenario: () => void): void {
+    const priorConfigEnv = process.env.ANYBUFF_PROVIDER_CONFIG
+    const dataDir = mkdtempSync(join(tmpdir(), 'sdk-overflow-catalog-'))
+    const configPath = join(dataDir, 'anybuff.json')
+    process.env.ANYBUFF_PROVIDER_CONFIG = configPath
+    // Offline: the committed snapshot knows this model; no test may fetch.
+    setModelCatalogOnline(false)
+    clearModelCatalogCacheForTest()
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          defaultModel: '302ai/deepseek-v3.2',
+          providers: {
+            '302ai': {
+              type: 'openai-compatible',
+              // Keyless: resolvable without env vars.
+              baseURL: 'https://302.ai/v1',
+              models: ['deepseek-v3.2'],
+            },
+          },
+        }),
+      )
+      clearProviderConfigCacheForTest()
+      scenario()
+    } finally {
+      clearLearnedContextWindowsForTest()
+      clearModelCatalogCacheForTest()
+      clearProviderConfigCacheForTest()
+      setModelCatalogOnline(undefined)
+      if (priorConfigEnv === undefined) {
+        delete process.env.ANYBUFF_PROVIDER_CONFIG
+      } else {
+        process.env.ANYBUFF_PROVIDER_CONFIG = priorConfigEnv
+      }
+      try {
+        rmSync(dataDir, { recursive: true, force: true })
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  it('does NOT report no-window when only the catalog knows the window', () => {
+    runCatalogScenario(() => {
+      const hit = lookupCatalog({
+        providerId: '302ai',
+        baseURL: 'https://302.ai/v1',
+        model: 'deepseek-v3.2',
+      })
+      const expected = catalogContextWindow(hit?.model)
+      expect(expected).toBeGreaterThan(0)
+
+      const decision = decideContextOverflowTrim({
+        // No parseable token count: this is the catalog-fallback path.
+        error: overflowError("This model's context length is exceeded"),
+        messages: bigHistory,
+        model: '302ai/deepseek-v3.2',
+        alreadyTrimmed: false,
+      })
+
+      // Before ADR-31 this was 'no-window' because the resolver only knew the
+      // declared config — a catalog-known model silently skipped the trim.
+      if (decision.trim) {
+        expect(decision.windowTokens).toBe(expected as number)
+        expect(decision.learnedWindowTokens).toBeUndefined()
+      } else {
+        expect(decision.reason).not.toBe('no-window')
+      }
+    })
+  })
+
+  it('a learned window still beats the catalog in the trim target', () => {
+    runCatalogScenario(() => {
+      const decision = decideContextOverflowTrim({
+        error: overflowError(
+          "This model's maximum context length is 60000 tokens. However, your messages resulted in 999999 tokens",
+        ),
+        messages: bigHistory,
+        model: '302ai/deepseek-v3.2',
+        alreadyTrimmed: false,
+      })
+      expect(decision.learnedWindowTokens).toBe(60_000)
+      expect(decision.trim).toBe(true)
+      if (decision.trim) {
+        expect(decision.windowTokens).toBe(60_000)
+      }
+    })
+  })
+})
 
 describe('learned-window durable sink (A2 write-back seam)', () => {
   it('fires the sink when an overflow text teaches a new window', () => {

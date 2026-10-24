@@ -27,6 +27,15 @@ an Electron desktop shell. Read "AnyBuff 專案全貌與維護者指南.md" (§2
   `sdk/src/impl/reasoning-effort.ts` (ADR-25 — every row carries `verifiedAt`; keep
   `requestMap` aligned with the vendor's documented requested→actual table);
   observability logs use the `[anybuff-compat]` prefix.
+- **Catalog is read-only** (ADR-31): models.dev facts are a default data layer,
+  never written back to settings/`anybuff.json`. `modelCapabilities` stays the
+  only user declaration surface; A2 overflow learning is the only durable
+  capability write. Logs use `[anybuff-catalog]`.
+- **Reasoning wire dialects never inhibit** (ADR-32): `*.none` writes no key —
+  never `thinking:{type:'disabled'}`, never `enable_thinking:false`. OpenAI
+  `auto` must stay byte-identical (body-composition test). Anthropic `auto` is
+  the deliberate exception: it now sends `output_config.effort` instead of
+  being silently stripped by the SDK schema.
 
 ## Build & verify loop
 
@@ -39,6 +48,10 @@ bun --cwd desktop run typecheck
 bun run test:host-core      # host-core channel/WS contract tests
 cd sdk && bun test src/impl/__tests__ src/__tests__/followups-policy.test.ts
 cd packages/agent-runtime && bun test src/__tests__/web-search-local.test.ts
+
+# models.dev catalog snapshot (ADR-31) — quarterly / on a new-model report:
+bun run sync:model-catalog            # fetch → project → write (size-capped)
+bun run sync:model-catalog --check    # preset + reasoning-seed drift report
 ```
 
 Desktop dev: root `bun run dev` → routes through
@@ -57,6 +70,16 @@ module body; an in-bundle shim cannot satisfy common/env validation).
   reasoningEffort namespace injection.
 - `sdk/src/impl/local-database.ts` — hosted-backend stubs; run.ts imports from
   here, never from impl/database.ts.
+- `sdk/src/impl/model-catalog.ts` — PURE models.dev projection/index/lookup
+  (compact tuple codec, provider host matching, exact-only ladder). Never
+  imports fs/network.
+- `sdk/src/impl/model-catalog-hydration.ts` — the runtime: memory → disk cache →
+  build-time snapshot, ETag/single-flight refresh, `configureModelCatalogCache`
+  seam (host-core injects `dataDir` + `writeFileAtomic`).
+- `sdk/src/impl/model-catalog-snapshot.ts` — GENERATED build artefact; run
+  `bun run sync:model-catalog` (never hand-edit, ~1 MB budget).
+- `sdk/src/impl/reasoning-wire.ts` — ADR-32 named dialects: ownership-based
+  OpenAI body writer + Anthropic provider-option builder; `auto` identity.
 - `packages/host-core/` — headless host business logic shared by the Electron
   desktop shell and (Phase B) the Android proot-Node shell (ADR-21). Never
   imports Electron; shells inject HostPaths/SecretStore/EventSink via

@@ -4,10 +4,14 @@ import { dirname, join } from 'path'
 import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
 import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence, globalSkillsScope } from '../env'
 import {
+  catalogEfforts,
   findVerifiedReasoningLadder,
+  getModelCatalog,
   getVerifiedReasoningLadderRows,
   getVerifiedReasoningLadders,
+  lookupCatalog,
   providerConfigFileSchema,
+  REASONING_WIRE_DIALECTS,
 } from '@codebuff/sdk'
 
 /**
@@ -44,6 +48,30 @@ export type ApprovalMode = 'balanced' | 'strict' | 'allow-all'
 export type RunMaxAgentSteps = number // 0 (default) or 1..100000
 export type RunCostMode = 'normal' | 'max' | 'lite'
 
+/** ADR-31: declared pricing block (USD per 1M tokens; catalog values are
+ *  never persisted — this is the user's own declaration surface). */
+export interface ProviderModelPricing {
+  inputPerMillionTokens?: number
+  outputPerMillionTokens?: number
+  cachedInputPerMillionTokens?: number
+  cacheWritePerMillionTokens?: number
+  reasoningPerMillionTokens?: number
+  currency?: string
+  contextOver200k?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }
+  tiers?: Array<{
+    minContextTokens: number
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }>
+}
+
 export interface ProviderConfig {
   id: string
   label: string
@@ -68,8 +96,21 @@ export interface ProviderConfig {
       /** ADR-27 (§3.2/MC-0.5): per-model non-enum reasoning params riding
        * the effort pick (e.g. DashScope thinking_budget). Mirrors the SDK slot. */
       params?: Record<string, string | number | boolean>
+      /** ADR-32: named reasoning wire format (`auto` when absent). */
+      wire?: string
+      /** ADR-32: thinking budget for the budget/thinking_budget dialects. */
+      budgetTokens?: number
     }
+    /** ADR-31: declared pricing (catalog values are never persisted here). */
+    pricing?: ProviderModelPricing
   }>
+  /**
+   * ADR-31: explicit models.dev provider id for provider identification
+   * (`my-deepseek` → `deepseek`). Preserved across Settings saves.
+   */
+  catalogProvider?: string
+  /** ADR-31: per-model models.dev id overrides (`model` → `lab/model`). */
+  catalogKeys?: Record<string, string>
 }
 
 import type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
@@ -135,6 +176,8 @@ export interface AppSettings {
    * provider-qualified `${providerId}/${model}` (explicit declarations,
    * which win for that route) or bare model ids (SDK-verified seed ladders). */
   reasoningLadders: Record<string, string[]>
+  /** ADR-31: models.dev online refresh (default true). */
+  modelCatalogOnline: boolean
 }
 
 const SETTINGS_FILE = 'AnyBuff-app-settings.json'
@@ -160,6 +203,13 @@ interface PersistedSettings {
   mcpServers?: McpServerRecord[]
   /** App-level overrides for mcp.json-discovered servers, keyed by opaque file id. */
   mcpOverrides?: Record<string, McpServerOverride>
+  /**
+   * ADR-31: models.dev catalog online refresh. Absent = true. `false` keeps
+   * the built-in snapshot only (offline / privacy-sensitive installs). There
+   * is deliberately no UI in P0 — it is an advanced anybuff.json knob that
+   * this field preserves across regenerations.
+   */
+  modelCatalogOnline?: boolean
 }
 
 const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -325,6 +375,10 @@ export function loadSettings(): PersistedSettings {
     if (typeof parsed.globalSkillsEnabled === 'boolean') {
       base.globalSkillsEnabled = parsed.globalSkillsEnabled
     }
+    // ADR-31: catalog online flag (advanced config; absent = true).
+    if (typeof parsed.modelCatalogOnline === 'boolean') {
+      base.modelCatalogOnline = parsed.modelCatalogOnline
+    }
     // #17 run guardrails (clamped so a corrupt settings file can never send
     // a runaway or negative step cap into the SDK).
     if (typeof parsed.maxAgentSteps === 'number' && Number.isFinite(parsed.maxAgentSteps)) {
@@ -393,6 +447,25 @@ export function buildReasoningLadders(
         : findVerifiedReasoningLadder(model)?.efforts
       if (efforts?.length) {
         ladders[`${provider.id}/${model}`] = [...efforts]
+        continue
+      }
+      // ADR-31: catalog efforts are the third rung (plan §5.2) — a model the
+      // seed table has never heard of still gets a real menu instead of the
+      // conservative fallback.
+      const catalog = lookupCatalog({
+        providerId: provider.id,
+        baseURL: provider.baseURL,
+        model,
+        ...(provider.catalogProvider
+          ? { catalogProvider: provider.catalogProvider }
+          : {}),
+        ...(provider.catalogKeys
+          ? { catalogKeys: provider.catalogKeys }
+          : {}),
+      })
+      const catalogRungs = catalogEfforts(catalog?.model)
+      if (catalogRungs.length > 0) {
+        ladders[`${provider.id}/${model}`] = catalogRungs
       }
     }
   }
@@ -403,7 +476,11 @@ export function buildReasoningLadders(
  * answer "who says so" (§2.5): verified seed (with verifiedAt/source), a
  * user's explicit declaration, or unknown (no ladder anywhere — the Desktop
  * menu shows its conservative fallback). */
-export type ReasoningLadderSource = 'verified' | 'declared' | 'unknown'
+export type ReasoningLadderSource =
+  | 'verified'
+  | 'declared'
+  | 'catalog'
+  | 'unknown'
 
 export interface ReasoningLadderInfo {
   /** Effective rungs, exactly what the menu shows. Empty for 'unknown'. */
@@ -420,6 +497,10 @@ export interface ReasoningLadderInfo {
     supported?: boolean
     /** ADR-27 (MC-1.5): declared per-model reasoning params. */
     params?: Record<string, string | number | boolean>
+    /** ADR-32: declared reasoning wire dialect. */
+    wire?: string
+    /** ADR-32: declared thinking budget for budget dialects. */
+    budgetTokens?: number
   }
   /** The seed row this declaration overrides — present iff source ===
    * 'declared' AND a seed exists for the model (P1 "restore to seed"). */
@@ -428,6 +509,13 @@ export interface ReasoningLadderInfo {
   context?: { windowTokens?: number; outputTokens?: number }
   /** The declared or seed default rung, when one exists. */
   defaultEffort?: string
+  /** ADR-31: catalog provenance — present iff source === 'catalog'. */
+  catalog?: {
+    snapshotAt: string
+    fetchedAt?: string
+    matchedBy: string
+    confidence: number
+  }
 }
 
 /**
@@ -457,18 +545,36 @@ export function buildReasoningLadderInfos(
       const declaredEfforts = cap?.reasoning?.efforts
       const seed = findVerifiedReasoningLadder(model)
       const key = `${provider.id}/${model}`
+      // ADR-32: a wire/budget-only declaration (no efforts) must still reach
+      // the editor, so the declared block is emitted whenever ANY reasoning
+      // field was declared — only the badge depends on the efforts.
+      const declaredBlock: ReasoningLadderInfo['declared'] | undefined =
+        declaredEfforts?.length ||
+        cap?.reasoning?.wire !== undefined ||
+        cap?.reasoning?.budgetTokens !== undefined ||
+        cap?.reasoning?.params !== undefined
+          ? {
+              ...(declaredEfforts?.length
+                ? { efforts: [...declaredEfforts] }
+                : {}),
+              defaultEffort: cap?.reasoning?.defaultEffort,
+              supported: cap?.reasoning?.supported,
+              ...(cap?.reasoning?.params !== undefined
+                ? { params: { ...cap.reasoning.params } }
+                : {}),
+              ...(cap?.reasoning?.wire !== undefined
+                ? { wire: cap.reasoning.wire }
+                : {}),
+              ...(cap?.reasoning?.budgetTokens !== undefined
+                ? { budgetTokens: cap.reasoning.budgetTokens }
+                : {}),
+            }
+          : undefined
       if (declaredEfforts?.length) {
         infos[key] = {
           efforts: [...declaredEfforts],
           source: 'declared',
-          declared: {
-            efforts: [...declaredEfforts],
-            defaultEffort: cap?.reasoning?.defaultEffort,
-            supported: cap?.reasoning?.supported,
-            ...(cap?.reasoning?.params !== undefined
-              ? { params: { ...cap.reasoning.params } }
-              : {}),
-          },
+          ...(declaredBlock ? { declared: declaredBlock } : {}),
           // The seed this declaration overrides (P1's "restore to seed"
           // button needs to know one exists underneath).
           ...(seed
@@ -485,9 +591,44 @@ export function buildReasoningLadderInfos(
           verifiedBy: seed.source,
           defaultEffort: cap?.reasoning?.defaultEffort ?? seed.defaultEffort,
           context: cap?.context,
+          ...(declaredBlock ? { declared: declaredBlock } : {}),
         }
       } else {
-        infos[key] = { efforts: [], source: 'unknown', context: cap?.context }
+        // ADR-31: catalog efforts are the third rung (plan §5.2). The menu
+        // gets a real ladder and the badge says where it came from (D3).
+        const catalog = lookupCatalog({
+          providerId: provider.id,
+          baseURL: provider.baseURL,
+          model,
+          ...(provider.catalogProvider
+            ? { catalogProvider: provider.catalogProvider }
+            : {}),
+          ...(provider.catalogKeys
+            ? { catalogKeys: provider.catalogKeys }
+            : {}),
+        })
+        const catalogRungs = catalogEfforts(catalog?.model)
+        const index = getModelCatalog()
+        infos[key] =
+          catalog && catalogRungs.length > 0
+            ? {
+                efforts: catalogRungs,
+                source: 'catalog',
+                context: cap?.context,
+                catalog: {
+                  snapshotAt: index.snapshotAt,
+                  ...(index.fetchedAt ? { fetchedAt: index.fetchedAt } : {}),
+                  matchedBy: catalog.matchedBy,
+                  confidence: catalog.confidence,
+                },
+                ...(declaredBlock ? { declared: declaredBlock } : {}),
+              }
+            : {
+                efforts: [],
+                source: 'unknown',
+                context: cap?.context,
+                ...(declaredBlock ? { declared: declaredBlock } : {}),
+              }
       }
     }
   }
@@ -550,6 +691,7 @@ export function getAppSettings(): AppSettings {
     globalSkillsEditable: globalSkillsScope() === 'managed',
     maxAgentSteps: s.maxAgentSteps ?? 0,
     costMode: s.costMode ?? 'normal',
+    modelCatalogOnline: s.modelCatalogOnline !== false,
     reasoningLadders: buildReasoningLadders(s.providers),
     webSearchHasKey: {
       duckduckgo: false,
@@ -708,10 +850,38 @@ export function updateProviders(
   approvalMode: ApprovalMode
 ): void {
   const s = loadSettings()
-  s.providers = providers
+  // ADR-31: host-only/provider-payload fields the renderer does not know
+  // must survive a Settings save (the renderer round-trips modelCapabilities
+  // but not catalogProvider/catalogKeys). Merge by id — a provider the user
+  // actually removed stays removed.
+  const previous = new Map(s.providers.map((p) => [p.id, p]))
+  s.providers = providers.map((p) => {
+    const old = previous.get(p.id)
+    if (!old) return p
+    return {
+      ...p,
+      ...(p.catalogProvider === undefined && old.catalogProvider !== undefined
+        ? { catalogProvider: old.catalogProvider }
+        : {}),
+      ...(p.catalogKeys === undefined && old.catalogKeys !== undefined
+        ? { catalogKeys: old.catalogKeys }
+        : {}),
+      ...(p.modelCapabilities === undefined &&
+      old.modelCapabilities !== undefined
+        ? { modelCapabilities: old.modelCapabilities }
+        : {}),
+    }
+  })
   s.activeModel = activeModel || s.activeModel
   s.reasoningEffort = reasoningEffort
   s.approvalMode = approvalMode
+  saveSettings(s)
+}
+
+/** ADR-31: toggle the catalog's online refresh (advanced config, no UI). */
+export function setModelCatalogOnline(enabled: boolean): void {
+  const s = loadSettings()
+  s.modelCatalogOnline = enabled
   saveSettings(s)
 }
 
@@ -913,8 +1083,14 @@ export interface ModelCapabilityUpsert {
     efforts?: string[]
     defaultEffort?: string
     params?: Record<string, string | number | boolean>
+    /** ADR-32: named reasoning wire format (`auto` when absent). */
+    wire?: string
+    /** ADR-32: thinking budget for the budget/thinking_budget dialects. */
+    budgetTokens?: number
   }
   context?: { windowTokens?: number; outputTokens?: number }
+  /** ADR-31: declared pricing (catalog values are never persisted). */
+  pricing?: ProviderModelPricing
 }
 
 /** Per-line validation result for the Import channel (§2.4: a bad line
@@ -968,6 +1144,54 @@ function validateCapabilityUpsert(upsert: ModelCapabilityUpsert): string | undef
             typeof value !== 'boolean')
         ) {
           return 'reasoning.params values must be string/number/boolean with non-empty keys'
+        }
+      }
+    }
+    // ADR-32: `wire` is a closed dialect domain (unknown values would be
+    // silently downgraded to auto by the SDK schema — report them instead).
+    if (
+      reasoning.wire !== undefined &&
+      !(REASONING_WIRE_DIALECTS as readonly string[]).includes(reasoning.wire)
+    ) {
+      return `reasoning.wire must be one of: ${REASONING_WIRE_DIALECTS.join(', ')}`
+    }
+    if (
+      reasoning.budgetTokens !== undefined &&
+      (typeof reasoning.budgetTokens !== 'number' ||
+        !Number.isFinite(reasoning.budgetTokens) ||
+        reasoning.budgetTokens <= 0 ||
+        !Number.isInteger(reasoning.budgetTokens))
+    ) {
+      return 'reasoning.budgetTokens must be a positive integer'
+    }
+  }
+  const pricing = upsert.pricing
+  if (pricing !== undefined) {
+    if (typeof pricing !== 'object' || Array.isArray(pricing)) {
+      return 'pricing must be an object'
+    }
+    for (const key of [
+      'inputPerMillionTokens',
+      'outputPerMillionTokens',
+      'cachedInputPerMillionTokens',
+      'cacheWritePerMillionTokens',
+      'reasoningPerMillionTokens',
+    ] as const) {
+      const value = pricing[key]
+      if (value !== undefined && (typeof value !== 'number' || value < 0 || !Number.isFinite(value))) {
+        return `pricing.${key} must be a non-negative number`
+      }
+    }
+    if (pricing.tiers !== undefined) {
+      if (!Array.isArray(pricing.tiers)) return 'pricing.tiers must be an array'
+      for (const tier of pricing.tiers) {
+        if (
+          !tier ||
+          typeof tier.minContextTokens !== 'number' ||
+          !Number.isFinite(tier.minContextTokens) ||
+          tier.minContextTokens < 0
+        ) {
+          return 'pricing.tiers entries need a non-negative minContextTokens'
         }
       }
     }
@@ -1030,17 +1254,29 @@ export function saveModelCapability(upsert: ModelCapabilityUpsert): boolean {
       if (upsert.reasoning.params !== undefined) {
         reasoning.params = { ...upsert.reasoning.params }
       }
+      // ADR-32: wire/budgetTokens merge field-by-field with the rest of the
+      // entry — an upsert that omits them must never erase a stored dialect.
+      if (upsert.reasoning.wire !== undefined) reasoning.wire = upsert.reasoning.wire
+      if (upsert.reasoning.budgetTokens !== undefined) {
+        reasoning.budgetTokens = upsert.reasoning.budgetTokens
+      }
     }
     const context = { ...existing?.context }
     if (upsert.context?.windowTokens !== undefined) context.windowTokens = upsert.context.windowTokens
     if (upsert.context?.outputTokens !== undefined) context.outputTokens = upsert.context.outputTokens
+    const pricing = { ...existing?.pricing }
+    if (upsert.pricing) {
+      Object.assign(pricing, upsert.pricing)
+    }
     const hasReasoning = Object.keys(reasoning).length > 0
     const hasContext = Object.keys(context).length > 0
-    if (hasReasoning || hasContext) {
+    const hasPricing = Object.keys(pricing).length > 0
+    if (hasReasoning || hasContext || hasPricing) {
       provider.modelCapabilities[upsert.model] = {
         ...existing,
         ...(hasReasoning ? { reasoning } : {}),
         ...(hasContext ? { context } : {}),
+        ...(hasPricing ? { pricing } : {}),
       }
     }
     saveSettings(s)
@@ -1078,7 +1314,8 @@ export function importModelCapabilities(payload: {
       rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
         ? (rawValue as Record<string, unknown>)
         : {}
-    const hasNested = 'reasoning' in entry || 'context' in entry
+    const hasNested =
+      'reasoning' in entry || 'context' in entry || 'pricing' in entry
     const shorthand = !hasNested && looksLikeReasoningShorthand(entry)
     const candidate: ModelCapabilityUpsert = hasNested
       ? {
@@ -1089,6 +1326,9 @@ export function importModelCapabilities(payload: {
             : {}),
           ...(entry.context !== undefined
             ? { context: entry.context as ModelCapabilityUpsert['context'] }
+            : {}),
+          ...(entry.pricing !== undefined
+            ? { pricing: entry.pricing as ModelCapabilityUpsert['pricing'] }
             : {}),
         }
       : shorthand
@@ -1151,6 +1391,18 @@ function buildProviderConfigObject(): Record<string, unknown> {
   for (const p of s.providers) {
     if (!p.baseURL) continue
     if (p.type === 'anthropic-compatible') {
+      // ADR-32: customBody reaches the Messages API body as a last-wins
+      // escape hatch (string form is parsed, same as the OpenAI branch).
+      let anthropicCustomBody: Record<string, unknown> | undefined = undefined
+      if (typeof p.customBody === 'string' && p.customBody.trim()) {
+        try {
+          anthropicCustomBody = JSON.parse(p.customBody)
+        } catch {
+          // ignore invalid JSON
+        }
+      } else if (p.customBody && typeof p.customBody === 'object') {
+        anthropicCustomBody = p.customBody as Record<string, unknown>
+      }
       providers[p.id] = {
         type: 'anthropic-compatible',
         baseURL: p.baseURL,
@@ -1163,7 +1415,13 @@ function buildProviderConfigObject(): Record<string, unknown> {
           supportsRequiredToolChoice: true,
           supportsStopSequences: true,
           stripProviderMetadata: false
-        }
+        },
+        ...(anthropicCustomBody ? { customBody: anthropicCustomBody } : {}),
+        // ADR-31: catalog identification slots (absent = automatic match).
+        ...(p.catalogProvider ? { catalogProvider: p.catalogProvider } : {}),
+        ...(p.catalogKeys && Object.keys(p.catalogKeys).length > 0
+          ? { catalogKeys: p.catalogKeys }
+          : {})
       }
     } else {
       const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(p.baseURL)
@@ -1186,6 +1444,11 @@ function buildProviderConfigObject(): Record<string, unknown> {
         supportsStructuredOutputs: !isLocal,
         ...(p.enableThinking !== undefined ? { enableThinking: p.enableThinking } : {}),
         ...(customBodyObj ? { customBody: customBodyObj } : {}),
+        // ADR-31: catalog identification slots (absent = automatic match).
+        ...(p.catalogProvider ? { catalogProvider: p.catalogProvider } : {}),
+        ...(p.catalogKeys && Object.keys(p.catalogKeys).length > 0
+          ? { catalogKeys: p.catalogKeys }
+          : {}),
         ...(isLocal
           ? {
               compatibility: {
@@ -1205,6 +1468,10 @@ function buildProviderConfigObject(): Record<string, unknown> {
     defaultModel: s.activeModel,
     providers,
     approvalMode: s.approvalMode
+  }
+  // ADR-31: only the non-default value is emitted (absent = online).
+  if (s.modelCatalogOnline === false) {
+    config.modelCatalog = { online: false }
   }
   if (s.reasoningEffort && s.reasoningEffort !== 'default') {
     config.defaultReasoningEffort = s.reasoningEffort

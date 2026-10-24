@@ -55,6 +55,7 @@
  */
 
 import { installHostEnv } from '../env'
+import { installModelCatalogCache } from '../model-catalog-cache'
 import { createEventBus } from '../events'
 import { createHost } from '../channels/dispatcher'
 import { startWsHost, defaultAllowedOrigins } from './ws-server'
@@ -150,6 +151,9 @@ async function main(): Promise<void> {
     // Desktop capability until the Android picker preserves structure.
     pickedFilesShareFolder: false,
   })
+  // ADR-31: the models.dev disk cache lives under dataDir (Android: the
+  // app-private rootfs). Wired after the env so the path is available.
+  installModelCatalogCache()
 
   const bus = createEventBus()
   const host = createHost({ eventBus: bus })

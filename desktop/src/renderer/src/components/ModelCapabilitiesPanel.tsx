@@ -28,7 +28,7 @@ export interface CapabilityRow {
   model: string
   key: string
   efforts: string[]
-  source: 'verified' | 'declared' | 'unknown'
+  source: 'verified' | 'declared' | 'catalog' | 'unknown'
   verifiedAt?: string
   verifiedBy?: string
   declared?: {
@@ -36,18 +36,48 @@ export interface CapabilityRow {
     defaultEffort?: string
     supported?: boolean
     params?: Record<string, string | number | boolean>
+    /** ADR-32: named reasoning wire dialect (`auto` when absent). */
+    wire?: string
+    /** ADR-32: thinking budget for the budget/thinking_budget dialects. */
+    budgetTokens?: number
   }
   overriddenSeed?: { efforts: string[]; verifiedAt: string }
   context?: { windowTokens?: number; outputTokens?: number }
   defaultEffort?: string
+  /** ADR-31: models.dev provenance — present iff source === 'catalog'. */
+  catalog?: {
+    snapshotAt: string
+    fetchedAt?: string
+    matchedBy: string
+    confidence: number
+  }
 }
 
 interface ProviderMeta {
   id: string
   label: string
+  /** ADR-32: dialect choices are protocol-specific. */
+  type?: 'openai-compatible' | 'anthropic-compatible'
 }
 
 const COMMON_RUNGS = ['low', 'medium', 'high', 'xhigh', 'extra-high', 'max', 'minimal', 'none']
+
+/** ADR-32: dialect lists mirror `REASONING_WIRE_DIALECTS` (UI subset).
+ *  `chat.reasoning_obj` is deliberately config-only. */
+const OPENAI_WIRE_OPTIONS = [
+  { value: 'auto', label: 'Auto (current behavior)' },
+  { value: 'chat.effort', label: 'reasoning_effort' },
+  { value: 'chat.thinking_budget', label: 'thinking_budget (budget only)' },
+  { value: 'chat.enable_thinking', label: 'enable_thinking + thinking_budget' },
+  { value: 'chat.none', label: 'None (write no reasoning key)' }
+]
+const ANTHROPIC_WIRE_OPTIONS = [
+  { value: 'auto', label: 'Auto (current behavior)' },
+  { value: 'claude.effort', label: 'output_config.effort (low/medium/high)' },
+  { value: 'claude.budget', label: 'thinking.budget_tokens' },
+  { value: 'claude.none', label: 'None (write no reasoning key)' }
+]
+const BUDGET_WIRES = new Set(['chat.thinking_budget', 'chat.enable_thinking', 'claude.budget'])
 
 function sourceBadge(row: CapabilityRow): { label: string; className: string; title: string } {
   if (row.source === 'verified') {
@@ -62,6 +92,22 @@ function sourceBadge(row: CapabilityRow): { label: string; className: string; ti
       label: 'Custom',
       className: 'cap-badge cap-badge-declared',
       title: 'Your declaration wins for this route'
+    }
+  }
+  if (row.source === 'catalog') {
+    const provenance = row.catalog
+    return {
+      label: 'Catalog',
+      className: 'cap-badge cap-badge-catalog',
+      title: provenance
+        ? `models.dev ${provenance.matchedBy} match (${Math.round(
+            provenance.confidence * 100
+          )}%) — snapshot ${provenance.snapshotAt.slice(0, 10)}${
+            provenance.fetchedAt
+              ? `, refreshed ${provenance.fetchedAt.slice(0, 10)}`
+              : ''
+          }. Declare rungs to override it.`
+        : 'models.dev catalog value — declare rungs to override it.'
     }
   }
   return {
@@ -174,6 +220,8 @@ export default function ModelCapabilitiesPanel() {
         efforts?: string[]
         defaultEffort?: string
         params?: Record<string, string | number | boolean>
+        wire?: string
+        budgetTokens?: number
       }
       context?: { windowTokens?: number; outputTokens?: number }
     }) => {
@@ -519,6 +567,7 @@ export default function ModelCapabilitiesPanel() {
                     probeState={probe?.key === row.key ? probe : null}
                     onApplyProbe={applyProbeAccepted}
                     onDismissProbe={() => setProbe(null)}
+                    providerType={meta?.type}
                   />
                 ))}
               </div>
@@ -596,7 +645,8 @@ function CapabilityRowView({
   onProbe,
   probeState,
   onApplyProbe,
-  onDismissProbe
+  onDismissProbe,
+  providerType
 }: {
   row: CapabilityRow
   expanded: boolean
@@ -611,6 +661,8 @@ function CapabilityRowView({
       efforts?: string[]
       defaultEffort?: string
       params?: Record<string, string | number | boolean>
+      wire?: string
+      budgetTokens?: number
     }
     context?: { windowTokens?: number; outputTokens?: number }
   }) => Promise<boolean>
@@ -618,6 +670,7 @@ function CapabilityRowView({
   probeState: ProbeState | null
   onApplyProbe: (p: ProbeState) => Promise<void>
   onDismissProbe: () => void
+  providerType?: 'openai-compatible' | 'anthropic-compatible'
 }) {
   const badge = sourceBadge(row)
   const [effortsText, setEffortsText] = useState((row.declared?.efforts ?? row.efforts).join(', '))
@@ -628,6 +681,15 @@ function CapabilityRowView({
     row.declared?.params ? JSON.stringify(row.declared.params, null, 2) : ''
   )
   const [paramsError, setParamsError] = useState<string | null>(null)
+  const [wire, setWire] = useState(row.declared?.wire ?? 'auto')
+  const [budgetTokens, setBudgetTokens] = useState(
+    row.declared?.budgetTokens?.toString() ?? ''
+  )
+  const wireOptions =
+    providerType === 'anthropic-compatible'
+      ? ANTHROPIC_WIRE_OPTIONS
+      : OPENAI_WIRE_OPTIONS
+  const showBudget = BUDGET_WIRES.has(wire)
 
   const declaredRungs = (row.declared?.efforts ?? row.efforts)
     .map((r) => r.trim())
@@ -666,7 +728,17 @@ function CapabilityRowView({
         ...(efforts.length > 0 ? { efforts } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
         ...(row.declared?.supported !== undefined ? { supported: row.declared.supported } : {}),
-        ...(params !== undefined ? { params } : {})
+        ...(params !== undefined ? { params } : {}),
+        // ADR-32: only send an explicit dialect when it differs from what is
+        // stored ('auto' is an explicit value too — picking it clears a
+        // previously stored dialect). An untouched row stays absent = keep.
+        ...(wire !== (row.declared?.wire ?? 'auto') ? { wire } : {}),
+        ...(showBudget &&
+        budgetTokens &&
+        Number.isFinite(Number(budgetTokens)) &&
+        Number(budgetTokens) > 0
+          ? { budgetTokens: Math.floor(Number(budgetTokens)) }
+          : {})
       },
       context: {
         ...(windowTokens && Number.isFinite(Number(windowTokens)) && Number(windowTokens) > 0
@@ -820,6 +892,33 @@ function CapabilityRowView({
 
       {expanded && (
         <div className="cap-row-editor">
+          <label className="settings-field-label">Reasoning parameter format</label>
+          <CustomSelect
+            value={wire}
+            onChange={setWire}
+            size="small"
+            options={wireOptions}
+          />
+          <p className="cap-hint">
+            A wrong format may be rejected by the provider (400). A custom request body
+            overrides this setting. <code>None</code> writes no reasoning key at all —
+            it never disables reasoning.
+          </p>
+          {showBudget && (
+            <>
+              <label className="settings-field-label">Thinking budget (tokens)</label>
+              <input
+                className="cap-input"
+                type="number"
+                min={1}
+                value={budgetTokens}
+                placeholder="e.g. 32000"
+                onChange={(e) => setBudgetTokens(e.target.value)}
+              />
+              <p className="cap-hint">Budget dialects do not need an effort pick.</p>
+            </>
+          )}
+
           <label className="settings-field-label">
             Efforts (comma-separated, verbatim on the wire)
           </label>

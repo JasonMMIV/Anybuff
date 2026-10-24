@@ -37,6 +37,10 @@ import {
 } from './failover'
 import { getModelForRequest } from './model-provider'
 import type { ModelPricing } from './model-provider'
+import {
+  anthropicReasoningProviderOptions,
+  type ReasoningWireDescriptor,
+} from './reasoning-wire'
 import { decideContextOverflowTrim } from './context-overflow-trim'
 import {
   classifyStreamEndRecovery,
@@ -76,24 +80,83 @@ function calculateUsedCredits(params: { costDollars: number }): number {
   return Math.round(costDollars * 100)
 }
 
+/** The tier whose threshold the request's input tokens reach (highest wins). */
+function pickPricingTier(
+  tiers: ModelPricing['tiers'],
+  inputTokens: number,
+): NonNullable<ModelPricing['tiers']>[number] | undefined {
+  if (!tiers?.length) return undefined
+  let best: NonNullable<ModelPricing['tiers']>[number] | undefined
+  for (const tier of tiers) {
+    if (inputTokens < tier.minContextTokens) continue
+    if (!best || tier.minContextTokens > best.minContextTokens) best = tier
+  }
+  return best
+}
+
 /**
  * M2-lite fallback: estimate spend from configured per-million pricing when
  * an endpoint does not report OpenRouter-style cost fields.
+ *
+ * ADR-31 extends this to the cache/reasoning/tier slots the catalog carries:
+ * cache reads and writes are billed at their own rates when known (they are
+ * a SUBSET of `inputTokens`, so the uncached remainder is billed at the input
+ * rate), reasoning tokens are a subset of the output. Unknown rates fall back
+ * to the matching input/output rate instead of being dropped.
  */
-function estimateCostDollars(
+export function estimateCostDollars(
   usage:
-    | { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+    | {
+        inputTokens?: number
+        outputTokens?: number
+        totalTokens?: number
+        inputTokenDetails?: {
+          cacheReadTokens?: number
+          cacheWriteTokens?: number
+        }
+        outputTokenDetails?: { reasoningTokens?: number }
+      }
     | undefined,
   pricing?: ModelPricing,
 ): number | undefined {
   if (!usage || !pricing) return undefined
-  const inputPm = pricing.inputPerMillionTokens
-  const outputPm = pricing.outputPerMillionTokens
-  if (inputPm === undefined && outputPm === undefined) return undefined
-  const inT = usage.inputTokens ?? 0
-  const outT = usage.outputTokens ?? 0
+  const hasRate =
+    Object.entries(pricing).some(
+      ([key, value]) => key !== 'currency' && typeof value === 'number',
+    ) ||
+    Boolean(pricing.tiers?.length) ||
+    Boolean(pricing.contextOver200k)
+  if (!hasRate) return undefined
+
+  const input = usage.inputTokens ?? 0
+  const output = usage.outputTokens ?? 0
+  // Legacy >200k pricing is only used when no newer tier matched.
+  const tier = pickPricingTier(pricing.tiers, input)
+  const legacy =
+    !tier && input > 200_000 ? pricing.contextOver200k : undefined
+
+  const inputRate = tier?.input ?? legacy?.input ?? pricing.inputPerMillionTokens
+  const outputRate =
+    tier?.output ?? legacy?.output ?? pricing.outputPerMillionTokens
+  const cacheReadRate =
+    tier?.cacheRead ?? legacy?.cacheRead ?? pricing.cachedInputPerMillionTokens
+  const cacheWriteRate =
+    tier?.cacheWrite ?? legacy?.cacheWrite ?? pricing.cacheWritePerMillionTokens
+  const reasoningRate = pricing.reasoningPerMillionTokens ?? outputRate
+
+  const cacheRead = usage.inputTokenDetails?.cacheReadTokens ?? 0
+  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens ?? 0
+  const uncachedInput = Math.max(0, input - cacheRead - cacheWrite)
+  const reasoning = usage.outputTokenDetails?.reasoningTokens ?? 0
+  const textOutput = Math.max(0, output - reasoning)
+
   const dollars =
-    (inT * (inputPm ?? 0) + outT * (outputPm ?? 0)) / 1_000_000
+    (uncachedInput * (inputRate ?? 0) +
+      cacheRead * (cacheReadRate ?? inputRate ?? 0) +
+      cacheWrite * (cacheWriteRate ?? inputRate ?? 0) +
+      textOutput * (outputRate ?? 0) +
+      reasoning * (reasoningRate ?? 0)) /
+    1_000_000
   return dollars > 0 ? dollars : undefined
 }
 
@@ -142,12 +205,47 @@ function getModelProvider(model: LanguageModel): string {
  * ride along under the same namespaces — each param keeps its own name
  * (keys pass through verbatim, no renaming to vendor-canonical spellings).
  */
+/** One warning per provider — this runs on every request. */
+const warnedAnthropicParams = new Set<string>()
+
 function withConfiguredReasoningEffort(
   providerOptions: ProviderMetadata | undefined,
   reasoningEffort: string | undefined,
   providerName: string | undefined,
   reasoningParams?: Record<string, string | number | boolean>,
+  reasoningWire?: ReasoningWireDescriptor,
 ): ProviderMetadata | undefined {
+  // ADR-32: Anthropic-compatible endpoints read `anthropic.effort` /
+  // `anthropic.thinking` — `reasoningEffort` is not in their schema and was
+  // silently stripped before this. `claude.none` / auto-with-no-effort writes
+  // nothing (never `thinking:{type:'disabled'}`, ADR-10).
+  if (reasoningWire?.protocol === 'anthropic') {
+    // ADR-32: Anthropic provider options only accept `effort` / `thinking`;
+    // scalar `reasoning.params` have no expressible slot (the SDK schema would
+    // strip them silently). Say so once instead of dropping them in silence
+    // (§2.5 — a rejected setting is never console-quiet).
+    if (reasoningParams && Object.keys(reasoningParams).length > 0) {
+      const key = providerName ?? 'anthropic'
+      if (!warnedAnthropicParams.has(key)) {
+        warnedAnthropicParams.add(key)
+        console.info(
+          `[anybuff-compat] reasoning-params-dropped: ${key} — scalar reasoning.params cannot be expressed in Anthropic provider options; use reasoning.wire=claude.budget instead`,
+        )
+      }
+    }
+    const anthropicOptions = anthropicReasoningProviderOptions(
+      reasoningWire,
+      reasoningEffort,
+    )
+    if (!anthropicOptions) return providerOptions
+    const merged: ProviderMetadata = { ...(providerOptions ?? {}) }
+    merged.anthropic = {
+      ...((merged.anthropic as Record<string, JSONValue | undefined> | undefined) ??
+        {}),
+      ...(anthropicOptions as Record<string, JSONValue | undefined>),
+    }
+    return merged
+  }
   if (!reasoningEffort || reasoningEffort === 'default') return providerOptions
   const namespaces = new Set<string>(['openaiCompatible', 'openai'])
   if (providerName) namespaces.add(providerName)
@@ -492,7 +590,7 @@ async function* streamOnce(
   const agentChunkMetadata =
     params.agentId != null ? { agentId: params.agentId } : undefined
 
-  const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
+  const { model: aiSDKModel, reasoningEffort, reasoningParams, reasoningWire, compatibility, pricing } = await getModelForRequest({
     apiKey: params.apiKey,
     model: requestedModel ?? params.model,
     agentId: params.agentId,
@@ -534,6 +632,7 @@ async function* streamOnce(
       reasoningEffort,
       resolvedProviderName,
       reasoningParams,
+      reasoningWire,
     ),
     // Handle tool call errors gracefully by passing them through to our validation layer
     // instead of throwing (which would halt the agent). The only special case is when
@@ -1008,7 +1107,7 @@ export async function promptAiSdk(
   return runGenerationWithFailover(
     { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
     async ({ requestedModel, verbatim, messagesOverride }) => {
-    const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, reasoningParams, reasoningWire, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -1040,6 +1139,7 @@ export async function promptAiSdk(
         reasoningEffort,
         getModelProvider(aiSDKModel).split('.')[0].trim(),
         reasoningParams,
+        reasoningWire,
       ),
     })
     emitCacheDebugProviderRequest({
@@ -1102,7 +1202,7 @@ export async function promptAiSdkStructured<T>(
   return runGenerationWithFailover(
     { signal: params.signal, model: typeof params.model === 'string' ? params.model : undefined, messages: params.messages, logger },
     async ({ requestedModel, verbatim, messagesOverride }) => {
-    const { model: aiSDKModel, reasoningEffort, reasoningParams, compatibility, pricing } = await getModelForRequest({
+    const { model: aiSDKModel, reasoningEffort, reasoningParams, reasoningWire, compatibility, pricing } = await getModelForRequest({
       apiKey: params.apiKey,
       model: requestedModel ?? params.model,
       agentId: params.agentId,
@@ -1132,6 +1232,7 @@ export async function promptAiSdkStructured<T>(
         reasoningEffort,
         getModelProvider(aiSDKModel).split('.')[0].trim(),
         reasoningParams,
+        reasoningWire,
       ),
     })
 

@@ -25,6 +25,7 @@
     "smoke:sdk": "bun sdk/smoke-test-dist.ts",
     "smoke:host-core": "bun packages/host-core/scripts/smoke-host-core.ts",
     "scan:touch": "bun scripts/scan-touch-targets.ts",
+    "sync:model-catalog": "bun scripts/sync-model-catalog.ts",
     "dev:desktop": "bun --cwd desktop dev",
     "build:desktop": "bun --cwd desktop build",
     "typecheck:desktop": "bun --cwd desktop typecheck",

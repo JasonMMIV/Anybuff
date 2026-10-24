@@ -6,6 +6,17 @@ import { z } from 'zod/v4'
 
 import { getConfigDir } from './credentials'
 import { getSystemProcessEnv } from './env'
+import {
+  catalogContextWindow,
+  catalogEfforts,
+  catalogOutputTokens,
+  catalogReplayField,
+  catalogSupportsFileInput,
+  catalogSupportsImageInput,
+  lookupCatalogModel,
+  type CatalogLookupResult,
+  type ModelCatalogIndex,
+} from './impl/model-catalog'
 
 export const PROVIDER_CONFIG_ENV_VAR = 'ANYBUFF_PROVIDER_CONFIG'
 const PROVIDER_CONFIG_FILE_NAME = 'anybuff.json'
@@ -56,6 +67,33 @@ export const reasoningEffortSchema = z
     message: "'default' is a host-menu sentinel, not a wire effort",
   })
 export type AnybuffReasoningEffort = z.infer<typeof reasoningEffortSchema>
+
+/**
+ * ADR-32: named reasoning wire dialects. `auto` is the historical behavior
+ * (byte-identical); every other id selects ONE explicit write format. `*.none`
+ * means "write no reasoning key" — never `thinking: {type:'disabled'}` and
+ * never `enable_thinking: false` (ADR-10: 只清除、不抑制).
+ */
+export const REASONING_WIRE_DIALECTS = [
+  'auto',
+  'chat.effort',
+  'chat.thinking_budget',
+  'chat.enable_thinking',
+  'chat.reasoning_obj',
+  'chat.none',
+  'claude.effort',
+  'claude.budget',
+  'claude.none',
+] as const
+export type ReasoningWireDialect = (typeof REASONING_WIRE_DIALECTS)[number]
+/**
+ * ADR-27 per-slot guard: an unknown dialect degrades to `undefined` (= auto)
+ * instead of failing the whole config file.
+ */
+export const reasoningWireDialectSchema = z
+  .enum(REASONING_WIRE_DIALECTS)
+  .optional()
+  .catch(undefined)
 const routableModelValueSchema = z.union([
   z.string().min(1),
   z.object({
@@ -168,6 +206,20 @@ export const modelCapabilitiesSchema = z.object({
         .catch(undefined),
       defaultEffort: reasoningEffortSchema.optional().catch(undefined),
       /**
+       * ADR-32: named reasoning wire format for this model. `auto`/absent
+       * keeps the historical behavior; a named dialect is the single writer
+       * for the reasoning keys it owns (customBody still has the last word).
+       */
+      wire: reasoningWireDialectSchema,
+      /**
+       * ADR-32: thinking budget for `chat.thinking_budget` /
+       * `chat.enable_thinking` / `claude.budget`. Positive integer; malformed
+       * values degrade to undefined (the dialect then writes nothing and logs
+       * loudly). Independent of the effort pick so a budget-only model works
+       * with effort = Default.
+       */
+      budgetTokens: positiveIntSchema.optional().catch(undefined),
+      /**
        * ADR-27 (§3.2/MC-0.5): per-model non-enum reasoning params riding the
        * effort pick (Anthropic-style thinking budgets, DashScope
        * thinking_budget). Scalar values only — nested structures would need
@@ -217,6 +269,46 @@ export const modelCapabilitiesSchema = z.object({
       inputPerMillionTokens: nonNegativeNumberSchema.optional(),
       outputPerMillionTokens: nonNegativeNumberSchema.optional(),
       cachedInputPerMillionTokens: nonNegativeNumberSchema.optional(),
+      /** ADR-31: cache-write (cache creation) price, USD per 1M tokens. */
+      cacheWritePerMillionTokens: nonNegativeNumberSchema.optional().catch(undefined),
+      /** ADR-31: reasoning-token price when the vendor bills it separately. */
+      reasoningPerMillionTokens: nonNegativeNumberSchema.optional().catch(undefined),
+      /** ADR-31: legacy long-context (>200k) pricing block. */
+      contextOver200k: z
+        .object({
+          input: nonNegativeNumberSchema.optional(),
+          output: nonNegativeNumberSchema.optional(),
+          cacheRead: nonNegativeNumberSchema.optional(),
+          cacheWrite: nonNegativeNumberSchema.optional(),
+        })
+        .optional()
+        .catch(undefined),
+      /** ADR-31: tiered pricing; each tier starts at `minContextTokens`. */
+      tiers: z
+        .preprocess(
+          (v) =>
+            Array.isArray(v)
+              ? v.filter(
+                  (tier) =>
+                    tier !== null &&
+                    typeof tier === 'object' &&
+                    !Array.isArray(tier) &&
+                    typeof (tier as Record<string, unknown>).minContextTokens ===
+                      'number',
+                )
+              : v,
+          z.array(
+            z.object({
+              minContextTokens: nonNegativeNumberSchema,
+              input: nonNegativeNumberSchema.optional(),
+              output: nonNegativeNumberSchema.optional(),
+              cacheRead: nonNegativeNumberSchema.optional(),
+              cacheWrite: nonNegativeNumberSchema.optional(),
+            }),
+          ),
+        )
+        .optional()
+        .catch(undefined),
       currency: z.string().min(1).default('USD'),
     })
     .optional(),
@@ -318,6 +410,35 @@ const openAICompatibleProviderSchema = z
     defaultCapabilities: modelCapabilitiesSchema.optional(),
     /** Per-model capability metadata keyed by requested or provider model id. */
     modelCapabilities: modelCapabilitiesByModelSchema.optional(),
+    /**
+     * ADR-31: explicit models.dev provider id (e.g. `my-deepseek` →
+     * `deepseek`). Unset falls back to id/label exact match, then the
+     * baseURL host. `.catch(undefined)` so a bad value never kills the file.
+     */
+    catalogProvider: z.string().min(1).optional().catch(undefined),
+    /**
+     * ADR-31: per-model models.dev id override (`lab/model` or bare model id)
+     * when the routable id differs from the catalog id for a reason no
+     * normalization can recover. Invalid rows are dropped individually.
+     */
+    catalogKeys: z
+      .preprocess(
+        (v) => {
+          if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+          return Object.fromEntries(
+            Object.entries(v).filter(
+              ([key, value]) =>
+                typeof key === 'string' &&
+                key.length > 0 &&
+                typeof value === 'string' &&
+                value.length > 0,
+            ),
+          )
+        },
+        z.record(z.string().min(1), z.string().min(1)),
+      )
+      .optional()
+      .catch(undefined),
     /** Discovery settings for auto-fetching available models from the provider endpoint. */
     discovery: providerDiscoverySchema.optional(),
     /** Enable thinking / reasoning tokens on providers like DashScope (Alibaba Cloud). */
@@ -387,6 +508,33 @@ const anthropicProviderSchema = z
     defaultCapabilities: modelCapabilitiesSchema.optional(),
     /** Per-model capability metadata keyed by requested or provider model id. */
     modelCapabilities: modelCapabilitiesByModelSchema.optional(),
+    /** ADR-31: explicit models.dev provider id (see the OpenAI schema). */
+    catalogProvider: z.string().min(1).optional().catch(undefined),
+    /** ADR-31: per-model models.dev id override (see the OpenAI schema). */
+    catalogKeys: z
+      .preprocess(
+        (v) => {
+          if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+          return Object.fromEntries(
+            Object.entries(v).filter(
+              ([key, value]) =>
+                typeof key === 'string' &&
+                key.length > 0 &&
+                typeof value === 'string' &&
+                value.length > 0,
+            ),
+          )
+        },
+        z.record(z.string().min(1), z.string().min(1)),
+      )
+      .optional()
+      .catch(undefined),
+    /**
+     * ADR-32: custom request-body parameters merged into the Messages API
+     * body LAST (after the dialect), so it is a genuine escape hatch. Unknown
+     * keys are passed through — the endpoint decides whether to 400.
+     */
+    customBody: z.record(z.string(), z.unknown()).optional(),
   })
   .refine(
     (provider) => {
@@ -599,6 +747,15 @@ export const providerConfigFileSchema = z
     maxAgentSteps: z
       .union([z.literal(-1), z.number().int().positive().max(100000)])
       .optional(),
+    /**
+     * ADR-31: models.dev catalog behavior. `online: false` keeps the built-in
+     * snapshot only (offline / privacy-sensitive installs). Any other field
+     * change here is a new ADR.
+     */
+    modelCatalog: z
+      .object({ online: z.boolean().optional().catch(undefined) })
+      .optional()
+      .catch(undefined),
   })
   .transform((config) => {
     const agents: Record<string, string> = {}
@@ -680,6 +837,9 @@ export const providerConfigFileSchema = z
       // callers use the unlimited default plus the no-progress watchdog.
       ...(config.maxAgentSteps !== undefined && {
         maxAgentSteps: config.maxAgentSteps,
+      }),
+      ...(config.modelCatalog !== undefined && {
+        modelCatalog: config.modelCatalog,
       }),
     }
   })
@@ -1056,6 +1216,7 @@ function mergeProviderConfigs(
     approvalMode: override.approvalMode ?? base.approvalMode,
     failoverModels: override.failoverModels ?? base.failoverModels,
     maxAgentSteps: override.maxAgentSteps ?? base.maxAgentSteps,
+    modelCatalog: override.modelCatalog ?? base.modelCatalog,
   }
 }
 
@@ -1520,6 +1681,333 @@ export function resolveModelCapabilities(params: {
       ...modelCapabilityOverrides,
     ),
   )
+}
+
+/**
+ * ADR-31 provenance: where one capability group came from. `preset` is
+ * reserved for a future settings-level provenance marker (P0 preset values
+ * are baked into the config and therefore indistinguishable from `declared`).
+ */
+export type ModelCapabilitySource =
+  | 'declared'
+  | 'preset'
+  | 'learned'
+  | 'catalog'
+  | 'heuristic'
+  | 'default'
+
+/** Catalog facts that are metadata only — never persisted to modelCapabilities. */
+export type CatalogProvenance = {
+  providerId: string
+  modelId: string
+  snapshotAt: string
+  fetchedAt?: string
+  matchedBy: CatalogLookupResult['matchedBy']
+  confidence: number
+  /** alpha / beta / deprecated — advisory only (never blocks routing). */
+  status?: string
+  reasoning?: {
+    efforts?: string[]
+    toggle?: boolean
+    budgetTokens?: { min?: number; max?: number }
+    /** ADR-26 replay hint from models.dev `interleaved.field`. */
+    replayField?: string
+  }
+  sampling?: { temperatureSupported?: boolean }
+}
+
+export type ResolvedModelCapabilities = {
+  /** The effective capabilities (declared config + catalog gap-fill). */
+  capabilities: ModelCapabilities
+  /** Per-group provenance, for the Capabilities UI (ADR-27 D3). */
+  sources: Partial<Record<keyof ModelCapabilities, ModelCapabilitySource>>
+  catalog?: CatalogProvenance
+}
+
+function catalogToPricing(
+  hit: CatalogLookupResult,
+): ModelCapabilities['pricing'] | undefined {
+  const cost = hit.model.cost
+  if (!cost) return undefined
+  const pricing: NonNullable<ModelCapabilities['pricing']> = { currency: 'USD' }
+  if (cost.input !== undefined) pricing.inputPerMillionTokens = cost.input
+  if (cost.output !== undefined) pricing.outputPerMillionTokens = cost.output
+  if (cost.cacheRead !== undefined) {
+    pricing.cachedInputPerMillionTokens = cost.cacheRead
+  }
+  if (cost.cacheWrite !== undefined) {
+    pricing.cacheWritePerMillionTokens = cost.cacheWrite
+  }
+  if (cost.reasoning !== undefined) {
+    pricing.reasoningPerMillionTokens = cost.reasoning
+  }
+  if (cost.contextOver200k) pricing.contextOver200k = { ...cost.contextOver200k }
+  if (cost.tiers?.length) {
+    pricing.tiers = cost.tiers.map((tier) => ({ ...tier }))
+  }
+  return Object.keys(pricing).length > 1 ? pricing : undefined
+}
+
+function describeCatalogHit(
+  hit: CatalogLookupResult,
+  index: ModelCatalogIndex,
+): CatalogProvenance {
+  const model = hit.model
+  const budget = model.reasoningOptions.find(
+    (option): option is { type: 'budget_tokens'; min?: number; max?: number } =>
+      option.type === 'budget_tokens',
+  )
+  const efforts = catalogEfforts(model)
+  const toggle = model.reasoningOptions.some((option) => option.type === 'toggle')
+  const replayField = catalogReplayField(model)
+  return {
+    providerId: model.providerId,
+    modelId: model.modelId,
+    snapshotAt: index.snapshotAt,
+    ...(index.fetchedAt ? { fetchedAt: index.fetchedAt } : {}),
+    matchedBy: hit.matchedBy,
+    confidence: hit.confidence,
+    ...(model.status ? { status: model.status } : {}),
+    ...(efforts.length > 0 || toggle || budget || replayField
+      ? {
+          reasoning: {
+            ...(efforts.length > 0 ? { efforts } : {}),
+            ...(toggle ? { toggle } : {}),
+            ...(budget
+              ? {
+                  budgetTokens: {
+                    ...(budget.min !== undefined ? { min: budget.min } : {}),
+                    ...(budget.max !== undefined ? { max: budget.max } : {}),
+                  },
+                }
+              : {}),
+            ...(replayField ? { replayField } : {}),
+          },
+        }
+      : {}),
+    ...(model.temperature !== undefined
+      ? { sampling: { temperatureSupported: model.temperature } }
+      : {}),
+  }
+}
+
+/**
+ * Resolve capabilities WITH the models.dev catalog as the layer underneath the
+ * user's explicit declaration (plan §5.1/§8.2, ADR-31).
+ *
+ *   explicit config (declared / preset-baked / A2-learned-write-back)
+ *     → catalog (snapshot or runtime cache)
+ *     → nothing (callers keep their conservative fallback)
+ *
+ * `resolveModelCapabilities()` intentionally keeps its old meaning (explicit
+ * config only) so the UI's "declared" badge is never polluted by catalog
+ * values. A2's in-memory learned windows are applied by `model-provider.ts`
+ * ABOVE this result (real measurements beat the catalog).
+ *
+ * Catalog `false` values are advisory in P0: only `true` upgrades (a wrong
+ * `tool_call: false` would silently remove tools and stall the agent loop —
+ * plan §9.1).
+ */
+export function resolveModelCapabilitiesWithSource(params: {
+  providerId: string
+  model: string
+  loadedConfig?: LoadedProviderConfig
+  /** The current catalog index (omitted = declared-only behavior). */
+  catalog?: ModelCatalogIndex
+}): ResolvedModelCapabilities {
+  const {
+    providerId,
+    model,
+    loadedConfig = loadProviderConfigSync(),
+    catalog,
+  } = params
+  const declared = resolveModelCapabilities({ providerId, model, loadedConfig })
+  const provider = loadedConfig.config.providers[providerId]
+  if (!provider) return { capabilities: declared, sources: {} }
+
+  // Deep-copy the groups we may extend: declared values must never be mutated
+  // in place (the same object can be returned to a second caller).
+  const capabilities: ModelCapabilities = {
+    ...declared,
+    ...(declared.input ? { input: { ...declared.input } } : {}),
+    ...(declared.context ? { context: { ...declared.context } } : {}),
+    ...(declared.reasoning
+      ? {
+          reasoning: {
+            ...declared.reasoning,
+            ...(declared.reasoning.efforts
+              ? { efforts: [...declared.reasoning.efforts] }
+              : {}),
+            ...(declared.reasoning.params
+              ? { params: { ...declared.reasoning.params } }
+              : {}),
+          },
+        }
+      : {}),
+    ...(declared.tools ? { tools: { ...declared.tools } } : {}),
+    ...(declared.promptCaching
+      ? { promptCaching: { ...declared.promptCaching } }
+      : {}),
+    ...(declared.pricing ? { pricing: { ...declared.pricing } } : {}),
+    ...(declared.quality ? { quality: { ...declared.quality } } : {}),
+  }
+
+  const present = new Set<keyof ModelCapabilities>(
+    Object.keys(declared) as Array<keyof ModelCapabilities>,
+  )
+  const sources: Partial<Record<keyof ModelCapabilities, ModelCapabilitySource>> =
+    {}
+  for (const key of present) sources[key] = 'declared'
+
+  if (!catalog) return { capabilities, sources }
+
+  const hit = lookupCatalogModel(catalog, {
+    providerId,
+    model,
+    baseURL: provider.baseURL,
+    ...(provider.catalogProvider
+      ? { catalogProvider: provider.catalogProvider }
+      : {}),
+    ...(provider.catalogKeys ? { catalogKeys: provider.catalogKeys } : {}),
+  })
+  if (!hit) return { capabilities, sources }
+
+  const touch = (key: keyof ModelCapabilities): void => {
+    if (!present.has(key)) {
+      present.add(key)
+      sources[key] = 'catalog'
+    }
+  }
+
+  const window = catalogContextWindow(hit.model)
+  const output = catalogOutputTokens(hit.model)
+  if (window !== undefined || output !== undefined) {
+    const context = { ...(capabilities.context ?? {}) }
+    if (context.windowTokens === undefined && window !== undefined) {
+      context.windowTokens = window
+      touch('context')
+    }
+    if (context.outputTokens === undefined && output !== undefined) {
+      context.outputTokens = output
+      touch('context')
+    }
+    if (Object.keys(context).length > 0) capabilities.context = context
+  }
+
+  if (hit.model.reasoning !== undefined) {
+    const reasoning = { ...(capabilities.reasoning ?? {}) }
+    if (reasoning.supported === undefined) {
+      reasoning.supported = hit.model.reasoning
+      touch('reasoning')
+    }
+    if (!reasoning.efforts?.length) {
+      const efforts = catalogEfforts(hit.model)
+      if (efforts.length > 0) {
+        reasoning.efforts = efforts
+        touch('reasoning')
+      }
+    }
+    // `defaultEffort` is deliberately never taken from the catalog — models.dev
+    // has no default (0 rows), and guessing would be suppression's cousin.
+    if (Object.keys(reasoning).length > 0) capabilities.reasoning = reasoning
+  } else if (!capabilities.reasoning?.efforts?.length) {
+    const efforts = catalogEfforts(hit.model)
+    if (efforts.length > 0) {
+      capabilities.reasoning = { ...(capabilities.reasoning ?? {}), efforts }
+      touch('reasoning')
+    }
+  }
+
+  const image = catalogSupportsImageInput(hit.model)
+  if (image === true) {
+    const input = { ...(capabilities.input ?? {}) }
+    if (input.image === undefined) {
+      input.image = true
+      touch('input')
+    }
+    capabilities.input = input
+  }
+  if (catalogSupportsFileInput(hit.model) === true) {
+    const input = { ...(capabilities.input ?? {}) }
+    if (input.file === undefined) {
+      input.file = true
+      touch('input')
+    }
+    capabilities.input = input
+  }
+
+  if (hit.model.toolCall === true || hit.model.structuredOutput === true) {
+    const tools = { ...(capabilities.tools ?? {}) }
+    if (tools.supported === undefined && hit.model.toolCall === true) {
+      tools.supported = true
+      touch('tools')
+    }
+    if (
+      tools.structuredOutputs === undefined &&
+      hit.model.structuredOutput === true
+    ) {
+      tools.structuredOutputs = true
+      touch('tools')
+    }
+    if (Object.keys(tools).length > 0) capabilities.tools = tools
+  }
+
+  const catalogPricing = catalogToPricing(hit)
+  if (catalogPricing) {
+    const pricing = { ...(capabilities.pricing ?? { currency: 'USD' }) }
+    if (
+      pricing.inputPerMillionTokens === undefined &&
+      catalogPricing.inputPerMillionTokens !== undefined
+    ) {
+      pricing.inputPerMillionTokens = catalogPricing.inputPerMillionTokens
+      touch('pricing')
+    }
+    if (
+      pricing.outputPerMillionTokens === undefined &&
+      catalogPricing.outputPerMillionTokens !== undefined
+    ) {
+      pricing.outputPerMillionTokens = catalogPricing.outputPerMillionTokens
+      touch('pricing')
+    }
+    if (
+      pricing.cachedInputPerMillionTokens === undefined &&
+      catalogPricing.cachedInputPerMillionTokens !== undefined
+    ) {
+      pricing.cachedInputPerMillionTokens =
+        catalogPricing.cachedInputPerMillionTokens
+      touch('pricing')
+    }
+    if (
+      pricing.cacheWritePerMillionTokens === undefined &&
+      catalogPricing.cacheWritePerMillionTokens !== undefined
+    ) {
+      pricing.cacheWritePerMillionTokens =
+        catalogPricing.cacheWritePerMillionTokens
+      touch('pricing')
+    }
+    if (
+      pricing.reasoningPerMillionTokens === undefined &&
+      catalogPricing.reasoningPerMillionTokens !== undefined
+    ) {
+      pricing.reasoningPerMillionTokens = catalogPricing.reasoningPerMillionTokens
+      touch('pricing')
+    }
+    if (pricing.contextOver200k === undefined && catalogPricing.contextOver200k) {
+      pricing.contextOver200k = { ...catalogPricing.contextOver200k }
+      touch('pricing')
+    }
+    if (!pricing.tiers?.length && catalogPricing.tiers?.length) {
+      pricing.tiers = catalogPricing.tiers.map((tier) => ({ ...tier }))
+      touch('pricing')
+    }
+    capabilities.pricing = pricing
+  }
+
+  return {
+    capabilities,
+    sources,
+    catalog: describeCatalogHit(hit, catalog),
+  }
 }
 
 function formatCompactNumber(value: number): string {

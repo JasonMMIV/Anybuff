@@ -46,6 +46,20 @@ describe('buildReasoningLadders', () => {
     expect(ladders['p/m']).toEqual(['low', 'medium', 'high'])
   })
 
+  test('catalog efforts fill a model the seed table does not know (ADR-31)', () => {
+    const ladders = buildReasoningLadders([
+      {
+        id: 'my-deepseek',
+        label: 'My DeepSeek',
+        type: 'openai-compatible',
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        models: ['deepseek-flash'],
+      },
+    ])
+    expect(ladders['my-deepseek/deepseek-flash']).toEqual(['low', 'high', 'max'])
+  })
+
   test('models with no ladder anywhere are simply absent', () => {
     const ladders = buildReasoningLadders([
       {
@@ -103,6 +117,24 @@ describe('buildReasoningLadderInfos (ADR-27 MC-0.4: provenance badges)', () => {
     const infos = buildReasoningLadderInfos([provider])
     expect(infos['p/context-only']?.source).toBe('unknown')
     expect(infos['p/context-only']?.context?.windowTokens).toBe(128000)
+  })
+
+  test('catalog: no declaration/seed → models.dev rungs with provenance', () => {
+    const infos = buildReasoningLadderInfos([
+      {
+        id: 'my-deepseek',
+        label: 'My DeepSeek',
+        type: 'openai-compatible',
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        models: ['deepseek-flash'],
+      },
+    ])
+    const info = infos['my-deepseek/deepseek-flash']
+    expect(info?.source).toBe('catalog')
+    expect(info?.efforts).toEqual(['low', 'high', 'max'])
+    expect(info?.catalog?.matchedBy).toBe('host')
+    expect(info?.catalog?.snapshotAt.length).toBeGreaterThan(0)
   })
 
   test('a declaration without efforts falls back to the seed for that route', () => {

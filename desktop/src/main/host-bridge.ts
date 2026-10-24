@@ -19,6 +19,7 @@ import { app, safeStorage, ipcMain, type BrowserWindow } from 'electron'
 import { homedir } from 'os'
 import {
   installHostEnv,
+  installModelCatalogCache,
   createHost,
   createEventBus,
   attachEventSink,
@@ -93,6 +94,10 @@ export function registerHostIpc(): { host: Host; bus: EventBus } {
     // staging cannot; see HostEnv.pickedFilesShareFolder).
     pickedFilesShareFolder: true,
   })
+  // ADR-31: wire the models.dev disk cache AFTER the env is installed (it
+  // needs app.getPath('userData')). Explicit here rather than inside
+  // installHostEnv so env.ts stays free of SDK/fs imports and import cycles.
+  installModelCatalogCache()
 
   const bus = createEventBus()
   const host = createHost({ eventBus: bus })
