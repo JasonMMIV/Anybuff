@@ -181,9 +181,9 @@ export default function ModelCapabilitiesPanel() {
     }
   }, [])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { refresh?: boolean }) => {
     try {
-      const result = (await window.AnyBuff.listModelCapabilities()) as {
+      const result = (await window.AnyBuff.listModelCapabilities(opts)) as {
         ok: boolean
         rows?: CapabilityRow[]
         providers?: ProviderMeta[]
@@ -384,7 +384,12 @@ export default function ModelCapabilitiesPanel() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          <button type="button" className="btn ghost small" onClick={() => void refresh()}>
+          <button
+            type="button"
+            className="btn ghost small"
+            title="Refresh models.dev now and re-list (an explicit refresh ignores the 30-day check)"
+            onClick={() => void refresh({ refresh: true })}
+          >
             <RefreshIcon size={13} /> Refresh
           </button>
           <button type="button" className="btn ghost small" onClick={() => setImportOpen((v) => !v)}>
@@ -403,6 +408,7 @@ export default function ModelCapabilitiesPanel() {
       <p className="hint">
         Reasoning ladders and context windows per model. <strong>Verified</strong> = vendor-documented seed
         (hover for source + date); <strong>Custom</strong> = your declaration (wins for that route);{' '}
+        <strong>Catalog</strong> = models.dev entry, resolved up front and never written to your settings;{' '}
         <strong>Unrecognized</strong> = conservative menu fallback — declare rungs your endpoint actually
         accepts. Values are sent <em>verbatim</em>: <code>xhigh</code> and <code>extra-high</code> are
         different wire strings.

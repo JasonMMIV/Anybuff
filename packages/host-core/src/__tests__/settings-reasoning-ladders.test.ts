@@ -1,6 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
+import { clearModelCatalogCacheForTest } from '@codebuff/sdk'
 
 import { buildReasoningLadders, buildReasoningLadderInfos } from '../settings/settings'
+
+// These cases pin values from the BUILT-IN snapshot. Test files share the SDK
+// runtime (and other suites install their own catalog/cache), so reset to the
+// snapshot before each case instead of inheriting whatever ran before.
+beforeEach(() => {
+  clearModelCatalogCacheForTest()
+})
 
 /**
  * ADR-25: reasoning-ladder resolution feeding the Desktop menus. The merge is

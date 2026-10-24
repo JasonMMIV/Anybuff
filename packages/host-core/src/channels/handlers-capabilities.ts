@@ -38,14 +38,31 @@ import {
   loadSettings,
   saveModelCapability,
   type ModelCapabilityUpsert,
+  type ProviderConfig,
   type ReasoningLadderInfo,
 } from '../settings/settings'
+import { refreshModelCatalog } from '@codebuff/sdk'
+import {
+  DEFAULT_CATALOG_WARM_TIMEOUT_MS,
+  warmModelCatalogForProviders,
+} from '../model-catalog-warm'
 import { clearProbeSamples, listProbeSamples, retainProbeSamples } from './probe-samples'
 
-/** AnyBuff:listModelCapabilities — per provider, per model rows. */
-export function listModelCapabilities(): unknown {
-  const settings = getAppSettings()
-  const infos = buildReasoningLadderInfos(settings.providers)
+/** ADR-31: the panel warm is a per-process one-shot — opening the tab again
+ *  must not poll models.dev. Reset only by a host restart (or the test seam). */
+let catalogWarmedThisProcess = false
+
+/** Test seam: clear the once-per-process panel warm flag. */
+export function resetModelCapabilitiesWarmForTest(): void {
+  catalogWarmedThisProcess = false
+}
+
+/** The rows themselves — synchronous, no I/O. The channel below may warm the
+ *  catalog before the FIRST listing, so a model models.dev knows can already
+ *  have a ladder here. */
+function buildModelCapabilityListing(providers?: ProviderConfig[]): unknown {
+  const list = providers ?? getAppSettings().providers
+  const infos = buildReasoningLadderInfos(list)
   const rows: Array<{
     providerId: string
     model: string
@@ -60,7 +77,7 @@ export function listModelCapabilities(): unknown {
     defaultEffort?: string
     catalog?: ReasoningLadderInfo['catalog']
   }> = []
-  for (const provider of settings.providers) {
+  for (const provider of list) {
     for (const model of provider.models ?? []) {
       const key = `${provider.id}/${model}`
       const info = infos[key]
@@ -89,12 +106,40 @@ export function listModelCapabilities(): unknown {
     rows,
     // ADR-32: the editor renders a protocol-specific dialect list, so the UI
     // needs the provider type alongside the label.
-    providers: settings.providers.map((p) => ({
+    providers: list.map((p) => ({
       id: p.id,
       label: p.label,
       type: p.type,
     })),
   }
+}
+
+/**
+ * AnyBuff:listModelCapabilities — per provider, per model rows.
+ *
+ * ADR-31 trigger table (OmniChat §6.3): the FIRST open in a process may look up
+ * pairs that still have no ladder anywhere — snapshot hits stay offline and
+ * instant, and the wait is capped. Later opens are pure in-memory reads. A user
+ * Refresh (`{ refresh: true }`) explicitly refreshes the catalog first; that is
+ * the only path without the 30-day gate. Catalog values are still never written
+ * to settings.
+ */
+export async function listModelCapabilities(payload?: {
+  refresh?: boolean
+}): Promise<unknown> {
+  if (payload?.refresh === true) {
+    // User-invoked: always refresh (ETag + single-flight). A failure keeps the
+    // previous catalog and the rows below still render.
+    await refreshModelCatalog()
+  } else if (!catalogWarmedThisProcess) {
+    catalogWarmedThisProcess = true
+    const { providers } = getAppSettings()
+    await warmModelCatalogForProviders(providers, {
+      timeoutMs: DEFAULT_CATALOG_WARM_TIMEOUT_MS,
+    })
+  }
+  // Re-read: a catalog refresh may have changed the ladders since the warm.
+  return buildModelCapabilityListing()
 }
 
 /** AnyBuff:saveModelCapability — one validated upsert. */
@@ -115,7 +160,7 @@ export function importModelCapabilitiesChannel(payload: unknown): unknown {
 }
 
 function listModelCapabilitiesInternal(): unknown {
-  const listed = listModelCapabilities() as { rows: unknown[] }
+  const listed = buildModelCapabilityListing() as { rows: unknown[] }
   return listed.rows
 }
 

@@ -10,6 +10,7 @@ import {
   getAppSettings,
   getProviderApiKey,
   getProviderConfigHealth,
+  loadSettings,
   saveProviderApiKey,
   updateProviders,
   updateAgentRouting,
@@ -24,8 +25,18 @@ import {
   type WebSearchProviderId,
   type RunCostMode,
 } from '../settings/settings'
+import { refreshModelCatalogIfStale } from '@codebuff/sdk'
+import {
+  catalogWarmTarget,
+  warmModelCatalogForModels,
+  type CatalogWarmTarget,
+} from '../model-catalog-warm'
 import { isRunning } from '../run/start-run'
 import { getRunningTaskId } from '../sessions/session-store'
+
+/** ADR-31: the only settings-path catalog wait — a model ADDED by this save.
+ *  Snapshot hits still resolve instantly; this caps a genuine round-trip. */
+const SAVE_CATALOG_WARM_TIMEOUT_MS = 3000
 
 export interface SaveSettingsPayload {
   providers: ProviderConfig[]
@@ -48,6 +59,37 @@ export interface SaveSettingsPayload {
   costMode?: RunCostMode
 }
 
+/**
+ * Pairs this save ADDS relative to the persisted settings (ADR-31 trigger
+ * table). Computed from the payload so the renderer's intended models — not a
+ * normalized copy — decide the trigger.
+ */
+function addedCatalogTargets(providers: ProviderConfig[]): {
+  targets: CatalogWarmTarget[]
+  newProvider: boolean
+} {
+  const previous = new Map(loadSettings().providers.map((p) => [p.id, new Set(p.models ?? [])]))
+  const targets: CatalogWarmTarget[] = []
+  let newProvider = false
+  for (const provider of providers) {
+    const before = previous.get(provider.id)
+    if (!before) {
+      // A new provider's models are new pairs as well. Warm them (bounded) so
+      // the onboarding path — add provider → fetch models → save — already has
+      // a reasoning ladder before the model's first run.
+      newProvider = true
+      for (const model of provider.models ?? []) {
+        targets.push(catalogWarmTarget(provider, model))
+      }
+      continue
+    }
+    for (const model of provider.models ?? []) {
+      if (!before.has(model)) targets.push(catalogWarmTarget(provider, model))
+    }
+  }
+  return { targets, newProvider }
+}
+
 /** Shape the config-health field shared by getState and saveSettings. Only
  *  present when something is actually wrong — a clean config adds nothing. */
 function configHealthField(): { configHealth: ReturnType<typeof getProviderConfigHealth> } | {} {
@@ -56,7 +98,8 @@ function configHealthField(): { configHealth: ReturnType<typeof getProviderConfi
   return { configHealth }
 }
 
-/** AnyBuff:getState */
+/** AnyBuff:getState — reads the already-loaded catalog; startup never touches
+ *  the network (ADR-31 trigger table). */
 export function getState(): unknown {
   const settings = getAppSettings()
   return {
@@ -77,7 +120,10 @@ export function getState(): unknown {
  * failures are collected into `keyErrors` and the rest of the payload still
  * persists (2026-09-08 device round 10: a single throwing key blocked
  * everything after it, so "did the other fields even save?" was unknowable). */
-export function saveSettings(payload: SaveSettingsPayload): unknown {
+export async function saveSettings(payload: SaveSettingsPayload): Promise<unknown> {
+  // ADR-31: decide what this save ADDS before persisting. Only a newly added
+  // model gets a bounded catalog wait; an unchanged save stays offline.
+  const added = addedCatalogTargets(payload.providers)
   updateProviders(payload.providers, payload.activeModel, payload.reasoningEffort, payload.approvalMode)
   const keyErrors: string[] = []
   if (payload.apiKeys) {
@@ -121,6 +167,18 @@ export function saveSettings(payload: SaveSettingsPayload): unknown {
       keyErrors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  // ADR-31 trigger table: a model added by this save gets its catalog ladder
+  // immediately, so the composer and per-agent routing menus are configurable
+  // before the first run. Bounded and best-effort — a slow or unreachable
+  // models.dev never blocks saving Settings. A NEW provider warms its models
+  // and additionally asks for a stale-checked refresh (30 days, fire-and-
+  // forget); an unchanged save is a no-op because the catalog is already loaded.
+  if (added.newProvider) void refreshModelCatalogIfStale()
+  if (added.targets.length > 0) {
+    await warmModelCatalogForModels(added.targets, {
+      timeoutMs: SAVE_CATALOG_WARM_TIMEOUT_MS,
+    })
+  }
   return {
     ok: true,
     ...(keyErrors.length > 0 ? { keyErrors } : {}),
@@ -150,6 +208,10 @@ export async function fetchModels(payload: {
       const data = (await res.json()) as { models?: { name?: string }[] }
       const models = (data.models ?? []).map((m) => m.name ?? '').filter(Boolean).sort()
       if (models.length === 0) return { ok: false, error: 'No model data in response' }
+      // ADR-31 §6.3: a successfully fetched model list is a good moment to
+      // check the catalog's age (fire-and-forget; a 304 or failure keeps the
+      // current snapshot).
+      void refreshModelCatalogIfStale()
       return { ok: true, models }
     }
     // OpenAI-compatible /models
@@ -166,6 +228,7 @@ export async function fetchModels(payload: {
       ...new Set((data.data ?? []).map((m) => (m.id ?? '').replace(/^models\//, '')).filter(Boolean).sort()),
     ]
     if (models.length === 0) return { ok: false, error: 'No model data in response' }
+    void refreshModelCatalogIfStale()
     return { ok: true, models }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }

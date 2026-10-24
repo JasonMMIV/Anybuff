@@ -92,6 +92,11 @@ let fetchedAt: string | undefined
 let lastPayload: CatalogCachePayload | undefined
 let onlineOverride: boolean | undefined
 let warnedOffline = false
+/**
+ * Invalidates in-flight loads/refreshes. A reset (test seam) or a new cache
+ * seam must not be overwritten by an older promise that resolves later.
+ */
+let catalogEpoch = 0
 const refreshedForModel = new Set<string>()
 
 // ---------------------------------------------------------------------------
@@ -170,6 +175,7 @@ export function configureModelCatalogCache(seam: ModelCatalogCacheSeam): void {
   // A new seam (e.g. a test host re-installing its env for a different
   // dataDir) must be allowed to load its own cache — the old flags belonged
   // to the previous path.
+  catalogEpoch += 1
   cacheSeam = seam
   cacheLoadStarted = false
   cacheLoadPromise = null
@@ -218,9 +224,13 @@ export async function warmModelCatalogCache(): Promise<void> {
   if (cacheLoadPromise) return cacheLoadPromise
   if (cacheLoadStarted || !cacheSeam) return
   cacheLoadStarted = true
-  cacheLoadPromise = (async () => {
+  const epoch = catalogEpoch
+  const load = (async () => {
     try {
       const raw = await cacheSeam!.load()
+      // A reset/new seam happened while the load was in flight — the old
+      // payload belongs to a previous generation and must not win.
+      if (epoch !== catalogEpoch) return
       if (!raw) return
       const payload = parseCachePayload(raw)
       if (!payload) return
@@ -243,9 +253,12 @@ export async function warmModelCatalogCache(): Promise<void> {
       )
     }
   })().finally(() => {
-    cacheLoadPromise = null
+    // Identity, not epoch: an epoch bump during the load must not clobber the
+    // PROMISE HANDLE of a newer generation (that would wedge the loader).
+    if (cacheLoadPromise === load) cacheLoadPromise = null
   })
-  return cacheLoadPromise
+  cacheLoadPromise = load
+  return load
 }
 
 async function persistCache(payload: CatalogCachePayload): Promise<void> {
@@ -283,7 +296,11 @@ export function refreshModelCatalog(): Promise<boolean> {
     return Promise.resolve(false)
   }
 
-  refreshPromise = (async () => {
+  const epoch = catalogEpoch
+  // `let` (not const) so a synchronous throw before the first await cannot hit
+  // the finally while the binding is still in its temporal dead zone.
+  let run: Promise<boolean> | null = null
+  run = (async () => {
     try {
       const headers: Record<string, string> = { accept: 'application/json' }
       if (etag) headers['if-none-match'] = etag
@@ -291,6 +308,8 @@ export function refreshModelCatalog(): Promise<boolean> {
         signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
         headers,
       })
+      // A reset/new state superseded this attempt while it was in flight.
+      if (epoch !== catalogEpoch) return false
       if (response.status === 304) {
         fetchedAt = new Date().toISOString()
         if (memoryIndex) {
@@ -315,6 +334,7 @@ export function refreshModelCatalog(): Promise<boolean> {
         return false
       }
       const text = await response.text()
+      if (epoch !== catalogEpoch) return false
       if (text.length > MAX_RESPONSE_BYTES) {
         console.warn(
           `${CATALOG_LOG_PREFIX} refresh rejected: payload ${text.length} bytes > ${MAX_RESPONSE_BYTES} cap`,
@@ -355,10 +375,13 @@ export function refreshModelCatalog(): Promise<boolean> {
       )
       return false
     } finally {
-      refreshPromise = null
+      // Identity, not epoch: a settled old run must never clear a newer
+      // in-flight refresh's single-flight handle.
+      if (refreshPromise === run) refreshPromise = null
     }
   })()
-  return refreshPromise
+  refreshPromise = run
+  return run
 }
 
 function latestFreshness(): number | undefined {
@@ -387,6 +410,12 @@ export function refreshModelCatalogIfStale(
  * Event-driven prefetch for a model the catalog did not know at request time
  * (plan §6.3). Fire-and-forget: the current run keeps whatever the resolver
  * already produced; the next lookup sees the fresh catalog.
+ *
+ * The pair is attempted once per process — a refreshed catalog covers every
+ * pair at once. A FAILED refresh leaves the pair retryable (the marker is
+ * written only after a successful refresh). Configuration-time callers bound
+ * their own wait (`packages/host-core/src/model-catalog-warm.ts`); runs never
+ * await this.
  */
 export function prefetchModelCatalogForModel(params: {
   providerId: string
@@ -400,22 +429,31 @@ export function prefetchModelCatalogForModel(params: {
     return Promise.resolve(false)
   }
   const key = `${params.providerId}::${params.model}`
-  if (refreshedForModel.has(key)) return Promise.resolve(false)
-  refreshedForModel.add(key)
+  if (refreshedForModel.has(key)) {
+    return Promise.resolve(false)
+  }
   // Returns the refresh result so callers (and tests) can await the actual
   // attempt; production callers fire-and-forget this.
-  return refreshModelCatalog().then((refreshed) => {
-    if (!refreshed) return false
-    const hit = lookupCatalogModel(getModelCatalog(), params)
-    console.info(
-      `${CATALOG_LOG_PREFIX} prefetch ${params.providerId}/${params.model} — ${
-        hit
-          ? `hit ${hit.model.providerId}/${hit.model.modelId}`
-          : 'still unknown'
-      }`,
-    )
-    return true
-  })
+  return refreshModelCatalog()
+    // Never reject: several callers deliberately `void` this promise, and a
+    // boot-time network failure must not surface as an unhandled rejection.
+    .catch(() => false)
+    .then((refreshed) => {
+      if (!refreshed) return false
+      // Mark the pair only once the catalog is actually current: a failed
+      // attempt stays retryable. (Marking before the await let one transient
+      // boot-time failure disable the run-path retry until the next restart.)
+      refreshedForModel.add(key)
+      const hit = lookupCatalogModel(getModelCatalog(), params)
+      console.info(
+        `${CATALOG_LOG_PREFIX} prefetch ${params.providerId}/${params.model} — ${
+          hit
+            ? `hit ${hit.model.providerId}/${hit.model.modelId}`
+            : 'still unknown'
+        }`,
+      )
+      return true
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +725,8 @@ export function clearModelCatalogHydrationForTest(): void {
 /** Test seam: reset the whole catalog runtime (index, cache seam, ETag). */
 export function clearModelCatalogCacheForTest(): void {
   clearModelCatalogHydrationForTest()
+  // Invalidate any pending cache load / network refresh before clearing state.
+  catalogEpoch += 1
   memoryIndex = null
   cacheSeam = undefined
   cacheLoadStarted = false

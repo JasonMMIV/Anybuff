@@ -103,7 +103,8 @@ const api = {
   readFileData: (path: string) => ipcRenderer.invoke('AnyBuff:readFileData', path),
   saveSettings: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveSettings', payload),
   /* ADR-27 model capabilities (Settings → Capabilities) */
-  listModelCapabilities: () => ipcRenderer.invoke('AnyBuff:listModelCapabilities'),
+  listModelCapabilities: (opts?: unknown) =>
+    ipcRenderer.invoke('AnyBuff:listModelCapabilities', opts),
   saveModelCapability: (payload: unknown) => ipcRenderer.invoke('AnyBuff:saveModelCapability', payload),
   importModelCapabilities: (payload: unknown) => ipcRenderer.invoke('AnyBuff:importModelCapabilities', payload),
   /** ADR-27 MC-2.1 — interactive two-round reasoning-effort probe. */

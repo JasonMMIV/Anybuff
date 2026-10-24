@@ -646,7 +646,8 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     // already dispatches them — only the renderer shim was missing (the
     // Android Capabilities tab 500'd with "window.AnyBuff.listModelCapabilities
     // is not a function"). Keep in lockstep with the preload's invoke list.
-    listModelCapabilities: () => call('listModelCapabilities'),
+    listModelCapabilities: (opts?: unknown) =>
+      call('listModelCapabilities', ...(opts ? [opts] : [])),
     saveModelCapability: (payload: unknown) => call('saveModelCapability', payload),
     importModelCapabilities: (payload: unknown) => call('importModelCapabilities', payload),
     /** ADR-27 MC-2.1 — interactive two-round reasoning-effort probe. */
