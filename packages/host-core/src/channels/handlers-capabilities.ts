@@ -6,9 +6,6 @@
  *   provenance badges (verified/declared/unknown) for the Settings UI.
  * - saveModelCapability: one validated single-entry upsert (field-by-field
  *   merge, never a wholesale provider overwrite).
- * - importModelCapabilities: LLM-produced JSON fragment, applied line by
- *   line — a bad line reports independently and never blocks the rest
- *   (§2.4). Only the modelCapabilities subtree is writable (§2.2).
  *
  * MC-2.1 probe (below) — the user asks, the endpoint answers. For each
  * candidate rung it sends a MINIMAL two-round conversation and reports the
@@ -34,7 +31,6 @@ import {
   buildReasoningLadderInfos,
   getAppSettings,
   getProviderApiKey,
-  importModelCapabilities,
   loadSettings,
   saveModelCapability,
   type ModelCapabilityUpsert,
@@ -74,6 +70,8 @@ function buildModelCapabilityListing(providers?: ProviderConfig[]): unknown {
     declared?: ReasoningLadderInfo['declared']
     overriddenSeed?: ReasoningLadderInfo['overriddenSeed']
     context?: ReasoningLadderInfo['context']
+    effectiveContext?: ReasoningLadderInfo['effectiveContext']
+    contextSource?: ReasoningLadderInfo['contextSource']
     defaultEffort?: string
     catalog?: ReasoningLadderInfo['catalog']
   }> = []
@@ -96,6 +94,10 @@ function buildModelCapabilityListing(providers?: ProviderConfig[]): unknown {
         ...(info.declared !== undefined ? { declared: info.declared } : {}),
         ...(info.overriddenSeed !== undefined ? { overriddenSeed: info.overriddenSeed } : {}),
         ...(info.context !== undefined ? { context: info.context } : {}),
+        ...(info.effectiveContext !== undefined
+          ? { effectiveContext: info.effectiveContext }
+          : {}),
+        ...(info.contextSource !== undefined ? { contextSource: info.contextSource } : {}),
         ...(info.defaultEffort !== undefined ? { defaultEffort: info.defaultEffort } : {}),
         ...(info.catalog !== undefined ? { catalog: info.catalog } : {}),
       })
@@ -151,12 +153,6 @@ export function saveModelCapabilityChannel(payload: unknown): unknown {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
-}
-
-/** AnyBuff:importModelCapabilities — fragment applied line by line. */
-export function importModelCapabilitiesChannel(payload: unknown): unknown {
-  const result = importModelCapabilities(payload as Parameters<typeof importModelCapabilities>[0])
-  return { ...result, rows: result.ok || result.lines.length ? listModelCapabilitiesInternal() : undefined }
 }
 
 function listModelCapabilitiesInternal(): unknown {

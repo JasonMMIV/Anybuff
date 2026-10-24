@@ -2256,6 +2256,11 @@ export default function SettingsModal({
         icon: <SparklesIcon size={16} />
       },
       {
+        id: 'capabilities',
+        label: 'Capabilities',
+        icon: <GaugeIcon size={16} />
+      },
+      {
         id: 'search',
         label: 'Web Search',
         icon: <SearchIcon size={16} />
@@ -2274,11 +2279,6 @@ export default function SettingsModal({
         id: 'routing',
         label: 'Agent Routing',
         icon: <ActivityIcon size={16} />
-      },
-      {
-        id: 'capabilities',
-        label: 'Capabilities',
-        icon: <GaugeIcon size={16} />
       },
       {
         id: 'agents',

@@ -1,13 +1,10 @@
 /**
- * ADR-27 P1 channel contracts (MC-1.3/1.4): the capability-maintenance
+ * ADR-27 P1 channel contracts (MC-1.3): the capability-maintenance
  * write path.
  *
  * - saveModelCapability: single-entry field-merge upsert (never a wholesale
  *   provider overwrite); validation errors are reported, not thrown past
  *   the dispatcher envelope.
- * - importModelCapabilities: line-by-line independence — a bad line never
- *   blocks the good ones (§2.4); only the modelCapabilities subtree is
- *   writable (§2.2 — provider transport fields must never be importable).
  * - listModelCapabilities: provenance badges for every configured model.
  */
 import { describe, test, expect } from 'bun:test'
@@ -97,58 +94,6 @@ describe('model-capability channels (MC-1.3/1.4)', () => {
     }
   })
 
-  test('importModelCapabilities applies lines independently (bad line never blocks)', async () => {
-    const dataDir = pinEnv()
-    try {
-      await seedSettings()
-      const result = (await host.dispatch('importModelCapabilities', [
-        {
-          providerId: 'goat',
-          models: {
-            'deepseek/deepseek-v4.1-flash': {
-              reasoning: { efforts: ['low', 'high', 'max'], defaultEffort: 'high' },
-              context: { windowTokens: 128000 },
-            },
-            'bad-model': { reasoning: { efforts: ['oops', 42] } },
-            'mystery': { reasoning: { efforts: ['low', 'xhigh'] } },
-          },
-        },
-      ])) as { ok: boolean; lines: Array<{ model: string; ok: boolean; error?: string }> }
-      expect(result.ok).toBe(false)
-      const byModel = Object.fromEntries(result.lines.map((l) => [l.model, l]))
-      expect(byModel['deepseek/deepseek-v4.1-flash'].ok).toBe(true)
-      expect(byModel['bad-model'].ok).toBe(false)
-      expect(byModel['mystery'].ok).toBe(true)
-      const stored = loadSettings().providers.find((p) => p.id === 'goat')?.modelCapabilities
-      expect(stored?.['deepseek/deepseek-v4.1-flash']?.reasoning?.efforts).toEqual(['low', 'high', 'max'])
-      expect(stored?.['mystery']?.reasoning?.efforts).toEqual(['low', 'xhigh'])
-      expect(stored?.['bad-model']).toBeUndefined()
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true })
-    }
-  })
-
-  test('importModelCapabilities accepts the bare reasoning shorthand (LLM prompt format)', async () => {
-    const dataDir = pinEnv()
-    try {
-      await seedSettings()
-      const result = (await host.dispatch('importModelCapabilities', [
-        {
-          providerId: 'goat',
-          models: {
-            mystery: { efforts: ['low', 'high', 'max'], defaultEffort: 'high' },
-          },
-        },
-      ])) as { ok: boolean; lines: Array<{ model: string; ok: boolean }> }
-      expect(result.ok).toBe(true)
-      expect(result.lines[0].ok).toBe(true)
-      const stored = loadSettings().providers.find((p) => p.id === 'goat')?.modelCapabilities
-      expect(stored?.['mystery']?.reasoning?.efforts).toEqual(['low', 'high', 'max'])
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true })
-    }
-  })
-
   test('clear: true removes the whole entry (explicit clear, never accidental)', async () => {
     const dataDir = pinEnv()
     try {
@@ -178,29 +123,6 @@ describe('model-capability channels (MC-1.3/1.4)', () => {
       expect(cleared.ok).toBe(true)
       expect(
         loadSettings().providers.find((p) => p.id === 'goat')?.modelCapabilities?.['mystery']
-      ).toBeUndefined()
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true })
-    }
-  })
-
-  test('import reports an unrecognized entry shape instead of a silent ok', async () => {
-    const dataDir = pinEnv()
-    try {
-      await seedSettings()
-      const result = (await host.dispatch('importModelCapabilities', [
-        {
-          providerId: 'goat',
-          models: {
-            'weird-model': { windowTokens: 128000 },
-          },
-        },
-      ])) as { ok: boolean; lines: Array<{ model: string; ok: boolean; error?: string }> }
-      expect(result.ok).toBe(false)
-      expect(result.lines[0].ok).toBe(false)
-      expect(result.lines[0].error).toContain('unrecognized entry shape')
-      expect(
-        loadSettings().providers.find((p) => p.id === 'goat')?.modelCapabilities?.['weird-model']
       ).toBeUndefined()
     } finally {
       rmSync(dataDir, { recursive: true, force: true })

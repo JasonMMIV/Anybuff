@@ -5026,6 +5026,17 @@ select option {
   font-size: 11px;
 }
 
+/* Provenance of an inherited value, inline with its editor field label. */
+.cap-src-tag {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 .cap-row-actions {
   display: flex;
   align-items: center;
@@ -5052,25 +5063,6 @@ select option {
 .cap-import-textarea:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-.cap-import-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.cap-import-status {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.cap-import-status.ok {
-  color: var(--success, #2ea043);
-}
-
-.cap-import-status.partial {
-  color: var(--warning, #f5a623);
 }
 
 .cap-import-lines {

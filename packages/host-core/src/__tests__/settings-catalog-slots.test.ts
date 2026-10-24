@@ -26,7 +26,6 @@ import {
   loadSettings,
   saveModelCapability,
   saveSettings,
-  importModelCapabilities,
   updateProviders,
   writeProviderConfigFile,
   type ProviderConfig,
@@ -174,30 +173,27 @@ describe('reasoning wire persistence (ADR-32)', () => {
   })
 })
 
-describe('importModelCapabilities (ADR-31/32 slots)', () => {
-  test('imports wire + pricing line by line', () => {
+describe('saveModelCapability (ADR-31/32 slots)', () => {
+  test('stores wire + pricing field by field', () => {
     const dataDir = pinEnv()
     try {
       updateProviders([provider()], 'my-deepseek/deepseek-v4-flash', 'default', 'balanced')
-      const result = importModelCapabilities({
+      const saved = saveModelCapability({
         providerId: 'my-deepseek',
-        models: {
-          'deepseek-v4-flash': {
-            reasoning: {
-              efforts: ['low', 'high'],
-              wire: 'chat.effort',
-              budgetTokens: 8000,
-            },
-            context: { windowTokens: 640000 },
-            pricing: {
-              inputPerMillionTokens: 0.15,
-              outputPerMillionTokens: 0.6,
-              tiers: [{ minContextTokens: 200000, input: 0.3 }],
-            },
-          },
+        model: 'deepseek-v4-flash',
+        reasoning: {
+          efforts: ['low', 'high'],
+          wire: 'chat.effort',
+          budgetTokens: 8000,
+        },
+        context: { windowTokens: 640000 },
+        pricing: {
+          inputPerMillionTokens: 0.15,
+          outputPerMillionTokens: 0.6,
+          tiers: [{ minContextTokens: 200000, input: 0.3 }],
         },
       })
-      expect(result.ok).toBe(true)
+      expect(saved).toBe(true)
       const entry = loadSettings().providers[0]!.modelCapabilities![
         'deepseek-v4-flash'
       ]!
@@ -210,18 +206,20 @@ describe('importModelCapabilities (ADR-31/32 slots)', () => {
     }
   })
 
-  test('a bad pricing line reports without blocking a good one', () => {
+  test('an invalid pricing value is rejected without writing the entry', () => {
     const dataDir = pinEnv()
     try {
       updateProviders([provider()], 'my-deepseek/deepseek-v4-flash', 'default', 'balanced')
-      const result = importModelCapabilities({
-        providerId: 'my-deepseek',
-        models: {
-          'deepseek-v4-flash': { pricing: { inputPerMillionTokens: -1 } },
-        },
-      })
-      expect(result.ok).toBe(false)
-      expect(result.lines[0]?.error).toMatch(/non-negative/)
+      expect(() =>
+        saveModelCapability({
+          providerId: 'my-deepseek',
+          model: 'deepseek-v4-flash',
+          pricing: { inputPerMillionTokens: -1 },
+        })
+      ).toThrow(/non-negative/)
+      expect(
+        loadSettings().providers[0]!.modelCapabilities?.['deepseek-v4-flash']
+      ).toBeUndefined()
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }

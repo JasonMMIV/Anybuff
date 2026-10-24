@@ -16,7 +16,6 @@ import { getState, saveSettings, fetchModels } from './handlers-app'
 import {
   listModelCapabilities,
   saveModelCapabilityChannel,
-  importModelCapabilitiesChannel,
   probeReasoningEffortChannel,
   listProbeSamplesChannel,
   clearProbeSamplesChannel,
@@ -65,7 +64,6 @@ const registry: Record<string, Handler> = {
   // ADR-27 model capabilities + probe
   listModelCapabilities,
   saveModelCapability: saveModelCapabilityChannel,
-  importModelCapabilities: importModelCapabilitiesChannel,
   probeReasoningEffort: probeReasoningEffortChannel,
   listProbeSamples: listProbeSamplesChannel,
   clearProbeSamples: clearProbeSamplesChannel,

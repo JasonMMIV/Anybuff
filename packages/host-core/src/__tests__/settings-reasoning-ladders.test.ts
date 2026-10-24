@@ -145,6 +145,46 @@ describe('buildReasoningLadderInfos (ADR-27 MC-0.4: provenance badges)', () => {
     expect(info?.catalog?.snapshotAt.length).toBeGreaterThan(0)
   })
 
+  test('catalog context fills effectiveContext when settings has no override', () => {
+    const infos = buildReasoningLadderInfos([
+      {
+        id: 'my-deepseek',
+        label: 'My DeepSeek',
+        type: 'openai-compatible',
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        models: ['deepseek-flash'],
+      },
+    ])
+    const info = infos['my-deepseek/deepseek-flash']
+    expect(info?.context).toBeUndefined()
+    expect(info?.contextSource).toBe('catalog')
+    expect(info?.effectiveContext?.windowTokens).toBeGreaterThan(0)
+    expect(info?.effectiveContext?.outputTokens).toBeGreaterThan(0)
+  })
+
+  test('effective context prefers a declared field and reports its source', () => {
+    const infos = buildReasoningLadderInfos([
+      {
+        id: 'my-deepseek',
+        label: 'My DeepSeek',
+        type: 'openai-compatible',
+        baseURL: 'https://api.deepseek.com/v1',
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        models: ['deepseek-flash'],
+        modelCapabilities: {
+          'deepseek-flash': { context: { windowTokens: 64000 } },
+        },
+      },
+    ])
+    const info = infos['my-deepseek/deepseek-flash']
+    expect(info?.context).toEqual({ windowTokens: 64000 })
+    expect(info?.effectiveContext?.windowTokens).toBe(64000)
+    // Field-level fallback: the undeclared sibling still comes from models.dev.
+    expect(info?.effectiveContext?.outputTokens).toBeGreaterThan(0)
+    expect(info?.contextSource).toBe('declared')
+  })
+
   test('a declaration without efforts falls back to the seed for that route', () => {
     const infos = buildReasoningLadderInfos([
       {

@@ -59,11 +59,10 @@ describe('window.AnyBuff surface parity (preload ↔ Android WS shim)', () => {
     expect(extraInShim).toEqual([])
   })
 
-  test('regression: the six ADR-27 capability channels exist in the shim', () => {
+  test('regression: the five ADR-27 capability channels exist in the shim', () => {
     for (const channel of [
       'listModelCapabilities',
       'saveModelCapability',
-      'importModelCapabilities',
       'probeReasoningEffort',
       'listProbeSamples',
       'clearProbeSamples',

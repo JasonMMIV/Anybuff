@@ -4,7 +4,9 @@ import { dirname, join } from 'path'
 import type { McpServerRecord, McpServerOverride } from '../mcp/mcp-settings'
 import { hostPaths, hostSecrets, hostKeyOverrides, hostKeyPersistence, globalSkillsScope } from '../env'
 import {
+  catalogContextWindow,
   catalogEfforts,
+  catalogOutputTokens,
   findVerifiedReasoningLadder,
   getModelCatalog,
   getVerifiedReasoningLadderRows,
@@ -507,6 +509,10 @@ export interface ReasoningLadderInfo {
   overriddenSeed?: { efforts: string[]; verifiedAt: string }
   /** Per-model context overrides when present in settings. */
   context?: { windowTokens?: number; outputTokens?: number }
+  /** Effective context/output for this route (settings first, then models.dev). */
+  effectiveContext?: { windowTokens?: number; outputTokens?: number }
+  /** Where effectiveContext came from. */
+  contextSource?: 'declared' | 'catalog'
   /** The declared or seed default rung, when one exists. */
   defaultEffort?: string
   /** ADR-31: catalog provenance — present iff source === 'catalog'. */
@@ -545,6 +551,59 @@ export function buildReasoningLadderInfos(
       const declaredEfforts = cap?.reasoning?.efforts
       const seed = findVerifiedReasoningLadder(model)
       const key = `${provider.id}/${model}`
+      const declaredContext = cap?.context
+      // The catalog is only consulted when it can actually fill something:
+      // no declared ladder/seed, or a missing context/output field.
+      const needsCatalog =
+        (!declaredEfforts?.length && !seed) ||
+        declaredContext?.windowTokens === undefined ||
+        declaredContext?.outputTokens === undefined
+      // One lookup per pair: its rows feed both the ladder and the effective
+      // context/output (declared settings still win field by field).
+      const catalog = needsCatalog
+        ? lookupCatalog({
+            providerId: provider.id,
+            baseURL: provider.baseURL,
+            model,
+            ...(provider.catalogProvider
+              ? { catalogProvider: provider.catalogProvider }
+              : {}),
+            ...(provider.catalogKeys
+              ? { catalogKeys: provider.catalogKeys }
+              : {}),
+          })
+        : null
+      const catalogRungs = catalog ? catalogEfforts(catalog.model) : []
+      const catalogWindow = catalog ? catalogContextWindow(catalog.model) : undefined
+      const catalogOutput = catalog ? catalogOutputTokens(catalog.model) : undefined
+      const contextFields: Pick<
+        ReasoningLadderInfo,
+        'effectiveContext' | 'contextSource'
+      > = {}
+      if (
+        declaredContext?.windowTokens !== undefined ||
+        declaredContext?.outputTokens !== undefined
+      ) {
+        contextFields.effectiveContext = {
+          ...(declaredContext.windowTokens !== undefined
+            ? { windowTokens: declaredContext.windowTokens }
+            : catalogWindow !== undefined
+              ? { windowTokens: catalogWindow }
+              : {}),
+          ...(declaredContext.outputTokens !== undefined
+            ? { outputTokens: declaredContext.outputTokens }
+            : catalogOutput !== undefined
+              ? { outputTokens: catalogOutput }
+              : {}),
+        }
+        contextFields.contextSource = 'declared'
+      } else if (catalogWindow !== undefined || catalogOutput !== undefined) {
+        contextFields.effectiveContext = {
+          ...(catalogWindow !== undefined ? { windowTokens: catalogWindow } : {}),
+          ...(catalogOutput !== undefined ? { outputTokens: catalogOutput } : {}),
+        }
+        contextFields.contextSource = 'catalog'
+      }
       // ADR-32: a wire/budget-only declaration (no efforts) must still reach
       // the editor, so the declared block is emitted whenever ANY reasoning
       // field was declared — only the badge depends on the efforts.
@@ -581,6 +640,7 @@ export function buildReasoningLadderInfos(
             ? { overriddenSeed: { efforts: [...seed.efforts], verifiedAt: seed.verifiedAt } }
             : {}),
           context: cap?.context,
+          ...contextFields,
           defaultEffort: cap?.reasoning?.defaultEffort,
         }
       } else if (seed) {
@@ -591,23 +651,12 @@ export function buildReasoningLadderInfos(
           verifiedBy: seed.source,
           defaultEffort: cap?.reasoning?.defaultEffort ?? seed.defaultEffort,
           context: cap?.context,
+          ...contextFields,
           ...(declaredBlock ? { declared: declaredBlock } : {}),
         }
       } else {
         // ADR-31: catalog efforts are the third rung (plan §5.2). The menu
         // gets a real ladder and the badge says where it came from (D3).
-        const catalog = lookupCatalog({
-          providerId: provider.id,
-          baseURL: provider.baseURL,
-          model,
-          ...(provider.catalogProvider
-            ? { catalogProvider: provider.catalogProvider }
-            : {}),
-          ...(provider.catalogKeys
-            ? { catalogKeys: provider.catalogKeys }
-            : {}),
-        })
-        const catalogRungs = catalogEfforts(catalog?.model)
         const index = getModelCatalog()
         infos[key] =
           catalog && catalogRungs.length > 0
@@ -615,6 +664,7 @@ export function buildReasoningLadderInfos(
                 efforts: catalogRungs,
                 source: 'catalog',
                 context: cap?.context,
+                ...contextFields,
                 catalog: {
                   snapshotAt: index.snapshotAt,
                   ...(index.fetchedAt ? { fetchedAt: index.fetchedAt } : {}),
@@ -627,6 +677,7 @@ export function buildReasoningLadderInfos(
                 efforts: [],
                 source: 'unknown',
                 context: cap?.context,
+                ...contextFields,
                 ...(declaredBlock ? { declared: declaredBlock } : {}),
               }
       }
@@ -1093,14 +1144,6 @@ export interface ModelCapabilityUpsert {
   pricing?: ProviderModelPricing
 }
 
-/** Per-line validation result for the Import channel (§2.4: a bad line
- * never blocks the good ones; each line reports independently). */
-export interface ModelCapabilityImportLine {
-  model: string
-  ok: boolean
-  error?: string
-}
-
 /** Normalize one upsert's fields; returns an error string for invalid
  * shapes so callers can report per-line instead of throwing (§2.4). */
 function validateCapabilityUpsert(upsert: ModelCapabilityUpsert): string | undefined {
@@ -1284,91 +1327,6 @@ export function saveModelCapability(upsert: ModelCapabilityUpsert): boolean {
   } catch {
     return false
   }
-}
-
-/**
- * Import a JSON fragment of capability declarations (MC-1.4): every line is
- * validated and applied INDEPENDENTLY — one bad line is reported, never
- * blocking the rest (§2.4). Only the `modelCapabilities` subtree is
- * touched; provider transport fields (baseURL/keys) are never writable here
- * (§2.2: a rewritten baseURL would receive DPAPI-decrypted keys).
- */
-export function importModelCapabilities(payload: {
-  providerId: string
-  models: Record<string, unknown>
-}): { ok: boolean; lines: ModelCapabilityImportLine[]; error?: string } {
-  if (!payload || typeof payload !== 'object') return { ok: false, lines: [], error: 'invalid payload' }
-  if (!payload.providerId || typeof payload.providerId !== 'string') {
-    return { ok: false, lines: [], error: 'missing providerId' }
-  }
-  if (!payload.models || typeof payload.models !== 'object' || Array.isArray(payload.models)) {
-    return { ok: false, lines: [], error: 'missing models map' }
-  }
-  const lines: ModelCapabilityImportLine[] = []
-  for (const [model, rawValue] of Object.entries(payload.models)) {
-    if (!model) {
-      lines.push({ model, ok: false, error: 'empty model id' })
-      continue
-    }
-    const entry =
-      rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
-        ? (rawValue as Record<string, unknown>)
-        : {}
-    const hasNested =
-      'reasoning' in entry || 'context' in entry || 'pricing' in entry
-    const shorthand = !hasNested && looksLikeReasoningShorthand(entry)
-    const candidate: ModelCapabilityUpsert = hasNested
-      ? {
-          providerId: payload.providerId,
-          model,
-          ...(entry.reasoning !== undefined
-            ? { reasoning: entry.reasoning as ModelCapabilityUpsert['reasoning'] }
-            : {}),
-          ...(entry.context !== undefined
-            ? { context: entry.context as ModelCapabilityUpsert['context'] }
-            : {}),
-          ...(entry.pricing !== undefined
-            ? { pricing: entry.pricing as ModelCapabilityUpsert['pricing'] }
-            : {}),
-        }
-      : shorthand
-        ? {
-            providerId: payload.providerId,
-            model,
-            reasoning: entry as ModelCapabilityUpsert['reasoning'],
-          }
-        : { providerId: payload.providerId, model }
-    // Review round 1: an entry with no recognizable fields is a silent no-op
-    // otherwise — report it instead of claiming success (§2.5: the user
-    // must always know what actually happened).
-    if (
-      !hasNested &&
-      !shorthand &&
-      Object.keys(entry).length > 0 &&
-      !('clear' in entry)
-    ) {
-      lines.push({ model, ok: false, error: 'unrecognized entry shape (expected reasoning/context keys or a bare efforts ladder)' })
-      continue
-    }
-    const problem = validateCapabilityUpsert(candidate)
-    if (problem) {
-      lines.push({ model, ok: false, error: problem })
-      continue
-    }
-    const saved = saveModelCapability(candidate)
-    lines.push({ model, ok: saved, error: saved ? undefined : 'provider not found' })
-  }
-  return { ok: lines.every((l) => l.ok), lines }
-}
-
-/** Bare { efforts, defaultEffort, supported, params } at the model level is
- * accepted as the reasoning block (the LLM-maintainer prompt emits this). */
-function looksLikeReasoningShorthand(entry: Record<string, unknown>): boolean {
-  return (
-    'efforts' in entry ||
-    'defaultEffort' in entry ||
-    ('supported' in entry && !('windowTokens' in entry) && !('outputTokens' in entry))
-  )
 }
 
 /** Health report for the anybuff.json the host generates for the SDK. */

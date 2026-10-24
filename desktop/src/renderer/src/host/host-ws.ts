@@ -649,7 +649,6 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     listModelCapabilities: (opts?: unknown) =>
       call('listModelCapabilities', ...(opts ? [opts] : [])),
     saveModelCapability: (payload: unknown) => call('saveModelCapability', payload),
-    importModelCapabilities: (payload: unknown) => call('importModelCapabilities', payload),
     /** ADR-27 MC-2.1 — interactive two-round reasoning-effort probe. */
     probeReasoningEffort: (payload: unknown) => call('probeReasoningEffort', payload),
     listProbeSamples: () => call('listProbeSamples'),

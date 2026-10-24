@@ -10,6 +10,8 @@ import {
   XIcon
 } from './Icons'
 import CustomSelect from './CustomSelect'
+import { formatTokenCount } from '../utils/format-tokens'
+import { diffCapabilityEdits } from '../utils/capability-edits'
 
 /**
  * ADR-27 — Model Capabilities tab (MC-1.1/1.2/1.4).
@@ -19,8 +21,10 @@ import CustomSelect from './CustomSelect'
  * context overrides. Rows expand into an editor; literals pass VERBATIM —
  * `xhigh` and `extra-high` are different wire strings and no layer here
  * rewrites them (§2.1). Unknown rungs warn but never block (§2.4). The
- * Import box applies LLM-produced JSON line by line — a bad line reports
- * without blocking the rest.
+ * collapsed row stays compact (model + ladder + badge); the EDITOR pre-fills
+ * the effective context/output and default effort, tagging each field with its
+ * provenance, and only fields the user actually changes are persisted — so
+ * untouched values keep inheriting from models.dev.
  */
 
 export interface CapabilityRow {
@@ -43,6 +47,9 @@ export interface CapabilityRow {
   }
   overriddenSeed?: { efforts: string[]; verifiedAt: string }
   context?: { windowTokens?: number; outputTokens?: number }
+  /** Effective values shown to the user (settings first, then models.dev). */
+  effectiveContext?: { windowTokens?: number; outputTokens?: number }
+  contextSource?: 'declared' | 'catalog'
   defaultEffort?: string
   /** ADR-31: models.dev provenance — present iff source === 'catalog'. */
   catalog?: {
@@ -158,12 +165,6 @@ export default function ModelCapabilitiesPanel() {
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
-  const [importOpen, setImportOpen] = useState(false)
-  const [promptCopied, setPromptCopied] = useState(false)
-  const [importText, setImportText] = useState('')
-  const [importResult, setImportResult] = useState<
-    { ok: boolean; lines: Array<{ model: string; ok: boolean; error?: string }> } | null
-  >(null)
   const [probe, setProbe] = useState<ProbeState | null>(null)
   const [samples, setSamples] = useState<ProbeSampleRow[] | null>(null)
   const [samplesOpen, setSamplesOpen] = useState(false)
@@ -325,32 +326,6 @@ export default function ModelCapabilitiesPanel() {
     [saveRow]
   )
 
-  const runImport = useCallback(async () => {
-    setImportResult(null)
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(importText)
-    } catch (e) {
-      setImportResult({
-        ok: false,
-        lines: [{ model: '<parse>', ok: false, error: e instanceof Error ? e.message : String(e) }]
-      })
-      return
-    }
-    try {
-      const result = (await window.AnyBuff.importModelCapabilities(parsed)) as {
-        ok: boolean
-        lines?: Array<{ model: string; ok: boolean; error?: string }>
-        error?: string
-      }
-      setImportResult({ ok: result.ok, lines: result.lines ?? [] })
-      if (result.ok || (result.lines?.length ?? 0) > 0) await refresh()
-      if (result.error) setError(result.error)
-    } catch (e) {
-      setImportResult({ ok: false, lines: [{ model: '<channel>', ok: false, error: e instanceof Error ? e.message : String(e) }] })
-    }
-  }, [importText, refresh])
-
   const grouped = useMemo(() => {
     const byProvider = new Map<string, CapabilityRow[]>()
     const q = filter.trim().toLowerCase()
@@ -387,13 +362,10 @@ export default function ModelCapabilitiesPanel() {
           <button
             type="button"
             className="btn ghost small"
-            title="Refresh models.dev now and re-list (an explicit refresh ignores the 30-day check)"
+            title="Fetch the latest model information from models.dev and reload this list"
             onClick={() => void refresh({ refresh: true })}
           >
             <RefreshIcon size={13} /> Refresh
-          </button>
-          <button type="button" className="btn ghost small" onClick={() => setImportOpen((v) => !v)}>
-            <DownloadIcon size={13} /> Import JSON
           </button>
           <button
             type="button"
@@ -483,70 +455,6 @@ export default function ModelCapabilitiesPanel() {
         </div>
       )}
 
-      {importOpen && (
-        <div className="settings-section-card cap-import-card">
-          <div className="settings-section-head">
-            <span>Import declarations</span>
-            <div className="settings-section-actions">
-              <button
-                type="button"
-                className="btn ghost small"
-                title="Copy the research prompt to hand to any LLM (AnyBuff itself or an external one). It asks for vendor-documented rungs — never guesses."
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(buildMaintenancePrompt(providers))
-                    setPromptCopied(true)
-                    window.setTimeout(() => setPromptCopied(false), 1800)
-                  } catch {
-                    setError('Could not write to the clipboard.')
-                  }
-                }}
-              >
-                <DownloadIcon size={13} /> {promptCopied ? 'Copied!' : 'Copy maintenance prompt'}
-              </button>
-            </div>
-          </div>
-          <p className="hint">
-            <strong>How to use:</strong> copy the maintenance prompt above, paste it into any LLM
-            (with the model id filled in), and paste the JSON block it produces below. Only{' '}
-            <code>modelCapabilities</code> is importable — provider URLs and keys are never touched.
-            Each line applies independently.
-          </p>
-          <textarea
-            className="cap-import-textarea"
-            rows={6}
-            spellCheck={false}
-            placeholder={'{\n  "providerId": "goat",\n  "models": {\n    "deepseek/deepseek-v4.1-flash": {\n      "reasoning": { "efforts": ["low", "high", "max"], "defaultEffort": "high" },\n      "context": { "windowTokens": 128000 }\n    }\n  }\n}'}
-            value={importText}
-            onChange={(e) => setImportText(e.target.value)}
-          />
-          <div className="cap-import-actions">
-            <button type="button" className="btn primary small" disabled={!importText.trim()} onClick={() => void runImport()}>
-              Apply
-            </button>
-            {importResult && (
-              <span className={`cap-import-status ${importResult.ok ? 'ok' : 'partial'}`}>
-                {importResult.ok
-                  ? 'Applied'
-                  : `${importResult.lines.filter((l) => !l.ok).length} line(s) failed`}
-              </span>
-            )}
-          </div>
-          {importResult && importResult.lines.length > 0 && (
-            <div className="cap-import-lines">
-              {importResult.lines.map((line) => (
-                <div key={line.model} className={`cap-import-line ${line.ok ? 'ok' : 'fail'}`}>
-                  <span className="cap-import-line-model">{line.model}</span>
-                  <span className="cap-import-line-status">
-                    {line.ok ? '✓' : `✗ ${line.error ?? 'failed'}`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {rows.length === 0 && providers.length === 0 ? (
         <div className="settings-empty-card">
           <p>No providers configured yet. Add a provider first, then maintain its models here.</p>
@@ -583,32 +491,6 @@ export default function ModelCapabilitiesPanel() {
       )}
     </div>
   )
-}
-
-/**
- * MC-1.4: the maintenance prompt handed to an LLM (AnyBuff itself or an
- * external one) to research a model's rungs. Mirrors the §6 template in the
- * plan: vendor docs first, "unverified" over guessing, wire-literal rungs
- * (no xhigh→extra-high rewrites), omit-when-unsure, source URL last.
- */
-export function buildMaintenancePrompt(providers: ProviderMeta[]): string {
-  const providerList = providers
-    .map((p) => `${p.id} (${p.label})`)
-    .join('\n  - ')
-  return `I use these OpenAI-compatible providers (id (label)):
-  - ${providerList || '<none configured>'}
-
-Please research the reasoning-effort values accepted by the model "<model id>" on the provider "<provider id>" above, plus any companion parameters.
-
-Requirements:
-1. Use the endpoint's official documentation as the primary source. If no official documentation exists, clearly say "unverified" — do not guess.
-2. Output exactly one JSON block and nothing else, in this shape:
-   { "providerId": "<provider id>", "models": { "<model id>": {
-       "reasoning": { "efforts": [...], "defaultEffort": "...", "params": { ... } },
-       "context": { "windowTokens": <number>, "outputTokens": <number> } } } }
-3. For efforts, list the literal wire values the endpoint accepts (if the endpoint wants "xhigh", write "xhigh" — never rewrite it to "extra-high").
-4. If you are not sure about windowTokens or outputTokens, omit that field rather than guessing.
-5. End with one line: the source URL you used.`
 }
 
 function probeVerdictMeta(verdict: ProbeRungResult['verdict']): { label: string; className: string; title: string } {
@@ -679,18 +561,50 @@ function CapabilityRowView({
   providerType?: 'openai-compatible' | 'anthropic-compatible'
 }) {
   const badge = sourceBadge(row)
-  const [effortsText, setEffortsText] = useState((row.declared?.efforts ?? row.efforts).join(', '))
-  const [defaultEffort, setDefaultEffort] = useState(row.defaultEffort ?? '')
-  const [windowTokens, setWindowTokens] = useState(row.context?.windowTokens?.toString() ?? '')
-  const [outputTokens, setOutputTokens] = useState(row.context?.outputTokens?.toString() ?? '')
-  const [paramsText, setParamsText] = useState(
-    row.declared?.params ? JSON.stringify(row.declared.params, null, 2) : ''
-  )
+  const effectiveContext = row.effectiveContext ?? row.context
+  // Per-field provenance for the editor labels: a declared value is yours, an
+  // undeclared one is inherited from models.dev (settings always win field by
+  // field, so one field can be declared while its sibling is inherited).
+  const windowFromCatalog =
+    effectiveContext?.windowTokens !== undefined && row.context?.windowTokens === undefined
+  const outputFromCatalog =
+    effectiveContext?.outputTokens !== undefined && row.context?.outputTokens === undefined
+  // The editor starts from the EFFECTIVE values (what the menu/runtime use).
+  // applyEdits compares against these so unchanged fields are never persisted
+  // as declarations — they keep inheriting from settings/models.dev.
+  const initialEfforts = (row.declared?.efforts ?? row.efforts).join(', ')
+  const initialDefaultEffort = row.defaultEffort ?? ''
+  const initialWindowTokens = effectiveContext?.windowTokens?.toString() ?? ''
+  const initialOutputTokens = effectiveContext?.outputTokens?.toString() ?? ''
+  const initialParamsText = row.declared?.params
+    ? JSON.stringify(row.declared.params, null, 2)
+    : ''
+  const initialWire = row.declared?.wire ?? 'auto'
+  const initialBudgetTokens = row.declared?.budgetTokens?.toString() ?? ''
+  const [effortsText, setEffortsText] = useState(initialEfforts)
+  const [defaultEffort, setDefaultEffort] = useState(initialDefaultEffort)
+  const [windowTokens, setWindowTokens] = useState(initialWindowTokens)
+  const [outputTokens, setOutputTokens] = useState(initialOutputTokens)
+  const [paramsText, setParamsText] = useState(initialParamsText)
   const [paramsError, setParamsError] = useState<string | null>(null)
-  const [wire, setWire] = useState(row.declared?.wire ?? 'auto')
-  const [budgetTokens, setBudgetTokens] = useState(
-    row.declared?.budgetTokens?.toString() ?? ''
-  )
+  const [wire, setWire] = useState(initialWire)
+  const [budgetTokens, setBudgetTokens] = useState(initialBudgetTokens)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  // Re-sync the editor when the row is refreshed (probe → apply, another save).
+  // Without this the baseline moves while the inputs keep their old values, so
+  // the next Apply would treat untouched fields as changed and overwrite data.
+  useEffect(() => {
+    setEffortsText(initialEfforts)
+    setDefaultEffort(initialDefaultEffort)
+    setWindowTokens(initialWindowTokens)
+    setOutputTokens(initialOutputTokens)
+    setParamsText(initialParamsText)
+    setWire(initialWire)
+    setBudgetTokens(initialBudgetTokens)
+    setParamsError(null)
+    setEditError(null)
+  }, [row])
   const wireOptions =
     providerType === 'anthropic-compatible'
       ? ANTHROPIC_WIRE_OPTIONS
@@ -705,10 +619,51 @@ function CapabilityRowView({
     declaredRungs.includes('xhigh') && declaredRungs.includes('extra-high')
 
   const applyEdits = async () => {
-    const efforts = effortsText
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
+    const diff = diffCapabilityEdits(
+      {
+        efforts: initialEfforts,
+        defaultEffort: initialDefaultEffort,
+        wire: initialWire,
+        budgetTokens: initialBudgetTokens,
+        windowTokens: initialWindowTokens,
+        outputTokens: initialOutputTokens,
+        paramsText: initialParamsText,
+      },
+      {
+        efforts: effortsText,
+        defaultEffort,
+        wire,
+        budgetTokens,
+        windowTokens,
+        outputTokens,
+        paramsText,
+      }
+    )
+    if (!diff.changed) {
+      onToggle()
+      return
+    }
+    if (diff.windowChanged && !(Number(windowTokens) > 0)) {
+      setEditError(
+        'Context window must be a positive number. Use “Clear declaration” to remove an override.'
+      )
+      return
+    }
+    if (diff.outputChanged && !(Number(outputTokens) > 0)) {
+      setEditError(
+        'Max output must be a positive number. Use “Clear declaration” to remove an override.'
+      )
+      return
+    }
+    if (diff.budgetChanged && !(Number(budgetTokens) > 0)) {
+      setEditError('Thinking budget must be a positive number.')
+      return
+    }
+    if (diff.paramsChanged && !paramsText.trim()) {
+      setEditError('Clearing params is not supported — use “Clear declaration”.')
+      return
+    }
+    setEditError(null)
     // MC-1.5: params edited as raw JSON (scalar values only, verified host-side).
     let params: Record<string, string | number | boolean> | undefined
     if (paramsText.trim()) {
@@ -731,15 +686,16 @@ function CapabilityRowView({
       providerId: row.providerId,
       model: row.model,
       reasoning: {
-        ...(efforts.length > 0 ? { efforts } : {}),
-        ...(defaultEffort ? { defaultEffort } : {}),
+        ...(diff.effortsChanged && diff.efforts.length > 0 ? { efforts: diff.efforts } : {}),
+        ...(diff.defaultEffortChanged && defaultEffort ? { defaultEffort } : {}),
         ...(row.declared?.supported !== undefined ? { supported: row.declared.supported } : {}),
-        ...(params !== undefined ? { params } : {}),
+        ...(diff.paramsChanged && params !== undefined ? { params } : {}),
         // ADR-32: only send an explicit dialect when it differs from what is
         // stored ('auto' is an explicit value too — picking it clears a
         // previously stored dialect). An untouched row stays absent = keep.
-        ...(wire !== (row.declared?.wire ?? 'auto') ? { wire } : {}),
-        ...(showBudget &&
+        ...(diff.wireChanged ? { wire } : {}),
+        ...(diff.budgetChanged &&
+        showBudget &&
         budgetTokens &&
         Number.isFinite(Number(budgetTokens)) &&
         Number(budgetTokens) > 0
@@ -747,10 +703,16 @@ function CapabilityRowView({
           : {})
       },
       context: {
-        ...(windowTokens && Number.isFinite(Number(windowTokens)) && Number(windowTokens) > 0
+        ...(diff.windowChanged &&
+        windowTokens &&
+        Number.isFinite(Number(windowTokens)) &&
+        Number(windowTokens) > 0
           ? { windowTokens: Number(windowTokens) }
           : {}),
-        ...(outputTokens && Number.isFinite(Number(outputTokens)) && Number(outputTokens) > 0
+        ...(diff.outputChanged &&
+        outputTokens &&
+        Number.isFinite(Number(outputTokens)) &&
+        Number(outputTokens) > 0
           ? { outputTokens: Number(outputTokens) }
           : {})
       }
@@ -898,6 +860,10 @@ function CapabilityRowView({
 
       {expanded && (
         <div className="cap-row-editor">
+          <p className="cap-hint">
+            Showing the current effective values. Only fields you change are saved; everything
+            else keeps inheriting from settings or models.dev.
+          </p>
           <label className="settings-field-label">Reasoning parameter format</label>
           <CustomSelect
             value={wire}
@@ -962,7 +928,19 @@ function CapabilityRowView({
             ]}
           />
 
-          <label className="settings-field-label">Context window (tokens)</label>
+          <label className="settings-field-label">
+            Context window (tokens)
+            {effectiveContext?.windowTokens !== undefined && (
+              <span
+                className="cap-src-tag"
+                title={`Currently in effect: ${formatTokenCount(
+                  effectiveContext.windowTokens
+                )} tokens`}
+              >
+                {windowFromCatalog ? 'models.dev' : 'settings'}
+              </span>
+            )}
+          </label>
           <input
             className="cap-input"
             type="number"
@@ -971,7 +949,19 @@ function CapabilityRowView({
             placeholder="e.g. 128000"
             onChange={(e) => setWindowTokens(e.target.value)}
           />
-          <label className="settings-field-label">Max output (tokens)</label>
+          <label className="settings-field-label">
+            Max output (tokens)
+            {effectiveContext?.outputTokens !== undefined && (
+              <span
+                className="cap-src-tag"
+                title={`Currently in effect: ${formatTokenCount(
+                  effectiveContext.outputTokens
+                )} tokens`}
+              >
+                {outputFromCatalog ? 'models.dev' : 'settings'}
+              </span>
+            )}
+          </label>
           <input
             className="cap-input"
             type="number"
@@ -980,6 +970,12 @@ function CapabilityRowView({
             placeholder="e.g. 8192"
             onChange={(e) => setOutputTokens(e.target.value)}
           />
+          {(windowFromCatalog || outputFromCatalog) && (
+            <p className="cap-hint">
+              Values tagged <strong>models.dev</strong> are inherited — editing one stores an
+              override for this route; an untouched field keeps inheriting.
+            </p>
+          )}
 
           <label className="settings-field-label">
             Extra reasoning params (JSON — keys go on the wire verbatim, e.g. thinking_budget)
@@ -993,6 +989,7 @@ function CapabilityRowView({
             onChange={(e) => setParamsText(e.target.value)}
           />
           {paramsError && <p className="cap-warn">{paramsError}</p>}
+          {editError && <p className="cap-warn">{editError}</p>}
 
           <div className="cap-row-actions">
             <button type="button" className="btn primary small" disabled={saving} onClick={() => void applyEdits()}>
