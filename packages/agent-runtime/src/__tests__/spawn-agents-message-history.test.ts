@@ -462,4 +462,96 @@ describe('Spawn Agents Message History', () => {
     ])
     expect(capturedSubAgentPrompt).toBe('Review the changes')
   })
+
+  it('renders subagent edits for a review-context child', async () => {
+    const parentAgent = createMockAgent('parent', true)
+    const childAgent = createMockAgent('child-agent', true, 'review-context')
+    const sessionState = getInitialSessionState(mockFileContext)
+    const toolCall = createSpawnToolCall('child-agent')
+    const editorSpawnCall = assistantMessage({
+      type: 'tool-call',
+      toolCallId: 'spawn-editor',
+      toolName: 'spawn_agents',
+      input: { agents: [{ agent_type: 'editor' }] },
+    } as any)
+    const editorResult = {
+      role: 'tool',
+      toolName: 'spawn_agents',
+      toolCallId: 'spawn-editor',
+      content: [
+        {
+          type: 'json',
+          value: [
+            {
+              agentName: 'Code Editor',
+              agentType: 'editor',
+              value: {
+                type: 'structuredOutput',
+                value: {
+                  output: {
+                    messages: [
+                      {
+                        role: 'assistant',
+                        content: [
+                          {
+                            type: 'tool-call',
+                            toolCallId: 'edit-1',
+                            toolName: 'str_replace',
+                            input: {
+                              path: 'src/a.ts',
+                              replacements: [
+                                { oldString: 'const a = 1', newString: 'const a = 2' },
+                              ],
+                            },
+                          },
+                        ],
+                      },
+                      {
+                        role: 'tool',
+                        toolName: 'str_replace',
+                        toolCallId: 'edit-1',
+                        content: [
+                          {
+                            type: 'json',
+                            value: {
+                              file: 'src/a.ts',
+                              message: 'Successfully replaced 1 occurrence',
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    } as any
+
+    sessionState.mainAgentState.messageHistory = [
+      userMessage({ content: 'Change the constant', tags: ['USER_PROMPT'] }),
+      editorSpawnCall,
+      editorResult,
+    ]
+
+    await handleSpawnAgents({
+      ...handleSpawnAgentsBaseParams,
+      agentState: sessionState.mainAgentState,
+      agentTemplate: parentAgent,
+      localAgentTemplates: { 'child-agent': childAgent },
+      toolCall,
+    })
+
+    const rendered = capturedSubAgentState.messageHistory[2]
+    expect(rendered.content[0].type).toBe('json')
+
+    const report = rendered.content[0].value[0]
+    expect(report.rendered).toContain('const a = 1')
+    expect(report.rendered).toContain('const a = 2')
+    expect(report.rendered).toContain('Successfully replaced 1 occurrence')
+    expect(report.value).toBeUndefined()
+    expect(capturedSubAgentPrompt).toBe('test prompt')
+  })
 })

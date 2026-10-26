@@ -43,7 +43,7 @@ export const createReviewer = (
 ${PLACEHOLDER.USER_INPUT_PROMPT}
 </user_message>
 
-NOTE: The conversation history is intentionally curated for review. The author's internal reasoning is omitted; user requests, visible assistant text, tool calls, tool results, and file changes are shown as recorded in the conversation.
+NOTE: The conversation history is intentionally curated for review. The author's internal reasoning is omitted; user requests, visible assistant text, tool calls, tool results, and file changes are shown as recorded in the conversation. Subagent results may be rendered as readable edits — a unified diff, or the exact old/new strings plus whether each edit succeeded. When a result is rendered that way, treat it as the authoritative record of what changed; if you instead see a raw structured output (an output.messages array, or a unifiedDiffs string), read it directly.
 
 # Task
 

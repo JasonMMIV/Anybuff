@@ -189,6 +189,15 @@ reviewer 沒有工具、沒有 diff 參數，唯一知道「改了什麼」的�
 
 使用者裁定**只丟 `reasoning`**：visible `text` 全留，工具結果不動、也不做 digest。實作為 `messageHistoryFilter: 'review-context'`（ADR-34）：接縫在 `createAgentState`，agent 端只帶 flag；reviewer 仍繼承完整 history，只少了作者內部的 `reasoning`（最後一段 assistant run 例外）。§6.2 的 digest 設計保留為日後選項。
 
+### 6.6 後續（2026-10-26）：reviewer 看得到編輯（ADR-35）
+
+reviewer 的資訊來源只有父線 history 中 `spawn_agents` 的 tool result（子代理自己的 tool call 不會回流父線），因此 `AgentOutput` 的保真度就是審查能力的上限。default 的 `editor` 把編輯埋在 `{ output: { messages } }` 三到四層巢狀裡；max 的 `editor-multi-prompt` 則完全不帶 diff（`unifiedDiffs` 是 selector 的輸入，用完即成死值）。已實作：
+
+1. `editor-multi-prompt` 的 `set_output` 增 `unifiedDiff`（僅真 diff；`'No changes proposed'` 與 `Error: …` 省略）。
+2. runtime 的 `render-subagent-output.ts` 在 `review-context` 下把 `spawn_agents` 結果攤成 `{ agentName, agentType, rendered }`（維持 `json` part、fail-open）。`write_file` 依使用者裁定渲染完整內容並標明 whole-file write。
+
+刻意不比照 default 的 schema（會失去 `suggestedImprovements`，並把落選實作倒進父線）。已知成本：`unifiedDiff` 進入父線 history，之後每一步重送。
+
 ---
 
 ## 7. 預期效果（A 部分，實測）

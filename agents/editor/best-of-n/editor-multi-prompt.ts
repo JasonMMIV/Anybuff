@@ -210,6 +210,21 @@ function* handleStepsMultiPrompt({
   // Extract suggested improvements from selector output
   const { reason, suggestedImprovements } = selectorOutput
 
+  // The winning implementation's unified diff. `content` doubles as the
+  // selector's input, so it can also carry a failure or no-change sentinel —
+  // only surface it as a diff when it really is one. Without this the caller
+  // (and a reviewer reading the inherited history) learns which files changed
+  // but never *what* changed: the applied tool results only say "Successfully
+  // replaced N occurrence(s)". Serialized into the bundle, so no imports.
+  const diffContent = chosenImplementation.content
+  const unifiedDiff =
+    diffContent &&
+    diffContent.trim().length > 0 &&
+    diffContent !== 'No changes proposed' &&
+    !diffContent.startsWith('Error:')
+      ? diffContent
+      : undefined
+
   // Set output with the applied results and suggested improvements
   yield {
     toolName: 'set_output',
@@ -217,6 +232,7 @@ function* handleStepsMultiPrompt({
       chosenStrategy: chosenImplementation.strategy,
       reason,
       toolResults: appliedToolResults,
+      ...(unifiedDiff ? { unifiedDiff } : {}),
       suggestedImprovements,
     },
     includeToolCall: false,

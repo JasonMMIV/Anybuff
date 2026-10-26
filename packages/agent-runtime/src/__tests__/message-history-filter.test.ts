@@ -36,7 +36,7 @@ const toolResult = (toolCallId: string): Message =>
   }) as Message
 
 const filter = (messages: Message[]) =>
-  filterInheritedHistory({ messages, logger })
+  filterInheritedHistory({ messages, filter: 'review-context', logger })
 
 describe('filterInheritedHistory', () => {
   test('drops earlier-turn reasoning but keeps visible text and tool calls', () => {
@@ -155,5 +155,106 @@ describe('filterInheritedHistory', () => {
 
   test('returns an empty array for an empty history', () => {
     expect(filter([])).toEqual([])
+  })
+
+  test('renders subagent edits into a readable block', () => {
+    const messages: Message[] = [
+      userPrompt('request'),
+      assistantMessage({
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'spawn-1',
+            toolName: 'spawn_agents',
+            input: { agents: [{ agent_type: 'editor' }] },
+          } as any,
+        ],
+      }) as Message,
+      {
+        role: 'tool',
+        toolName: 'spawn_agents',
+        toolCallId: 'spawn-1',
+        content: [
+          {
+            type: 'json',
+            value: [
+              {
+                agentName: 'Code Editor',
+                agentType: 'editor',
+                value: {
+                  type: 'structuredOutput',
+                  value: {
+                    output: {
+                      messages: [
+                        {
+                          role: 'assistant',
+                          content: [
+                            { type: 'reasoning', text: 'private plan' },
+                            {
+                              type: 'tool-call',
+                              toolCallId: 'edit-1',
+                              toolName: 'str_replace',
+                              input: {
+                                path: 'src/a.ts',
+                                replacements: [
+                                  { oldString: 'old line', newString: 'new line' },
+                                ],
+                              },
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    const filtered = filter(messages)
+    const report = (filtered[2] as any).content[0].value[0]
+
+    expect(report.rendered).toContain('old line')
+    expect(report.rendered).toContain('new line')
+    expect(report.rendered).not.toContain('private plan')
+    expect(report.value).toBeUndefined()
+  })
+
+  test('does not render subagent results for a non-review filter', () => {
+    const messages: Message[] = [
+      {
+        role: 'tool',
+        toolName: 'spawn_agents',
+        toolCallId: 'spawn-1',
+        content: [
+          {
+            type: 'json',
+            value: [
+              {
+                agentName: 'Code Editor',
+                agentType: 'editor',
+                value: {
+                  type: 'structuredOutput',
+                  value: { output: { messages: [] } },
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    // `review-context` is the only registered filter today; the cast guards the
+    // renderer against future filters inheriting it by accident.
+    const filtered = filterInheritedHistory({
+      messages,
+      filter: 'future-filter' as unknown as 'review-context',
+      logger,
+    })
+
+    expect(filtered[0]).toBe(messages[0])
   })
 })

@@ -307,9 +307,14 @@ export function createAgentState(
     const inherited = historyBeforeSpawn.filter(
       (message) => !message.tags?.includes('SUBAGENT_SPAWN'),
     )
+    const messageHistoryFilter = agentTemplate.messageHistoryFilter
     messageHistory = dropUnansweredToolCalls(
-      agentTemplate.messageHistoryFilter
-        ? filterInheritedHistory({ messages: inherited, logger })
+      messageHistoryFilter
+        ? filterInheritedHistory({
+            messages: inherited,
+            filter: messageHistoryFilter,
+            logger,
+          })
         : inherited,
     )
   } else if (agentTemplate.messageHistoryFilter) {

@@ -1,3 +1,5 @@
+import { renderSubagentToolMessage } from './render-subagent-output'
+
 import type { Logger } from '@codebuff/common/types/contracts/logger'
 import type { Message } from '@codebuff/common/types/messages/codebuff-message'
 
@@ -6,7 +8,9 @@ import type { Message } from '@codebuff/common/types/messages/codebuff-message'
  *
  * - `review-context`: a reviewer should judge the work, not the author's
  *   internal monologue. Drop assistant `reasoning` parts; keep every visible
- *   `text` part, every tool call, and every tool result.
+ *   `text` part, every tool call, and every tool result. Subagent outputs are
+ *   additionally rendered into readable edits (ADR-35), because a reviewer's
+ *   only record of a subagent's work is its `AgentOutput` in this history.
  */
 export type MessageHistoryFilter = 'review-context'
 
@@ -25,12 +29,17 @@ export type MessageHistoryFilter = 'review-context'
  * merges adjacent assistant messages into one, and the latest turn's thinking
  * blocks must be replayed unmodified (Claude 400s otherwise — the same boundary
  * semantics as `splitTail`'s ADR-26 guard).
+ *
+ * Subagent tool results are rendered only for `review-context`: the reviewer is
+ * a leaf with no tools, so a nested `AgentOutput` it cannot parse is an edit it
+ * cannot review. The renderer is fail-open — unrecognised shapes stay as-is.
  */
 export function filterInheritedHistory(params: {
   messages: Message[]
+  filter: MessageHistoryFilter
   logger: Logger
 }): Message[] {
-  const { messages, logger } = params
+  const { messages, filter, logger } = params
 
   if (messages.length === 0) {
     return []
@@ -78,5 +87,25 @@ export function filterInheritedHistory(params: {
     )
   }
 
-  return filtered
+  if (filter !== 'review-context') {
+    return filtered
+  }
+
+  let rendered = 0
+  const withRenderedEdits = filtered.map((message) => {
+    const next = renderSubagentToolMessage({ message })
+    if (next !== message) {
+      rendered++
+    }
+    return next
+  })
+
+  if (rendered > 0) {
+    logger.debug(
+      { renderedToolResults: rendered },
+      'Rendered subagent edits for review',
+    )
+  }
+
+  return withRenderedEdits
 }
