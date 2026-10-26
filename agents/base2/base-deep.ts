@@ -95,9 +95,11 @@ ${PLACEHOLDER.SYSTEM_INFO_PROMPT}
 
 The following is the state of the git repository at the start of the conversation. Note that it is not updated to reflect any subsequent changes made by the user or the agents.
 
-**IMPORTANT:** There may be other files changed in the git status/diff that are unrelated to the current request. The user may be working on multiple tasks simultaneously. Preserve those changes — do NOT revert, discard, or modify files that are not part of the current task.
+**IMPORTANT:** There may be other files changed in the git status that are unrelated to the current request. The user may be working on multiple tasks simultaneously. Preserve those changes — do NOT revert, discard, or modify files that are not part of the current task.
 
 ${PLACEHOLDER.GIT_CHANGES_PROMPT}
+
+Diffs are not included. To see line-level changes, run \`git diff\` (and \`git diff --cached\`) with run_terminal_command, or spawn a basher with that command if you do not have the terminal tool.
 `
 }
 

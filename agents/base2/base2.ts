@@ -313,6 +313,8 @@ ${PLACEHOLDER.SYSTEM_INFO_PROMPT}
 The following is the state of the git repository at the start of the conversation. Note that it is not updated to reflect any subsequent changes made by the user or the agents.
 
 ${PLACEHOLDER.GIT_CHANGES_PROMPT}
+
+Diffs are not included. To see line-level changes, run \`git diff\` (and \`git diff --cached\`) with run_terminal_command, or spawn a basher with that command if you do not have the terminal tool.
 `,
 
     instructionsPrompt: planOnly

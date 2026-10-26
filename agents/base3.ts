@@ -180,6 +180,8 @@ ${PLACEHOLDER.SYSTEM_INFO_PROMPT}
 The following is the state of the git repository at the start of the conversation. Note that it is not updated to reflect any subsequent changes made by you or the user.
 
 ${PLACEHOLDER.GIT_CHANGES_PROMPT}
+
+Diffs are not included; run \`git diff\` with run_terminal_command when you need line-level changes.
 `
 }
 

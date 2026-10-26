@@ -15,8 +15,8 @@
  *    Upstream's own agent definitions never grant them; keep it that way.
  * 2. Add native web_search to the primary coding agent (DuckDuckGo,
  *    built into agent-runtime, no key needed).
- * 3. Append prompt-discipline sections: git_status retry suppression and
- *    "invisible files" handling (context tree omits gitignored paths).
+ * 3. Append the "invisible files" prompt-discipline section (the context tree
+ *    omits gitignored paths).
  * 4. Strip gravity_index everywhere (hosted ads-mesh tool; meaningless
  *    without the Freebuff backend) — toolNames AND the prompt copy that
  *    tells agents to reach for it.
@@ -131,10 +131,6 @@ const BUNDLE_EXCLUDED_AGENT_IDS = new Set<string>([])
  *  the turn nor suppress a step — anything in TOOLS_WHICH_WONT_FORCE_NEXT_STEP
  *  must stay out (see patch #1 in the header comment). */
 const EXTRA_TOOLS = ['run_terminal_command', 'code_search']
-
-const GIT_DISCIPLINE = `# Git status discipline
-
-If \`git_status\` reports that the current directory is not a git repository (e.g. \`fatal: not a git repository\`), do not call \`git_status\` again for the rest of this turn. Rely on the runtime-injected Git observation instead.`
 
 const INVISIBLE_FILES_DISCIPLINE = `# Invisible files discipline
 
@@ -301,9 +297,6 @@ function applyDesktopPatch(id: string, def: AgentDefinition): AgentDefinition {
     // 3. Prompt discipline sections.
     let systemPrompt =
       typeof patched.systemPrompt === 'string' ? patched.systemPrompt : ''
-    if (systemPrompt && !systemPrompt.includes('not a git repository')) {
-      systemPrompt = `${systemPrompt}\n\n${GIT_DISCIPLINE}`
-    }
     if (!systemPrompt.includes('absent from the file tree')) {
       systemPrompt = `${systemPrompt}\n\n${INVISIBLE_FILES_DISCIPLINE}`
     }

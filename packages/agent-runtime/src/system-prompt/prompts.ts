@@ -189,28 +189,36 @@ ${closeXml('recently_read_file_paths_most_recent_first')}
 `.trim()
 }
 
+/**
+ * Only the working-tree status and the recent commit subjects go into the
+ * prompt. Diffs are deliberately omitted: they only cover tracked files (new
+ * files never show up), they dominate the prompt by an order of magnitude, and
+ * the snapshot is frozen at session start so line-level detail goes stale while
+ * the agent is still working. Callers that can run git describe how to fetch a
+ * diff; this function stays tool-neutral.
+ *
+ * Status gets the larger budget because it is the only section that lists
+ * untracked files. Keep the trailing sentence descriptive (not an instruction):
+ * find_files uses this prompt too and has no way to run git.
+ */
+export const GIT_STATUS_MAX_CHARS = 10_000
+export const GIT_COMMIT_MESSAGES_MAX_CHARS = 3_000
+
 export const getGitChangesPrompt = (fileContext: ProjectFileContext) => {
   const { gitChanges } = fileContext
   if (!gitChanges) {
     return ''
   }
-  const maxLength = 30_000
   return `
 Git Changes:
 <git_status>
-${truncateString(gitChanges.status, maxLength / 10)}
+${truncateString(gitChanges.status, GIT_STATUS_MAX_CHARS)}
 ${closeXml('git_status')}
 
-<git_diff>
-${truncateString(gitChanges.diff, maxLength)}
-${closeXml('git_diff')}
-
-<git_diff_cached>
-${truncateString(gitChanges.diffCached, maxLength)}
-${closeXml('git_diff_cached')}
-
 <git_commit_messages_most_recent_first>
-${truncateString(gitChanges.lastCommitMessages, maxLength / 10)}
+${truncateString(gitChanges.lastCommitMessages, GIT_COMMIT_MESSAGES_MAX_CHARS)}
 ${closeXml('git_commit_messages_most_recent_first')}
+
+Diffs are not inlined here. Line-level detail is not part of this snapshot.
 `.trim()
 }
