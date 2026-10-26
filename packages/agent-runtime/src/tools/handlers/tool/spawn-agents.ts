@@ -106,6 +106,7 @@ export const handleSpawnAgents = (async (
             toolCallId: toolCall.toolCallId,
             currentAssistantMessages,
           },
+          logger,
         )
 
         // Extract common context params to avoid bugs from spreading all params

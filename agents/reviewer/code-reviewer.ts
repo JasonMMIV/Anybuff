@@ -33,11 +33,17 @@ export const createReviewer = (
   // and it ends up echoing the inherited message history instead of reviewing.
   inheritParentSystemPrompt: false,
   includeMessageHistory: true,
+  // ADR-34: the reviewer judges the work, not the author's internal monologue.
+  // The runtime drops reasoning parts from the inherited history; visible text,
+  // tool calls and results stay untouched.
+  messageHistoryFilter: 'review-context',
 
   instructionsPrompt: `You are a subagent that reviews code changes and gives helpful critical feedback. Do not use any tools. For reference, here is the original user request:
 <user_message>
 ${PLACEHOLDER.USER_INPUT_PROMPT}
 </user_message>
+
+NOTE: The conversation history is intentionally curated for review. The author's internal reasoning is omitted; user requests, visible assistant text, tool calls, tool results, and file changes are shown as recorded in the conversation.
 
 # Task
 

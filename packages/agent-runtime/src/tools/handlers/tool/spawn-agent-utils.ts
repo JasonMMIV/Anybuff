@@ -13,6 +13,7 @@ import {
 } from '../../../run-agent-step'
 import { getAgentTemplate } from '../../../templates/agent-registry'
 import { formatValueForError } from '../../../util/format-value'
+import { filterInheritedHistory } from '../../../util/message-history-filter'
 
 import type { AgentTemplate } from '@codebuff/common/types/agent-template'
 import type {
@@ -261,6 +262,7 @@ export function createAgentState(
     toolCallId: string
     currentAssistantMessages?: readonly Message[]
   },
+  logger: Logger,
 ): AgentState {
   const agentId = generateCompactId()
 
@@ -302,10 +304,21 @@ export function createAgentState(
     // Session state comes from clients and can contain older interrupted tool
     // calls and synthetic spawn announcements from earlier releases. Keep
     // filtering both so inherited history is provider-safe and unambiguous.
+    const inherited = historyBeforeSpawn.filter(
+      (message) => !message.tags?.includes('SUBAGENT_SPAWN'),
+    )
     messageHistory = dropUnansweredToolCalls(
-      historyBeforeSpawn.filter(
-        (message) => !message.tags?.includes('SUBAGENT_SPAWN'),
-      ),
+      agentTemplate.messageHistoryFilter
+        ? filterInheritedHistory({ messages: inherited, logger })
+        : inherited,
+    )
+  } else if (agentTemplate.messageHistoryFilter) {
+    logger.warn(
+      {
+        agentType,
+        messageHistoryFilter: agentTemplate.messageHistoryFilter,
+      },
+      'messageHistoryFilter is set but includeMessageHistory is false — filter ignored',
     )
   }
 
@@ -327,6 +340,9 @@ export function createAgentState(
     parentId: parentAgentState.agentId,
     systemPrompt: '',
     toolDefinitions: {},
+    // Inherited from the parent, so it overcounts when messageHistoryFilter
+    // shrank the history. Harmless for a one-step reviewer with no compaction;
+    // recompute it if a filtered agent ever enables compactContext.
     contextTokenCount: parentAgentState.contextTokenCount,
   }
 }

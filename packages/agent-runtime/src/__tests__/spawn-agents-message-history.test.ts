@@ -89,6 +89,7 @@ describe('Spawn Agents Message History', () => {
   const createMockAgent = (
     id: string,
     includeMessageHistory = true,
+    messageHistoryFilter?: AgentTemplate['messageHistoryFilter'],
   ): AgentTemplate => ({
     id,
     displayName: `Mock ${id}`,
@@ -101,6 +102,7 @@ describe('Spawn Agents Message History', () => {
     spawnerPrompt: '',
     model: '',
     includeMessageHistory,
+    messageHistoryFilter,
     inheritParentSystemPrompt: false,
     mcpServers: {},
     toolNames: [],
@@ -290,6 +292,101 @@ describe('Spawn Agents Message History', () => {
       ...currentAssistantMessages,
     ])
     expect(capturedSubAgentPrompt).toBe('Review the changes')
+  })
+
+  it('curates the inherited history when the child opts into review-context', async () => {
+    const parentAgent = createMockAgent('parent', true)
+    const childAgent = createMockAgent('child-agent', true, 'review-context')
+    const sessionState = getInitialSessionState(mockFileContext)
+    const toolCall = createSpawnToolCall('child-agent')
+    const currentAssistantMessages = [
+      assistantMessage({
+        type: 'reasoning',
+        text: 'The author thinks this is done.',
+      }),
+      assistantMessage('Let me get a review.'),
+    ]
+    const toolResult = {
+      role: 'tool',
+      toolName: 'read_files',
+      toolCallId: 'read-1',
+      content: [{ type: 'json', value: { ok: true } }],
+    } as any
+
+    sessionState.mainAgentState.messageHistory = [
+      userMessage({ content: 'First request', tags: ['USER_PROMPT'] }),
+      assistantMessage({
+        content: [
+          { type: 'reasoning', text: 'Earlier private thinking.' },
+          { type: 'text', text: 'Option A or option B?' },
+        ],
+      }),
+      userMessage({ content: 'Use option B', tags: ['USER_PROMPT'] }),
+      assistantMessage({
+        content: [
+          { type: 'reasoning', text: 'Current private thinking.' },
+          { type: 'text', text: 'Reading the files now.' },
+          {
+            type: 'tool-call',
+            toolCallId: 'read-1',
+            toolName: 'read_files',
+            input: { paths: ['src/a.ts'] },
+          },
+        ],
+      }),
+      toolResult,
+    ]
+
+    await handleSpawnAgents({
+      ...handleSpawnAgentsBaseParams,
+      agentState: sessionState.mainAgentState,
+      agentTemplate: parentAgent,
+      currentAssistantMessages,
+      localAgentTemplates: { 'child-agent': childAgent },
+      toolCall,
+    })
+
+    const history = capturedSubAgentState.messageHistory
+
+    // Earlier turn: visible text survives, reasoning does not.
+    expect(history[1].content).toEqual([
+      { type: 'text', text: 'Option A or option B?' },
+    ])
+    // Current turn: reasoning goes, visible text and the tool call stay.
+    expect(history[3].content).toEqual([
+      { type: 'text', text: 'Reading the files now.' },
+      {
+        type: 'tool-call',
+        toolCallId: 'read-1',
+        toolName: 'read_files',
+        input: { paths: ['src/a.ts'] },
+      },
+    ])
+    // Tool results are never touched.
+    expect(history[4]).toEqual(toolResult)
+    // The final assistant run (the streamed spawn snapshot) is verbatim.
+    expect(history.slice(-2)).toEqual(currentAssistantMessages)
+  })
+
+  it('warns and ignores review-context when includeMessageHistory is false', async () => {
+    const parentAgent = createMockAgent('parent', true)
+    const childAgent = createMockAgent('child-agent', false, 'review-context')
+    const sessionState = getInitialSessionState(mockFileContext)
+    const toolCall = createSpawnToolCall('child-agent')
+    const warn = spyOn(handleSpawnAgentsBaseParams.logger, 'warn')
+
+    sessionState.mainAgentState.messageHistory = [userMessage('Hello')]
+
+    await handleSpawnAgents({
+      ...handleSpawnAgentsBaseParams,
+      agentState: sessionState.mainAgentState,
+      agentTemplate: parentAgent,
+      localAgentTemplates: { 'child-agent': childAgent },
+      toolCall,
+    })
+
+    expect(capturedSubAgentState.messageHistory).toHaveLength(0)
+    expect(warn).toHaveBeenCalled()
   })
 
   it('does not propagate synthetic spawn messages from legacy sessions', async () => {

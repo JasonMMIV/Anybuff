@@ -181,6 +181,16 @@ export interface AgentDefinition {
    */
   includeMessageHistory?: boolean
 
+  /** Narrow what this agent inherits when includeMessageHistory is true.
+   *
+   * 'review-context' drops assistant `reasoning` parts (except the final
+   * assistant run, which must replay verbatim for the thinking contract).
+   * Visible text, tool calls and tool results are untouched.
+   *
+   * Defaults to no filtering.
+   */
+  messageHistoryFilter?: 'review-context'
+
   /** Whether to inherit the parent agent's system prompt instead of using this agent's own systemPrompt.
    *
    * Defaults to false.

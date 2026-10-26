@@ -109,6 +109,7 @@ export const handleSpawnAgentInline = (async (
         toolCallId: toolCall.toolCallId,
         currentAssistantMessages,
       },
+      logger,
     ),
     systemPrompt: system,
     toolDefinitions: mapValues(parentTools, (tool) => ({

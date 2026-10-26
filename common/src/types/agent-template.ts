@@ -132,6 +132,7 @@ export type AgentTemplate<
     params?: z.ZodSchema<T>
   }
   includeMessageHistory: boolean
+  messageHistoryFilter?: 'review-context'
   inheritParentSystemPrompt: boolean
   windowedFileReads?: boolean
   compactContext?:

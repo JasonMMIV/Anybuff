@@ -162,7 +162,7 @@ Diffs are not inlined here. Line-level detail is not part of this snapshot.
 
 ### 6.1 原本要解決什麼
 
-reviewer 沒有工具、沒有 diff 參數，唯一知道「改了什麼」的方式是重播父線完整 history。代價有四層：整份 transcript 以新前綴全價計費；每輪 review 都吃一次視窗；capped provider 的 cold-prefill admission control 可能直接拒絕（ADR-28 實測 `incoming_uncached_tokens=228,752 > cap 200,000`）；以及 reviewer 會讀到父代理的 `reasoning` 與自我辯護（錨定效應）。另外，base2 最常見的 `editor-multi-prompt` 路徑，reviewer 從父線 history **完全看不到編輯內容**。
+reviewer 沒有工具、沒有 diff 參數，唯一知道「改了什麼」的方式是重播父線完整 history。代價有四層：整份 transcript 以新前綴全價計費；每輪 review 都吃一次視窗；capped provider 的 cold-prefill admission control 可能直接拒絕（ADR-28 實測 `incoming_uncached_tokens=228,752 > cap 200,000`；**此限制僅見於自行實作 uncached-token 准入的私有 gateway，一般供應商只受模型視窗與速率限制**）；以及 reviewer 會讀到父代理的 `reasoning` 與自我辯護（錨定效應）。另外，base2 最常見的 `editor-multi-prompt` 路徑，reviewer 從父線 history **完全看不到編輯內容**。
 
 ### 6.2 設計要點（可直接續作）
 
@@ -174,7 +174,7 @@ reviewer 沒有工具、沒有 diff 參數，唯一知道「改了什麼」的�
 ### 6.3 為何暫緩
 
 1. **完整性優先**：任何有硬上限的 digest 都必然裁掉資訊；使用者要求 reviewer 看到完整資訊。
-2. **拿掉上限就回到原點**：無上限 digest 仍是 O(session)（只是常數較小），capped provider 的准入問題與 ADR-28 相同，無法宣稱修好。
+2. **拿掉上限就回到原點**：無上限 digest 仍是 O(session)（只是常數較小），若該 gateway 有 uncached-token 准入規則，問題與 ADR-28 相同，無法宣稱修好（一般供應商沒有這條規則）。
 3. **ADR-28 的前例**：同一個問題在 2026-09-13 已嘗試過「剝除 reasoning」並同日回退（`f550529ea` → revert `c17208fdb`），理由是 strip 後仍是 O(session)、偏誤改善未經 evals 證實、且要背 bundle 烘焙分歧。
 4. 因此現階段維持上游行為，是「不增加分歧、也不假裝解決」的選擇。
 
@@ -184,6 +184,10 @@ reviewer 沒有工具、沒有 diff 參數，唯一知道「改了什麼」的�
 - 給 reviewer 檢索工具（`read_files` / `code_search`）＋最小種子，讓「完整」的定義變成「查得到」而非「已載入」。
 
 在那之前，不應把 B 的半成品放進 runtime。
+
+### 6.5 後續（2026-10-26）：改採 runtime 過濾，digest 仍暫緩
+
+使用者裁定**只丟 `reasoning`**：visible `text` 全留，工具結果不動、也不做 digest。實作為 `messageHistoryFilter: 'review-context'`（ADR-34）：接縫在 `createAgentState`，agent 端只帶 flag；reviewer 仍繼承完整 history，只少了作者內部的 `reasoning`（最後一段 assistant run 例外）。§6.2 的 digest 設計保留為日後選項。
 
 ---
 

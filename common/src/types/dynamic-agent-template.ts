@@ -187,6 +187,7 @@ export const DynamicAgentDefinitionSchema = z.object({
   // Input and output
   inputSchema: InputSchemaObjectSchema,
   includeMessageHistory: z.boolean().default(false),
+  messageHistoryFilter: z.enum(['review-context']).optional(),
   inheritParentSystemPrompt: z.boolean().default(false),
   windowedFileReads: z.boolean().optional(),
   compactContext: z
