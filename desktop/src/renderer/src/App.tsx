@@ -2949,13 +2949,24 @@ export default function App() {
         content: text,
         defaultName,
         startDir: project.path
-      })) as { ok: boolean; canceled?: boolean; path?: string; error?: string }
+      })) as {
+        ok: boolean
+        canceled?: boolean
+        path?: string
+        /** Android shell: the file left through the share chooser (no path). */
+        shared?: boolean
+        error?: string
+      }
       if (!res?.ok) {
         // A cancel is quiet; failures (incl. unsupported shells) surface.
         if (!res?.canceled) setNotice(res?.error ?? 'Failed to export the conversation.')
         return
       }
-      setNotice(`Exported conversation (${messageCount} messages): ${res.path ?? defaultName}`)
+      setNotice(
+        res.shared
+          ? `Exported conversation (${messageCount} messages) — pick where to save it in the share sheet (${res.path ?? defaultName})`
+          : `Exported conversation (${messageCount} messages): ${res.path ?? defaultName}`
+      )
     },
     [isPreview]
   )

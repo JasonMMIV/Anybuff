@@ -135,7 +135,19 @@ function useIsWebView(): boolean {
   )
 }
 
-function TokenRing({ used, max, running }: { used: number; max: number; running: boolean }) {
+function TokenRing({
+  used,
+  max,
+  running,
+  costUsd = 0
+}: {
+  used: number
+  max: number
+  running: boolean
+  /** Conversation cost in USD. Only rendered on the WebView shell, inside
+   *  this pill — see the one-row comment in the body. */
+  costUsd?: number
+}) {
   const isWebView = useIsWebView()
   const [expanded, setExpanded] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -211,6 +223,14 @@ function TokenRing({ used, max, running }: { used: number; max: number; running:
       </svg>
       {!isWebView && <span className="token-text">{text}</span>}
 
+      {/* Android one-row discipline: the cost lives INSIDE this pill (stacked
+          under the ring) instead of as a second toolbar item, so the bottom
+          row can never wrap onto a second line — however large the amount or
+          the system font scale. The popover carries the value in full. */}
+      {isWebView && costUsd > 0 && (
+        <span className="token-cost-mini">${costUsd.toFixed(2)}</span>
+      )}
+
       {isWebView && expanded && (
         <div className="token-ring-popover" role="tooltip" onClick={(e) => e.stopPropagation()}>
           <div className="token-popover-header">
@@ -226,6 +246,12 @@ function TokenRing({ used, max, running }: { used: number; max: number; running:
             </span>
             <span className="token-popover-unit">tokens</span>
           </div>
+          {costUsd > 0 && (
+            <div className="token-popover-cost">
+              <span>Conversation cost</span>
+              <span className="token-popover-cost-value">${costUsd.toFixed(2)}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -274,6 +300,12 @@ export default function Composer(props: ComposerProps) {
   } = props
 
   const shortcutLabel = useMemo(() => (isMacPlatform() ? '\u2318+Enter' : 'Ctrl+Enter'), [])
+
+  // Android one-row discipline: when the token pill is on screen it absorbs
+  // the cost (see TokenRing) so `.toolbar-right` stays a single ~44px item.
+  // Desktop keeps the standalone badge beside the ring.
+  const hasTokenRing = Boolean(tokenUsage && tokenUsage.max > 0)
+  const ringOwnsCost = isWebView && hasTokenRing
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const menuItemRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -867,7 +899,7 @@ export default function Composer(props: ComposerProps) {
         </div>
 
         <div className="toolbar-right">
-          {taskCostUsd > 0 && (
+          {!ringOwnsCost && taskCostUsd > 0 && (
             <span
               className="cost-badge"
               title="Total cost for this conversation (completed turns, rounded to the cent)"
@@ -876,7 +908,12 @@ export default function Composer(props: ComposerProps) {
             </span>
           )}
           {tokenUsage && tokenUsage.max > 0 && (
-            <TokenRing used={tokenUsage.used} max={tokenUsage.max} running={running} />
+            <TokenRing
+              used={tokenUsage.used}
+              max={tokenUsage.max}
+              running={running}
+              costUsd={ringOwnsCost ? taskCostUsd : 0}
+            />
           )}
         </div>
       </div>

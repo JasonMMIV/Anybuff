@@ -8188,7 +8188,11 @@ select option {
 
 .is-webview .token-ring-wrap.is-touchable {
   cursor: pointer;
-  padding: 4px;
+  /* One-row discipline: ring + cost stack vertically inside the same touch
+     target (44px floor below), so the toolbar's right side never grows
+     horizontally. `padding: 4px` comes from that floor rule. */
+  flex-direction: column;
+  gap: 1px;
   min-height: 36px;
   min-width: 36px;
   border-radius: 7px;
@@ -8198,6 +8202,25 @@ select option {
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+/* Conversation cost inside the token pill (Android WebView). Small + mono so
+   a long amount still fits the provider's 44px icon column; the popover shows
+   the value in full. */
+.is-webview .token-cost-mini {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The composer toolbar is exactly ONE row on Android. No wrap: the right side
+   is a single token pill (cost folded in), so nothing can push it to a second
+   line — not the cost, not a large system font scale. */
+.is-webview .composer-toolbar {
+  flex-wrap: nowrap;
 }
 
 .is-webview .token-ring-wrap.is-touchable:active,
@@ -8325,6 +8348,25 @@ select option {
 .token-popover-unit {
   font-size: 11px;
   color: var(--text-2);
+}
+
+/* Conversation cost row inside the token popover (the Android pill no longer
+   carries a standalone cost badge — see .token-cost-mini). */
+.token-popover-cost {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.token-popover-cost-value {
+  font-family: var(--font-mono);
+  font-weight: 650;
+  color: var(--green);
 }
 
 
@@ -8564,6 +8606,9 @@ select option {
   .composer-toolbar {
     padding: 6px 8px;
     gap: 4px;
+    /* Narrow DESKTOP windows may wrap; the WebView is pinned to one row by
+       `.is-webview .composer-toolbar` (higher specificity, cost folded into
+       the token pill). */
     flex-wrap: wrap;
   }
 
@@ -8629,7 +8674,8 @@ select option {
 
   .is-webview .token-ring-wrap.is-touchable {
     cursor: pointer;
-    padding: 4px;
+    flex-direction: column;
+    gap: 1px;
     min-height: 36px;
     min-width: 36px;
     border-radius: 7px;
@@ -9648,7 +9694,10 @@ select option {
 .is-webview .token-ring-wrap.is-touchable {
   min-width: 44px;
   min-height: 44px;
-  padding: 8px;
+  /* 4px, not the 8px floor: the pill stacks ring + cost (23 + 1 + ~10px) and
+     must still fit the 44px touch target — an 8px pad grew the composer
+     toolbar to ~50px, and the whole point is a single 44px row. */
+  padding: 4px;
 }
 
 .is-webview .cap-probe-btn {

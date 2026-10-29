@@ -10,6 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
+import { type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Composer, { type AgentMode } from '../src/renderer/src/components/Composer'
 
@@ -55,6 +56,42 @@ describe('Composer per-task cost badge', () => {
   test('hides the badge when the task has no cost', () => {
     const html = renderToStaticMarkup(<Composer {...base} />)
     expect(html).not.toContain('cost-badge')
+  })
+})
+
+/**
+ * Render through the renderer's Android branch. `useIsWebView` looks at
+ * `document.documentElement` (main.tsx adds `.is-webview` before React mounts
+ * in the WebView), which bun has no DOM for — stub it for the render only.
+ */
+function renderWebView(node: ReactElement): string {
+  const g = globalThis as { document?: unknown }
+  const previous = g.document
+  g.document = { documentElement: { classList: { contains: (c: string) => c === 'is-webview' } } }
+  try {
+    return renderToStaticMarkup(node)
+  } finally {
+    if (previous === undefined) delete g.document
+    else g.document = previous
+  }
+}
+
+describe('Composer Android one-row toolbar', () => {
+  test('folds the cost into the token pill instead of a second toolbar item', () => {
+    const html = renderWebView(
+      <Composer {...base} tokenUsage={{ used: 1234, max: 200000 }} taskCostUsd={0.42} />
+    )
+    expect(html).toContain('token-cost-mini')
+    expect(html).toContain('$0.42')
+    // A separate badge would be a second flex item in `.toolbar-right` — the
+    // exact shape that wrapped the toolbar onto two rows on phones.
+    expect(html).not.toContain('cost-badge')
+  })
+
+  test('keeps the standalone badge when there is no token ring to fold into', () => {
+    const html = renderWebView(<Composer {...base} tokenUsage={null} taskCostUsd={0.42} />)
+    expect(html).toContain('cost-badge')
+    expect(html).not.toContain('token-cost-mini')
   })
 })
 

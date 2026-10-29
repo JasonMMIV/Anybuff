@@ -100,6 +100,13 @@ export interface AnyBuffNativeBridge {
    *  path for bug reports; the WebView clipboard is unreliable on many OEM
    *  WebViews. Resolves {ok, error?}; never rejects. */
   shareEngineLog?: () => Promise<{ ok: boolean; error?: string }>
+  /** Android-only (#8 conversation export): write the renderer's Markdown to
+   *  cache and hand it to the share sheet (Files/Drive/mail) — the WebView has
+   *  no native save dialog. Resolves {ok, path?, error?}; never rejects. */
+  exportConversation?: (
+    content: string,
+    fileName: string
+  ) => Promise<{ ok: boolean; path?: string | null; error?: string }>
   /** Android-only: persist a provider/search key into the device keychain
    *  (Keystore) — the durable store behind the host's memory-only
    *  keyPersistence seam (plan §2.2 / §4.0 deviation 3). Resolves false on a
@@ -704,13 +711,26 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     },
     selectFiles: async () => (native?.pickFiles ? await native.pickFiles() : []),
     getPathForFile: (_file: File) => '',
-    /** #8 conversation export — desktop shell only (native save dialog); the
-     *  Android shell has no file-save bridge yet. The renderer surfaces the
-     *  error envelope as a notice. */
-    exportConversationFile: async () => ({
-      ok: false,
-      error: 'Conversation export is not supported on this device yet.',
-    }),
+    /** #8 conversation export. Desktop owns a native save dialog; the Android
+     *  shell has no save dialog, so the Markdown goes through the system share
+     *  sheet (save to Files/Drive or send). No bridge → the renderer surfaces
+     *  the error envelope as a notice (browser preview). */
+    exportConversationFile: async (payload: {
+      content: string
+      defaultName: string
+      startDir?: string | null
+    }) => {
+      if (!native?.exportConversation) {
+        return { ok: false, error: 'Conversation export is not supported on this device yet.' }
+      }
+      const res = await native.exportConversation(payload.content, payload.defaultName)
+      if (!res?.ok) {
+        return { ok: false, error: res?.error ?? 'Failed to export the conversation.' }
+      }
+      // `shared` tells the renderer the file left through the chooser rather
+      // than landing on a known path (notice wording differs from desktop).
+      return { ok: true, path: res.path ?? payload.defaultName, shared: true }
+    },
     // Android's prefers-color-scheme is pinned to the Activity theme (round
     // 12); the renderer follows the shell-injected system theme instead, so
     // this stays a no-op — it just accepts the new 'system' mode arg.

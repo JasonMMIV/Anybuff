@@ -281,6 +281,38 @@ class NativeBridge(
                         }
                     }.start()
                 }
+                "exportConversation" -> {
+                    // #8 conversation export: the renderer hands over the
+                    // serialized Markdown; the shell writes it to cache/shared
+                    // and offers it through the share sheet (Files/Drive/mail).
+                    // The WebView has no native save dialog, and the share
+                    // sheet is the dependable Android export path (same call
+                    // as shareLog). File I/O runs OFF the main thread; the
+                    // reply is posted back on the UI thread (replyProxy
+                    // contract).
+                    val content = msg.optString("content")
+                    val fileName = msg.optString("filename")
+                    Thread {
+                        var name: String? = null
+                        var error: String? = null
+                        try {
+                            name = exportConversation(content, fileName)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "exportConversation failed", e)
+                            EngineLog.append(activity, "export: FAILED (${e.message})")
+                            error = e.message ?: "could not export the conversation"
+                        }
+                        val shared = name
+                        val failure = error
+                        activity.runOnUiThread {
+                            post(id, replyProxy) {
+                                put("ok", shared != null)
+                                shared?.let { put("path", it) }
+                                failure?.let { put("error", it) }
+                            }
+                        }
+                    }.start()
+                }
                 "saveKey" -> {
                     // { providerId, apiKey } → Keystore encrypt → filesDir.
                     val providerId = msg.optString("providerId")
@@ -829,6 +861,55 @@ class NativeBridge(
     }
 
     /**
+     * #8 conversation export (Android): write the renderer's Markdown into
+     * cache/shared/<name> and hand it to the share sheet, where the user picks
+     * where it goes (Files, Drive, mail, another agent…). Caller runs this off
+     * the main thread; startActivity + createChooser are safe from any thread.
+     * Returns the sanitized file name that was shared.
+     */
+    private fun exportConversation(content: String, requestedName: String): String {
+        if (content.isBlank()) throw IllegalArgumentException("nothing to export")
+        val name = safeExportName(requestedName)
+        val dir = File(activity.cacheDir, "shared").apply { mkdirs() }
+        val out = File(dir, name)
+        out.writeText(content, Charsets.UTF_8)
+        val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", out)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            // text/plain (not text/markdown): the share sheet only lists apps
+            // whose intent filters match the type, and many note/mail targets
+            // declare text/plain only. The .md extension still carries the
+            // format, and the payload is plain readable Markdown either way.
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, name)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        // Belt-and-suspenders for OEM chooser quirks (see shareEngineLog).
+        val chooser = Intent.createChooser(send, "Export conversation")
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        activity.startActivity(chooser)
+        EngineLog.append(activity, "export: shared conversation $name (${content.length} chars)")
+        return name
+    }
+
+    /**
+     * Keep the renderer's suggested name usable in a FileProvider URI and on
+     * FAT/Documents providers: strip path separators + reserved characters,
+     * collapse whitespace, cap the stem and always end in `.md`.
+     */
+    private fun safeExportName(raw: String): String {
+        val cleaned = raw
+            .replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        val stem = cleaned
+            .removeSuffix(".md")
+            .removeSuffix(".MD")
+            .ifBlank { "anybuff-conversation" }
+        return stem.take(80) + ".md"
+    }
+
+    /**
      * Copy a sandbox file into the device's public Downloads/AnyBuff folder
      * (MediaStore — no storage permission needed on modern Android). The file
      * lands in the system Files app, visible to the user.
@@ -1001,6 +1082,8 @@ class NativeBridge(
             downloadFile: (path) => send('downloadFile', { path }).then(r => ({ ok: r.ok !== false, error: r.error || null })),
             // Diagnostics export: full engine log → Android share sheet (.txt).
             shareEngineLog: () => send('shareLog').then(r => ({ ok: r.ok !== false, error: r.error || null })),
+            // #8 conversation export: Markdown → cache/shared → share sheet.
+            exportConversation: (content, filename) => send('exportConversation', { content: String(content || ''), filename: String(filename || '') }).then(r => ({ ok: r.ok !== false, path: r.path || null, error: r.error || null })),
           };
         })();
         """.trimIndent()
