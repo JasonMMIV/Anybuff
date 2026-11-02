@@ -37,11 +37,17 @@ import { CACHE_DEBUG_FULL_LOGGING } from './constants'
 import { getMCPToolData } from './mcp'
 import { getAgentStreamFromTemplate } from './prompt-agent-stream'
 import { isThinkOnlyResponse } from './util/think-tags'
+import { keepTailForCompaction } from './util/compaction-tail'
+import { isUsableSummary, summaryFromReply } from './util/summary-format'
 import {
   clearProgrammaticRunState,
   runProgrammaticStep,
 } from './run-programmatic-step'
-import { additionalSystemPrompts } from './system-prompt/prompts'
+import {
+  additionalSystemPrompts,
+  hasAdditionalSystemPrompt,
+  isCompactCommandPrompt,
+} from './system-prompt/prompts'
 import { getAgentTemplate } from './templates/agent-registry'
 import { buildAgentToolSet } from './templates/prompts'
 import { getAgentPrompt } from './templates/strings'
@@ -578,17 +584,20 @@ export const runAgentStep = async (
   // stop, a reasoning-only / think-only response, a tool-call-only response, or
   // any recovery note already appended to the history must not collapse the
   // conversation into an empty summary message.
-  const wasCompacted =
-    prompt &&
-    (prompt.toLowerCase() === '/compact' || prompt.toLowerCase() === 'compact')
+  const wasCompacted = isCompactCommandPrompt(prompt)
   if (wasCompacted) {
-    const hasVisibleSummary =
-      fullResponse.trim().length > 0 && !isThinkOnlyResponse(fullResponse)
+    // The summary body, not the raw reply: this drops any preamble the model
+    // wrote before the first heading. A reply that does not match the template
+    // is unusable, and keeping the history beats replacing it with prose.
+    const summary = summaryFromReply(fullResponse)
+    const hasVisibleSummary = summary.length > 0 && isUsableSummary(summary)
     if (!hasVisibleSummary || hadToolCallError) {
       logger.warn(
         {
           hadToolCallError,
           responseLength: fullResponse.length,
+          summaryLength: summary.length,
+          headingCount: (fullResponse.match(/^## /gm) ?? []).length,
           runId: agentState.runId,
           agentId: agentState.agentId,
         },
@@ -606,14 +615,23 @@ export const runAgentStep = async (
       // summary IS the conversation memory. Tagging it as a conversation
       // summary would make the next compaction parse it into an empty
       // previous-summary and erase it (context-compaction plan D1).
+      // Keep the most recent exchanges verbatim: a summary cannot carry an
+      // exact tool output shape or a user request's wording. The
+      // slice is bounded by COMPACT_TAIL_MAX_TOKENS and always starts on an
+      // assistant, so the latest request lives in the summary above; a
+      // leading user turn would repeat the user role, which Anthropic rejects.
       agentState.messageHistory = [
         userMessage(
           withSystemTags(
-            `The following is a summary of the conversation between you and the user. The conversation continues after this summary:\n\n${fullResponse}`,
+            `The following is a summary of the conversation between you and the user. The conversation continues after this summary:\n\n${summary}`,
           ),
         ),
+        ...keepTailForCompaction({ messages: history }),
       ]
-      logger.debug({ summary: fullResponse }, 'Compacted messages')
+      logger.debug(
+        { summary, tailMessages: agentState.messageHistory.length - 1 },
+        'Compacted messages',
+      )
     }
   }
 
@@ -855,6 +873,10 @@ export async function loopAgentSteps(
     resolveContextOutputTokens: resolveContextOutputTokensFromParams,
   } = params
 
+  // A manual /compact turn is single-step by contract: the summary (or the
+  // compact_skipped notice) is the whole outcome, so the loop ends after it.
+  const manualCompaction = isCompactCommandPrompt(prompt)
+
   // Resolve the actual context window for the loop scope (used by compaction).
   const loopMaxContextTokens =
     resolveContextWindowFromParams?.(params.agentId, agentTemplate.model) ??
@@ -984,17 +1006,22 @@ export async function loopAgentSteps(
 
         // James: Deprecate the below, only use tags, which are not prescriptive.
         keepDuringTruncation: true,
+
+        // The /compact command is per-turn scaffolding: on success the summary
+        // replaces the history, and on a skipped attempt the user should not be
+        // left with a permanent "/compact" + instruction pair in the context.
+        ...(manualCompaction ? { timeToLive: 'userPrompt' as const } : {}),
       },
       prompt &&
-        prompt in additionalSystemPrompts &&
-        userMessage(
-          withSystemInstructionTags(
+        hasAdditionalSystemPrompt(prompt) &&
+        userMessage({
+          content: withSystemInstructionTags(
             additionalSystemPrompts[
               prompt as keyof typeof additionalSystemPrompts
             ],
           ),
-        ),
-      ,
+          ...(manualCompaction ? { timeToLive: 'userPrompt' as const } : {}),
+        }),
     ],
 
     instructionsPrompt &&
@@ -1004,6 +1031,11 @@ export async function loopAgentSteps(
 
         // James: Deprecate the below, only use tags, which are not prescriptive.
         keepLastTags: ['INSTRUCTIONS_PROMPT'],
+
+        // Regenerated every turn: an unexpired copy accumulates one full
+        // instructions prompt per turn and inflates contextTokenCount, which
+        // makes mechanical compaction fire earlier than the payload requires.
+        timeToLive: 'userPrompt' as const,
       }),
   )
 
@@ -1292,6 +1324,10 @@ export async function loopAgentSteps(
       shouldEndTurn = llmShouldEndTurn
       nResponses = generatedResponses
 
+      // Do not rely on shouldEndTurn: a summary step that also completed a tool
+      // call reports false, and continuing would act on a just-replaced history.
+      if (manualCompaction) break
+
       currentPrompt = undefined
       currentParams = undefined
 
@@ -1335,7 +1371,12 @@ export async function loopAgentSteps(
 
     return {
       agentState: currentAgentState,
-      output: getAgentOutput(currentAgentState, agentTemplate),
+      output: manualCompaction
+        ? // A /compact turn has no new assistant reply to report: the summary
+          // is shown from the stream, and the empty lastMessage keeps the host
+          // from classifying a successful compaction as an interrupted run.
+          { type: 'lastMessage' as const, value: [] }
+        : getAgentOutput(currentAgentState, agentTemplate),
     }
   } catch (error) {
     // Handle user-initiated aborts separately - don't log as errors

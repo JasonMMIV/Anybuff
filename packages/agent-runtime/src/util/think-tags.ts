@@ -1,21 +1,24 @@
 /**
- * Strip XML-style <think> scaffolding from a model response.
+ * Strip XML-style think scaffolding from a model response.
  *
- * Handles:
- * - Paired tags: <think>...</think>
- * - Unclosed open tags: <think>... (truncated mid-thought)
- * - Orphan close tags: </think>
+ * Handles both ` thinking` and `<thinking>` spellings:
+ * - Paired tags:  thinking...</think> or <thinking>...</thinking>
+ * - Unclosed open tags:  thinking... (truncated mid-thought)
+ * - Orphan close tags: </think> or </thinking>
  *
  * Orphan closes show up with native-reasoning models (notably Kimi via
  * Alibaba/Infron): reasoning lands in `reasoning_content`, then content is
  * sometimes just `"</think> "`. Treating that as real text ends the agent
- * turn with no tool calls.
+ * turn with no tool calls. The `<thinking>` variant leaks the same way from
+ * other providers and must not defeat the think-only guard.
+ *
+ * Deliberately case-sensitive, matching the previous behavior.
  */
 export function stripThinkTags(text: string): string {
   return text
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    .replace(/<think>[\s\S]*$/g, '')
-    .replace(/<\/think>/g, '')
+    .replace(/<(?:think|thinking)>[\s\S]*?<\/(?:think|thinking)>/g, '')
+    .replace(/<(?:think|thinking)>[\s\S]*$/g, '')
+    .replace(/<\/(?:think|thinking)>/g, '')
     .trim()
 }
 

@@ -97,15 +97,12 @@ interface ComposerProps {
   interviewArmed?: boolean
   /** #6: /init — analyze the project and create/update the root knowledge.md. */
   onInitKnowledge: () => void
+  /** Manual /compact — opens the confirmation modal. */
+  onCompactRequest: () => void
 }
 
 import { getReasoningOptionsForModel, hasKnownLadderForModel } from '../utils/reasoning'
-
-const SLASH_COMMANDS: { id: string; label: string; description: string }[] = [
-  { id: 'init', label: 'init', description: 'Analyze the project and create/update knowledge.md (project long-term memory)' },
-  { id: 'review', label: 'review', description: 'Structured code review with scope presets' },
-  { id: 'interview', label: 'interview', description: 'Interrogate your request into a detailed spec' }
-]
+import { SLASH_COMMANDS } from '../utils/composer-commands'
 
 type Mention =
   | { kind: 'file'; query: string }
@@ -296,7 +293,8 @@ export default function Composer(props: ComposerProps) {
     onArmInterview,
     onDisarmInterview,
     interviewArmed,
-    onInitKnowledge
+    onInitKnowledge,
+    onCompactRequest
   } = props
 
   const shortcutLabel = useMemo(() => (isMacPlatform() ? '\u2318+Enter' : 'Ctrl+Enter'), [])
@@ -450,6 +448,7 @@ export default function Composer(props: ComposerProps) {
       if (skill.id === 'review') onReviewRequest()
       else if (skill.id === 'interview') onArmInterview()
       else if (skill.id === 'init') onInitKnowledge()
+      else if (skill.id === 'compact') onCompactRequest()
       return
     }
     replaceToken(`/skill:${(skill as SkillInfo).name} `)

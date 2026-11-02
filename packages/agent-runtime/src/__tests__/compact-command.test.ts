@@ -48,6 +48,30 @@ import type { PrintModeEvent } from '@codebuff/common/types/print-mode'
 const SUMMARY_PREFIX =
   'The following is a summary of the conversation between you and the user.'
 
+const VALID_SUMMARY = `## Objective
+Fix the login bug in auth.ts and keep the session flow working.
+
+## Requirements
+Keep the existing session cookie format and the public login API unchanged.
+
+## Decisions
+Reused the existing token helper instead of adding a new dependency.
+
+## Work State
+The fix is written but not committed; no tests have been run yet.
+
+## Next Move
+Run the auth test suite and then commit the change.
+
+## Relevant Files
+src/auth.ts — the token check that was corrected.
+
+## Important Context
+The failing error string was "invalid signature" from the old verifier.
+
+## Latest Exchange
+The user asked for the login bug; the assistant fixed the verifier.`
+
 const textOf = (message: Message): string =>
   Array.isArray(message.content)
     ? message.content
@@ -78,7 +102,10 @@ describe('/compact command guard', () => {
     handleSteps: undefined,
   } satisfies AgentTemplate as AgentTemplate
 
-  const runCompact = async (chunks: StreamChunk[]) => {
+  const runCompact = async (
+    chunks: StreamChunk[],
+    options?: { prompt?: string },
+  ) => {
     const {
       agentTemplate: _,
       localAgentTemplates: __,
@@ -121,7 +148,7 @@ describe('/compact command guard', () => {
         output: undefined,
         stepsRemaining: 5,
       },
-      prompt: '/compact',
+      prompt: options?.prompt ?? '/compact',
       spawnParams: undefined,
       fingerprintId: 'test-fingerprint',
       fileContext: mockFileContext,
@@ -233,23 +260,146 @@ describe('/compact command guard', () => {
   })
 
   it('replaces the history with an untagged summary on a clean summary', async () => {
-    const result = await runCompact([
-      { type: 'text', text: 'Earlier we fixed the login bug in auth.ts.' },
-    ])
+    const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }])
     const history = result.agentState.messageHistory
 
-    expect(history).toHaveLength(1)
-    expect(historyText(history)).toContain(SUMMARY_PREFIX)
-    expect(historyText(history)).toContain('Earlier we fixed the login bug')
+    expect(history[0]?.role).toBe('user')
+    expect(textOf(history[0]!)).toContain(SUMMARY_PREFIX)
+    expect(textOf(history[0]!)).toContain('## Objective')
     expect(history[0]?.tags ?? []).not.toContain('CONVERSATION_SUMMARY')
-    expect(historyText(history)).not.toContain('<conversation_summary>')
+    expect(textOf(history[0]!)).not.toContain('<conversation_summary>')
     expect(compactionEvents()).toHaveLength(0)
   })
 
-  it('keeps the /compact prose as an ordinary user entry on the next compaction', async () => {
+  it('keeps a verbatim tail after the summary', async () => {
+    const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }])
+    const history = result.agentState.messageHistory
+
+    expect(history).toHaveLength(2)
+    expect(history[1]?.role).toBe('assistant')
+    expect(textOf(history[1]!)).toContain('I fixed the login bug in auth.ts.')
+  })
+
+  it('drops a preamble before the first heading', async () => {
     const result = await runCompact([
-      { type: 'text', text: 'Earlier we fixed the login bug in auth.ts.' },
+      { type: 'text', text: `Sure, here is the summary.\n\n${VALID_SUMMARY}` },
     ])
+    const text = textOf(result.agentState.messageHistory[0]!)
+
+    expect(text).not.toContain('Sure, here is the summary.')
+    expect(text).toContain('## Objective')
+  })
+
+  it('reports a compact turn as an empty last message, not an error', async () => {
+    const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }])
+
+    expect(result.output).toEqual({ type: 'lastMessage', value: [] })
+  })
+
+  it('does not rewrite the history for /Compact, /COMPACT or Compact', async () => {
+    for (const prompt of ['/Compact', '/COMPACT', 'Compact', '/compact ']) {
+      const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }], {
+        prompt,
+      })
+      const history = result.agentState.messageHistory
+
+      expect(historyText(history)).toContain('earlier turn: fix the login bug')
+      expect(historyText(history)).not.toContain(SUMMARY_PREFIX)
+      expect(compactionEvents()).toHaveLength(0)
+    }
+  })
+
+  it('does not overwrite the history when a translated summary has too few sections', async () => {
+    const fiveSections = `## 目標
+${'x'.repeat(300)}
+
+## 需求
+- keep it
+
+## 決策
+- reuse
+
+## 工作狀態
+- done
+
+## 下一步
+- test`
+    const result = await runCompact([{ type: 'text', text: fiveSections }])
+
+    expect(historyText(result.agentState.messageHistory)).toContain(
+      'earlier turn: fix the login bug',
+    )
+    expect(compactionEvents()).toHaveLength(1)
+  })
+
+  it('does not overwrite the history when the summary is too short', async () => {
+    const tiny = [
+      'Objective',
+      'Requirements',
+      'Decisions',
+      'Work State',
+      'Next Move',
+      'Relevant Files',
+      'Important Context',
+      'Latest Exchange',
+    ]
+      .map((heading) => `## ${heading}
+- x`)
+      .join('\n\n')
+    const result = await runCompact([{ type: 'text', text: tiny }])
+
+    expect(historyText(result.agentState.messageHistory)).toContain(
+      'earlier turn: fix the login bug',
+    )
+    expect(compactionEvents()).toHaveLength(1)
+  })
+
+  it('refuses a summary body that contains the mechanical summary tag', async () => {
+    const result = await runCompact([
+      {
+        type: 'text',
+        text: VALID_SUMMARY.replace(
+          '## Objective',
+          '<conversation_summary> ## Objective',
+        ),
+      },
+    ])
+
+    expect(historyText(result.agentState.messageHistory)).toContain(
+      'earlier turn: fix the login bug',
+    )
+    expect(compactionEvents()).toHaveLength(1)
+  })
+
+  it('does not inject a system instruction for inherited object keys', async () => {
+    const result = await runCompact([{ type: 'text', text: 'hello' }], {
+      prompt: 'toString',
+    })
+    const text = historyText(result.agentState.messageHistory)
+
+    expect(text).toContain('toString')
+    expect(text).not.toContain('function toString')
+    expect(text).not.toContain('<system_instructions>')
+  })
+
+  it('leaves no /compact scaffolding in the history after a skipped attempt', async () => {
+    const result = await runCompact([], { prompt: '/compact' })
+    const text = historyText(result.agentState.messageHistory)
+
+    expect(text).not.toContain('/compact')
+    expect(text).not.toContain('User has typed "compact"')
+  })
+
+  it('keeps an ordinary prompt in the history', async () => {
+    const result = await runCompact([{ type: 'text', text: 'hello' }], {
+      prompt: 'hello',
+    })
+
+    expect(historyText(result.agentState.messageHistory)).toContain('hello')
+  })
+
+  it('keeps the /compact summary as an ordinary user entry on the next compaction', async () => {
+    const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }])
     const compacted = compactMessages({
       messages: [
         ...result.agentState.messageHistory,
@@ -257,7 +407,7 @@ describe('/compact command guard', () => {
       ],
     })
 
-    expect(compacted.summaryText).toContain('Earlier we fixed the login bug')
+    expect(compacted.summaryText).toContain('Fix the login bug in auth.ts')
     // Not recognized as a previous summary: the untagged prose enters through
     // the ordinary user branch instead of being parsed into an empty memory.
     expect(compacted.stats.previous_summary_entry_count).toBe(0)

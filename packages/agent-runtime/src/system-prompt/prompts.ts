@@ -61,10 +61,46 @@ If the user sends you the url to a page that is helpful now or could be helpful 
 `.trim()
 
 const compactPrompt = `
-User has typed "compact". Summarize the current conversation and prepare it to replace the existing message history.
+User has typed "compact". Replace the conversation history with a structured
+summary that another agent can resume from.
 
-1. Summarize the entire conversation up to this point (excluding this 'compact' command).
-2. The summary should be detailed and must capture the key decisions, analysis, changes, and outcomes.
+Summarize the entire conversation up to this point, excluding this compact
+command. Return ONLY the summary, using exactly these sections in this order.
+Do not call tools. Do not mention the summary process or that context was
+compacted.
+
+## Objective
+One or two sentences: what the user is trying to achieve.
+
+## Requirements
+Constraints and preferences that still apply.
+
+## Decisions
+Decisions made, one clause of reasoning each.
+
+## Work State
+What is done, what is in progress, what is blocked. Say whether changes are
+uncommitted, committed, or pushed.
+
+## Next Move
+The single next action, specific enough to start without re-reading the
+conversation.
+
+## Relevant Files
+Exact paths, with a one-line note on why each matters.
+
+## Important Context
+Facts, error strings, commands, identifiers, and URLs that must not be lost.
+
+## Latest Exchange
+What the user asked last, and what the assistant did or answered.
+
+Rules:
+- Terse single-line bullets. No prose paragraphs, no nested lists.
+- Preserve exact paths, symbols, commands, error strings, URLs, identifiers.
+- Prefer short references over restating code.
+- Carry forward only user requests that are still unanswered or need action.
+- If a section has nothing, write "- (none)".
 `.trim()
 
 const exportPrompt = `
@@ -99,6 +135,23 @@ User has typed "init". Help them set up project knowledge files for better resul
 3. Prefer reading existing docs (e.g. README, package.json, scripts) before writing.
 4. Use the \`write_file\` tool to create/update \`knowledge.md\`. Do not mention any deprecated configuration files.
 `.trim()
+
+/**
+ * `Object.hasOwn` — not `in`: `'toString' in additionalSystemPrompts` is true,
+ * and the injected value would be Function.prototype.toString's source. The
+ * injection path and the rewrite guard must agree on this one fact.
+ */
+export function hasAdditionalSystemPrompt(prompt: string | undefined): boolean {
+  return prompt !== undefined && Object.hasOwn(additionalSystemPrompts, prompt)
+}
+
+export function isCompactCommandPrompt(prompt: string | undefined): boolean {
+  return (
+    hasAdditionalSystemPrompt(prompt) &&
+    additionalSystemPrompts[prompt as keyof typeof additionalSystemPrompts] ===
+      compactPrompt
+  )
+}
 
 export const additionalSystemPrompts = {
   '/init': initPrompt,

@@ -8,6 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
+import CompactConfirmModal from './components/CompactConfirmModal'
 import DiagnosticsModal from './components/DiagnosticsModal'
 import RunElapsed from './components/RunElapsed'
 import {
@@ -537,6 +538,8 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false)
   // #5 第二批：/review scope picker 與 /interview 模式狀態
   const [reviewScopeOpen, setReviewScopeOpen] = useState(false)
+  /** Manual /compact: the confirmation modal owns the send, not the composer. */
+  const [compactConfirmOpen, setCompactConfirmOpen] = useState(false)
   const [interviewArmed, setInterviewArmed] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [followups, setFollowups] = useState<FollowupItem[]>([])
@@ -2433,6 +2436,7 @@ export default function App() {
     { open: showSettings, close: () => (handleCloseSettings(), true) },
     { open: showDiagnostics, close: () => (setShowDiagnostics(false), true) },
     { open: reviewScopeOpen, close: () => (setReviewScopeOpen(false), true) },
+    { open: compactConfirmOpen, close: () => (setCompactConfirmOpen(false), true) },
     { open: pendingRevert !== null, close: () => (setPendingRevert(null), true) },
     { open: previewFile !== null, close: () => (setPreviewFile(null), true) },
     { open: editMenu !== null, close: () => (setEditMenu(null), true) },
@@ -3263,6 +3267,18 @@ export default function App() {
             {reviewScopeOpen && (
               <ReviewScopePanel onClose={() => setReviewScopeOpen(false)} onRun={runReviewScope} />
             )}
+            {compactConfirmOpen && (
+              <CompactConfirmModal
+                used={tokenUsage?.used ?? 0}
+                max={tokenUsage?.max ?? 0}
+                running={viewRunning}
+                onClose={() => setCompactConfirmOpen(false)}
+                onConfirm={() => {
+                  setCompactConfirmOpen(false)
+                  void send('/compact', '/compact')
+                }}
+              />
+            )}
             {showDiagnostics && <DiagnosticsModal onClose={() => setShowDiagnostics(false)} />}
             <Sidebar
               open={leftOpen}
@@ -3674,6 +3690,9 @@ export default function App() {
                     onDisarmInterview={() => setInterviewArmed(false)}
                     interviewArmed={interviewArmed}
                     onInitKnowledge={runInitKnowledge}
+                    onCompactRequest={() => {
+                      if (!viewRunning && !busyElsewhere) setCompactConfirmOpen(true)
+                    }}
                     running={viewRunning}
                     stopping={viewStopping}
                     steerable={composerSteerable}

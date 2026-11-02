@@ -1,21 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { UiEvent } from '../../../preload'
-
-const EVENT_META: Record<string, { icon: string; label: string }> = {
-  start: { icon: '▶', label: 'Started' },
-  finish: { icon: '✓', label: 'Finished' },
-  subagent_start: { icon: '◈', label: 'Sub-agent started' },
-  subagent_finish: { icon: '◇', label: 'Sub-agent finished' },
-  tool_start: { icon: '⚙', label: 'Running tool' },
-  tool_call: { icon: '⚙', label: 'Tool call' },
-  tool_result: { icon: '▤', label: 'Tool result' },
-  phase: { icon: '≋', label: 'Phase' },
-  error: { icon: '✕', label: 'Error' },
-  download: { icon: '↓', label: 'Download' },
-  provider_status: { icon: '⇄', label: 'Provider' },
-  context_compaction: { icon: '□', label: 'Context compacted' },
-  job_update: { icon: '⚙', label: 'Job update' }
-}
+import { metaForEvent } from '../utils/activity-meta'
 
 type Tab = 'activity' | 'diff'
 type Filter = 'all' | 'tools' | 'agents' | 'errors'
@@ -236,7 +221,7 @@ export default function ActivityPanel({ events, cwd, onOpenFile }: Props) {
               </div>
             )}
             {filtered.map((e, i) => {
-              const meta = EVENT_META[e.type] ?? { icon: '·', label: e.type }
+              const meta = metaForEvent(e)
               const detail = e.toolName ?? e.agentType ?? e.status ?? e.message ?? ''
               const isLast = i === filtered.length - 1
               return (
