@@ -1113,7 +1113,14 @@ export default function App() {
         return
       }
 
-      if (event.type === 'context_window' && typeof event.used === 'number' && typeof event.max === 'number') {
+      if (
+        event.type === 'context_window' &&
+        typeof event.used === 'number' &&
+        typeof event.max === 'number'
+      ) {
+        // Per-task, like every other conversation event: a background run must
+        // never overwrite the viewed conversation's context reading.
+        if (!event.taskId || event.taskId !== currentTaskRef.current) return
         setTokenUsage({ used: event.used, max: event.max })
         return
       }
@@ -2792,6 +2799,9 @@ export default function App() {
   const onOpenTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord) => {
       await onOpenProject(project.path)
+      // Reset first: same-project switches skip onOpenProject's early return, so
+      // a stale count from the previous task must never gate /compact below.
+      setTokenUsage(null)
       // Same-project task switches skip onOpenProject's early return, so clear
       // the per-turn attachment strip here too — attachments never follow the
       // user across conversations.
@@ -2816,6 +2826,8 @@ export default function App() {
           canResume?: boolean
           resumeReason?: string
           resumeErrorMessage?: string
+          contextTokenCount?: number
+          contextWindowTokensByMode?: Partial<Record<AgentMode, number>>
         }
         // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
         const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
@@ -2828,6 +2840,15 @@ export default function App() {
         }) as ChatItem[]
         setChatItems(items)
         setViewTask(task.id)
+        // Hydrate the context reading from the persisted run state: without it a
+        // reopened conversation shows 0/0 and `/compact` stays disabled until a
+        // new run emits its first `context_window` event.
+        if (typeof view.contextTokenCount === 'number') {
+          setTokenUsage({
+            used: view.contextTokenCount,
+            max: view.contextWindowTokensByMode?.[agentMode] ?? 0,
+          })
+        }
         if (view.ok && view.canResume && view.status !== 'running') {
           setResumeInfo({
             prompt: task.prompt,
@@ -2848,7 +2869,7 @@ export default function App() {
       // No setPrompt('') — the draft-sync effect swaps in this conversation's
       // draft when the view id flips (per-conversation composer memory).
     },
-    [onOpenProject, setViewTask]
+    [agentMode, onOpenProject, setViewTask]
   )
 
   const onRenameTask = useCallback(
@@ -3271,6 +3292,11 @@ export default function App() {
               <CompactConfirmModal
                 used={tokenUsage?.used ?? 0}
                 max={tokenUsage?.max ?? 0}
+                usageKnown={tokenUsage !== null}
+                hasConversation={chatItems.some(
+                  (item) =>
+                    item.kind === 'user' || item.kind === 'assistant',
+                )}
                 running={viewRunning}
                 onClose={() => setCompactConfirmOpen(false)}
                 onConfirm={() => {

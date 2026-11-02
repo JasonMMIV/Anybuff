@@ -135,6 +135,10 @@ export interface TaskViewSnapshot {
   resumeReason?: string
   resumeErrorMessage?: string
   resumeSource?: 'memory' | 'runstate' | 'checkpoint'
+  /** Last locally-estimated context size persisted with the run state. */
+  contextTokenCount?: number
+  /** Current model window per UI mode, resolved when the view is read. */
+  contextWindowTokensByMode?: Partial<Record<UIAgentMode, number>>
 }
 
 /** Update lifecycle events forwarded over AnyBuff:updateEvent. */

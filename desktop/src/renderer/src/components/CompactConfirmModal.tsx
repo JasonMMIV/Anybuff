@@ -11,6 +11,10 @@ interface CompactConfirmModalProps {
   used: number
   max: number
   running: boolean
+  /** False when the task has no measurement yet (reopened conversation). */
+  usageKnown?: boolean
+  /** False when the conversation has no user/assistant turns yet. */
+  hasConversation?: boolean
   onClose: () => void
   onConfirm: () => void
 }
@@ -19,10 +23,18 @@ export default function CompactConfirmModal({
   used,
   max,
   running,
+  usageKnown = true,
+  hasConversation = true,
   onClose,
   onConfirm,
 }: CompactConfirmModalProps) {
-  const state = compactConfirmState({ used, max, running })
+  const state = compactConfirmState({
+    used,
+    max,
+    running,
+    usageKnown,
+    hasConversation,
+  })
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -39,8 +51,11 @@ export default function CompactConfirmModal({
           details it leaves out are lost to the model.
         </p>
         <p className="review-scope-hint">
-          Current context: {formatTokenCount(used)} / {formatTokenCount(max)}{' '}
-          tokens
+          {usageKnown
+            ? max > 0
+              ? `Current context: ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens`
+              : `Current context: ${formatTokenCount(used)} tokens`
+            : 'Context usage will be measured during compaction.'}
         </p>
         {state.note && <p className="review-scope-hint">{state.note}</p>}
         <div className="modal-actions">
