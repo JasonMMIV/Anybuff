@@ -440,8 +440,10 @@ function sendEvent(event: UiEvent): void {
   }
 }
 
-/** Normalize the SDK's PrintModeEvent into a compact event the UI can render */
-function normalizeEvent(event: PrintModeEvent): UiEvent {
+/** Normalize the SDK's PrintModeEvent into a compact event the UI can render.
+ *  Exported so the host contract tests can pin the wire fields (e.g. the
+ *  `/compact` skip message) without spinning up a full run. */
+export function normalizeEvent(event: PrintModeEvent): UiEvent {
   const e = event as unknown as Record<string, unknown>
   const type = String(e.type ?? 'unknown')
   const base: UiEvent = { type }
@@ -625,6 +627,11 @@ function normalizeEvent(event: PrintModeEvent): UiEvent {
       // Surfaced so users understand why very old context may be summarized.
       base.action = String(e.action ?? '')
       base.status = String(e.action ?? '')
+      // `compact_skipped` carries the runtime's user-facing explanation; the
+      // host persists/renders it instead of inventing a second copy.
+      if (typeof e.message === 'string' && e.message.length > 0) {
+        base.message = e.message
+      }
       break
     case 'reasoning_delta':
       base.text = String(e.delta ?? e.chunk ?? e.text ?? '')

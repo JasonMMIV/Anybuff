@@ -118,6 +118,22 @@ export type PrintModeContextWindow = z.infer<
   typeof printModeContextWindowSchema
 >
 
+/**
+ * Context-compaction notice. AnyBuff addition (ADR-37): the runtime emits
+ * `compact_skipped` when a manual `/compact` produced no usable summary, so
+ * hosts can show a user-visible note instead of silently doing nothing.
+ * Hosts already emit the same event name for `mechanical_trim` /
+ * `overflow_resume`; this variant is the runtime's wire shape.
+ */
+export const printModeContextCompactionSchema = z.object({
+  type: z.literal('context_compaction'),
+  action: z.string(),
+  message: z.string().optional(),
+})
+export type PrintModeContextCompaction = z.infer<
+  typeof printModeContextCompactionSchema
+>
+
 export const printModeEventSchema = z.discriminatedUnion('type', [
   printModeDownloadStatusSchema,
   printModeErrorSchema,
@@ -130,6 +146,7 @@ export const printModeEventSchema = z.discriminatedUnion('type', [
   printModeToolResultSchema,
 
   printModeContextWindowSchema,
+  printModeContextCompactionSchema,
   printModeReasoningDeltaSchema,
 ])
 

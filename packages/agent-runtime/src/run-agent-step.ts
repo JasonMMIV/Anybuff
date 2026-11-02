@@ -7,6 +7,10 @@ import {
   supportsCacheControl,
 } from '@codebuff/common/old-constants'
 import { TOOLS_WHICH_WONT_FORCE_NEXT_STEP } from '@codebuff/common/tools/constants'
+import {
+  COMPACT_SKIPPED_ACTION,
+  COMPACT_SKIPPED_MESSAGE,
+} from '@codebuff/common/constants/compaction'
 import { buildArray } from '@codebuff/common/util/array'
 import {
   AbortError,
@@ -569,19 +573,48 @@ export const runAgentStep = async (
     'agentStep',
   )
 
-  // Handle /compact command: replace message history with the summary
+  // Handle /compact command: replace message history with the summary.
+  // This step must have produced a usable summary AND no error. A silent empty
+  // stop, a reasoning-only / think-only response, a tool-call-only response, or
+  // any recovery note already appended to the history must not collapse the
+  // conversation into an empty summary message.
   const wasCompacted =
     prompt &&
     (prompt.toLowerCase() === '/compact' || prompt.toLowerCase() === 'compact')
   if (wasCompacted) {
-    agentState.messageHistory = [
-      userMessage(
-        withSystemTags(
-          `The following is a summary of the conversation between you and the user. The conversation continues after this summary:\n\n${fullResponse}`,
+    const hasVisibleSummary =
+      fullResponse.trim().length > 0 && !isThinkOnlyResponse(fullResponse)
+    if (!hasVisibleSummary || hadToolCallError) {
+      logger.warn(
+        {
+          hadToolCallError,
+          responseLength: fullResponse.length,
+          runId: agentState.runId,
+          agentId: agentState.agentId,
+        },
+        'Ignoring /compact without a clean visible summary; history preserved',
+      )
+      // A log alone is a silent no-op in the chat UI: the user typed /compact
+      // and nothing happened. Surface it through the existing run-event channel.
+      onResponseChunk({
+        type: 'context_compaction',
+        action: COMPACT_SKIPPED_ACTION,
+        message: COMPACT_SKIPPED_MESSAGE,
+      })
+    } else {
+      // Deliberately untagged and un-enveloped: after this replacement the
+      // summary IS the conversation memory. Tagging it as a conversation
+      // summary would make the next compaction parse it into an empty
+      // previous-summary and erase it (context-compaction plan D1).
+      agentState.messageHistory = [
+        userMessage(
+          withSystemTags(
+            `The following is a summary of the conversation between you and the user. The conversation continues after this summary:\n\n${fullResponse}`,
+          ),
         ),
-      ),
-    ]
-    logger.debug({ summary: fullResponse }, 'Compacted messages')
+      ]
+      logger.debug({ summary: fullResponse }, 'Compacted messages')
+    }
   }
 
   const hasNoToolResults =

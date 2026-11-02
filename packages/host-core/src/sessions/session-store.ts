@@ -9,6 +9,10 @@ import {
   saveTaskRunState,
   saveTaskTranscript
 } from '../settings/settings'
+import {
+  COMPACT_SKIPPED_ACTION,
+  COMPACT_SKIPPED_MESSAGE,
+} from '@codebuff/common/constants/compaction'
 import { isContextOverflowMessage } from '@codebuff/sdk'
 
 /**
@@ -253,11 +257,22 @@ export function applyEvent(taskId: string, ev: StoreEvent): void {
     case 'context_compaction': {
       // Make context compaction visible instead of looking like amnesia.
       const action = String((ev as unknown as Record<string, unknown>).action ?? '')
+      const skipped = action === COMPACT_SKIPPED_ACTION
+      const skippedMessage = ev.message?.trim()
       const note =
         action === 'mechanical_trim'
           ? 'Older tool outputs were trimmed to fit the context window.'
-          : 'Earlier messages were summarized to fit the context window.'
-      entry.transcript.push({ kind: 'compaction', text: note, createdAt: Date.now() })
+          : skipped
+            ? skippedMessage || COMPACT_SKIPPED_MESSAGE
+            : 'Earlier messages were summarized to fit the context window.'
+      entry.transcript.push({
+        kind: skipped ? 'system' : 'compaction',
+        text: note,
+        createdAt: Date.now()
+      })
+      // The skipped notice must survive a crash before the run settles;
+      // mechanical-trim notes keep their existing finish-time persistence.
+      if (skipped) persistSoon(entry)
       return
     }
     case 'finish': {

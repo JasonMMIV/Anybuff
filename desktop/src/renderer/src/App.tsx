@@ -32,6 +32,7 @@ import {
 import { AssistantBubble, ThoughtBlock, TodoCard, ToolCard, UserBubble, type TodoTodo, type ToolItem } from './components/ChatMessage'
 import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
 import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
+import { compactionNote } from './utils/compaction-note'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
@@ -1138,11 +1139,7 @@ export default function App() {
       }
 
       if (event.type === 'context_compaction') {
-        const note =
-          event.action === 'mechanical_trim'
-            ? 'Older tool outputs were trimmed to fit the context window.'
-            : 'Earlier messages were summarized to fit the context window.'
-        setChatItems((prev) => [...prev, { kind: 'compaction', text: note }])
+        setChatItems((prev) => [...prev, compactionNote(event)])
         return
       }
 
