@@ -138,3 +138,12 @@ the Goal. Full write-up: maintenance guide ADR-24.
   moves params out of the user message, drop the tag + strip.
 - Re-run `bun scripts/generate-desktop-agents.ts` after touching
   agents/context-pruner.ts (the bundle bakes a copy of it).
+
+## Registered divergence: no Codebuff commit footer (ADR-36)
+
+`common/src/tools/params/tool/run-terminal-command.ts` — `gitCommitGuidePrompt`
+no longer asks the model to append `Generated with Codebuff` /
+`Co-Authored-By: Codebuff` to commits, and the tool example no longer shows that
+footer. AnyBuff commits belong to the user, not the upstream brand.
+`common/src/tools/params/tool/__tests__/run-terminal-command-commit-guide.test.ts`
+locks this; upstream merges touching the file must re-apply the removal.

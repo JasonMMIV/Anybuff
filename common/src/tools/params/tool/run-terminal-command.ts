@@ -90,18 +90,11 @@ When the user requests a new git commit, please follow these steps closely:
    - Ensure the message provides clarity—avoid generic or vague terms like “Update” or “Fix” without context.
    - Revisit your draft to confirm it truly reflects the changes and their intention.
 
-4. **Create the commit, ending with this specific footer:**
-   \`\`\`
-   Generated with Codebuff 🤖
-   Co-Authored-By: Codebuff <noreply@codebuff.com>
-   \`\`\`
+4. **Create the commit:**
    Commands run in bash on every OS (Git Bash on Windows), so always use HEREDOC syntax to format the message:
    \`\`\`
    git commit -m "$(cat <<'EOF'
    Your commit message here.
-
-   🤖 Generated with Codebuff
-   Co-Authored-By: Codebuff <noreply@codebuff.com>
    EOF
    )"
    \`\`\`
@@ -193,10 +186,7 @@ ${$getNativeToolCallExampleString({
   toolName,
   inputSchema,
   input: {
-    command: `git commit -m "Your commit message here.
-
-🤖 Generated with Codebuff
-Co-Authored-By: Codebuff <noreply@codebuff.com>"`,
+    command: `git commit -m "Your commit message here."`,
   },
   endsAgentStep,
 })}
