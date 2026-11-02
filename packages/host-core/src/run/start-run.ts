@@ -775,7 +775,7 @@ export function resetOverflowResumeCount(taskId: string): void {
 /** The model string a resume attempt should size its compaction target for.
  * Structural pick keeps this decoupled from the settings module's internal
  * PersistedSettings shape (loadSettings()'s return satisfies it). */
-function resolveRoutedModelForRun(
+export function resolveRoutedModelForRun(
   settings: { activeModel?: string; agentRouting?: Record<string, AgentRoute> },
   agentId: string,
 ): string | undefined {

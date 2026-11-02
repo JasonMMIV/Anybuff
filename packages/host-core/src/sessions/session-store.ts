@@ -513,6 +513,15 @@ interface RunStateLike {
   output?: { type?: string; message?: string; error?: string }
 }
 
+/** Last locally-estimated context size persisted with the run state. */
+function readContextTokenCount(runState: unknown): number | undefined {
+  const rs = runState as
+    | { sessionState?: { mainAgentState?: { contextTokenCount?: unknown } } }
+    | null
+  const count = rs?.sessionState?.mainAgentState?.contextTokenCount
+  return typeof count === 'number' && Number.isFinite(count) ? count : undefined
+}
+
 function isErrorOutput(runState: unknown): boolean {
   const rs = runState as RunStateLike | null
   return Boolean(rs && typeof rs === 'object' && rs.output?.type === 'error')
@@ -655,7 +664,8 @@ export function getSessionSnapshot(taskId: string): TaskViewSnapshot {
       status: entry.status,
       canResume: resumable,
       resumeReason: resumable ? classifyFailure(message ?? '') : undefined,
-      resumeErrorMessage: message
+      resumeErrorMessage: message,
+      contextTokenCount: readContextTokenCount(entry.runState)
     }
   }
 
@@ -689,6 +699,7 @@ export function getSessionSnapshot(taskId: string): TaskViewSnapshot {
     canResume: interrupted || (crashedMidTurn && Boolean(loadTaskCheckpoint(taskId))),
     resumeReason: interrupted || crashedMidTurn ? classifyFailure(message ?? '') : undefined,
     resumeErrorMessage: message,
-    resumeSource: checkpointFresher ? 'checkpoint' : 'runstate'
+    resumeSource: checkpointFresher ? 'checkpoint' : 'runstate',
+    contextTokenCount: readContextTokenCount(runState)
   }
 }

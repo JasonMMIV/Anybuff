@@ -1469,6 +1469,16 @@ export async function loopAgentSteps(
     const statusCode = apiErrorDetails.statusCode
 
     const status = signal.aborted ? 'cancelled' : 'failed'
+    // Per-turn scaffolding must not survive a failed turn: replaying the
+    // `/compact` command and its instruction would ask the model to summarize
+    // again instead of answering the next message. Ordinary user messages
+    // carry no TTL, so they stay.
+    if (clearUserPromptMessagesAfterResponse) {
+      currentAgentState.messageHistory = expireMessages(
+        currentAgentState.messageHistory,
+        'userPrompt',
+      )
+    }
     // A failed turn still leaves history behind, and the host still shows the
     // user a context reading before their next message.
     recountContextTokensForTurnEnd()

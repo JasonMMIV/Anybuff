@@ -104,7 +104,7 @@ describe('/compact command guard', () => {
 
   const runCompact = async (
     chunks: StreamChunk[],
-    options?: { prompt?: string },
+    options?: { prompt?: string; fail?: boolean },
   ) => {
     const {
       agentTemplate: _,
@@ -114,6 +114,7 @@ describe('/compact command guard', () => {
 
     runtimeImpl = { ...baseRuntimeParams }
     runtimeImpl.promptAiSdkStream = mock(async function* () {
+      if (options?.fail) throw new Error('mock stream failure')
       for (const chunk of chunks) {
         yield chunk
       }
@@ -294,6 +295,33 @@ describe('/compact command guard', () => {
     const result = await runCompact([{ type: 'text', text: VALID_SUMMARY }])
 
     expect(result.output).toEqual({ type: 'lastMessage', value: [] })
+  })
+
+  it('ends the turn after a summary even when the step calls a tool', async () => {
+    const result = await runCompact([
+      { type: 'text', text: VALID_SUMMARY },
+      createToolCallChunk('read_files', { paths: ['src/auth.ts'] }),
+    ])
+    const history = result.agentState.messageHistory
+
+    // The summary replaced the history before the loop stopped.
+    expect(textOf(history[0]!)).toContain(SUMMARY_PREFIX)
+    // A successful tool call makes `shouldEndTurn` false, so only the explicit
+    // `if (manualCompaction) break` can stop the loop after one model call.
+    expect(runtimeImpl.promptAiSdkStream.mock.calls).toHaveLength(1)
+    expect(result.output).toEqual({ type: 'lastMessage', value: [] })
+  })
+
+  it('drops the /compact scaffolding when the step throws', async () => {
+    const result = await runCompact([], { prompt: '/compact', fail: true })
+    const text = historyText(result.agentState.messageHistory)
+
+    expect(result.output.type).toBe('error')
+    // The scaffolding is gone, but the earlier conversation is not: a failed
+    // turn must never wipe history.
+    expect(text).toContain('earlier turn: fix the login bug')
+    expect(text).not.toContain('/compact')
+    expect(text).not.toContain('User has typed "compact"')
   })
 
   it('does not rewrite the history for /Compact, /COMPACT or Compact', async () => {

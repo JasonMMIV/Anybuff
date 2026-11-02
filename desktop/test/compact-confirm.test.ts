@@ -24,4 +24,46 @@ describe('compactConfirmState', () => {
       note: 'Wait for the current run to finish.',
     })
   })
+
+  test('allows a restored conversation whose usage was not hydrated', () => {
+    expect(
+      compactConfirmState({
+        used: 0,
+        max: 0,
+        running: false,
+        usageKnown: false,
+        hasConversation: true,
+      }),
+    ).toEqual({ canConfirm: true })
+  })
+
+  test('blocks a new conversation before the first turn', () => {
+    expect(
+      compactConfirmState({
+        used: 0,
+        max: 0,
+        running: false,
+        usageKnown: true,
+        hasConversation: false,
+      }),
+    ).toEqual({
+      canConfirm: false,
+      note: 'Nothing to compact yet.',
+    })
+  })
+
+  test('blocks a conversation with no turns even when usage is unknown', () => {
+    expect(
+      compactConfirmState({
+        used: 0,
+        max: 0,
+        running: false,
+        usageKnown: false,
+        hasConversation: false,
+      }),
+    ).toEqual({
+      canConfirm: false,
+      note: 'Nothing to compact yet.',
+    })
+  })
 })

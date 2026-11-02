@@ -21,6 +21,42 @@ import {
   trimLastTurn,
 } from '../sessions/session-store'
 import { getAppSettings } from '../settings/settings'
+import { AGENT_ID_FOR_MODE, resolveRoutedModelForRun } from '../run/start-run'
+import { resolveEffectiveContextWindow } from '@codebuff/sdk'
+import type { UIAgentMode } from '../contracts/types'
+
+/**
+ * Resolve the current model window for each UI mode, so a reopened task can
+ * show context usage before its next run emits `context_window`.
+ *
+ * `contextTokenCount` is history-derived, while the window comes from the
+ * current routing — after a model/mode switch the ratio is an approximation
+ * until the next run reports its own `context_window`.
+ *
+ * Display-only: settings may be unset or malformed, and the caller already has
+ * a fallback (used tokens only), so this fails quiet rather than blocking the
+ * conversation snapshot. Malformed provider config is surfaced separately by
+ * `getProviderConfigHealth()`.
+ */
+function resolveModeContextWindows(): Partial<Record<UIAgentMode, number>> | undefined {
+  try {
+    const settings = getAppSettings()
+    const windows: Partial<Record<UIAgentMode, number>> = {}
+    for (const mode of Object.keys(AGENT_ID_FOR_MODE) as UIAgentMode[]) {
+      const model = resolveRoutedModelForRun(
+        settings,
+        AGENT_ID_FOR_MODE[mode],
+      )
+      const windowTokens = model
+        ? resolveEffectiveContextWindow(model)
+        : undefined
+      if (typeof windowTokens === 'number') windows[mode] = windowTokens
+    }
+    return Object.keys(windows).length > 0 ? windows : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** AnyBuff:listProjects */
 export function listProjects(): unknown {
@@ -80,7 +116,12 @@ export function removeProject(projectPath: string): unknown {
 export function getTaskView(taskId: string): unknown {
   if (!taskId) return { ok: false, error: 'Missing taskId' }
   const snapshot = getSessionSnapshot(taskId)
-  return { ok: true, ...snapshot }
+  const contextWindowTokensByMode = resolveModeContextWindows()
+  return {
+    ok: true,
+    ...snapshot,
+    ...(contextWindowTokensByMode ? { contextWindowTokensByMode } : {}),
+  }
 }
 
 /** AnyBuff:trimTaskLastTurn — revert support. */
