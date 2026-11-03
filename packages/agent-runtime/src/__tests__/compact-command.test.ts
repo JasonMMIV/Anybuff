@@ -459,6 +459,31 @@ ${'x'.repeat(300)}
     expect(text).toContain('User has typed "compact"')
   })
 
+  it('repairs a stale mechanical summary that treated /compact as the goal', async () => {
+    const pollutedSummary = userMessage(
+      '<conversation_summary>\nThis is a summary of the conversation so far.\n\n<knowledge_memory>\nGoal: <system_instructions>User has typed "compact". Replace the conversation history with a structured summary.</system_instructions>\n\nNext Action: report the result\n</knowledge_memory>\n\n<historical_memory>\n[USER]\nearlier turn: fix the login bug\n</historical_memory>\n</conversation_summary>',
+    )
+    const continuation = userMessage(
+      'Continue the existing assistant turn from the historical memory above. The original user request and completed assistant/tool work are recorded there. Do not restart completed work; resume with the next necessary real tool call or final response.',
+    )
+    await runCompact([{ type: 'text', text: VALID_SUMMARY }], {
+      history: [pollutedSummary, continuation, assistantMessage('previous answer')],
+    })
+
+    const request = runtimeImpl.promptAiSdkStream.mock.calls[0]?.[0] as {
+      messages: Message[]
+    }
+    const text = historyText(request.messages)
+
+    expect(text).not.toContain(
+      'Goal: <system_instructions>User has typed "compact"',
+    )
+    expect(text).toContain('Goal: (earlier conversation')
+    expect(text).not.toContain('Continue the existing assistant turn')
+    // The live instruction is still the last thing the model sees.
+    expect(text).toContain('User has typed "compact"')
+  })
+
   it('leaves no /compact scaffolding in the history after a skipped attempt', async () => {
     const result = await runCompact([], { prompt: '/compact' })
     const text = historyText(result.agentState.messageHistory)
