@@ -104,7 +104,13 @@ describe('/compact command guard', () => {
 
   const runCompact = async (
     chunks: StreamChunk[],
-    options?: { prompt?: string; fail?: boolean },
+    options?: {
+      prompt?: string
+      fail?: boolean
+      template?: Partial<AgentTemplate>
+      history?: Message[]
+      contextWindow?: number
+    },
   ) => {
     const {
       agentTemplate: _,
@@ -120,6 +126,9 @@ describe('/compact command guard', () => {
       }
       return promptSuccess('mock-message-id')
     })
+    if (options?.contextWindow !== undefined) {
+      runtimeImpl.resolveContextWindow = () => options.contextWindow
+    }
     runtimeImpl.requestFiles = mock(
       async ({ filePaths }: { filePaths: string[] }) =>
         Object.fromEntries(
@@ -135,14 +144,16 @@ describe('/compact command guard', () => {
     return loopAgentSteps({
       ...runtimeImpl,
       agentType: 'test-agent',
-      localAgentTemplates: { 'test-agent': baseTemplate },
+      localAgentTemplates: {
+        'test-agent': { ...baseTemplate, ...options?.template },
+      },
       repoId: undefined,
       repoUrl: undefined,
       userInputId: 'test-user-input',
       agentState: {
         ...sessionState.mainAgentState,
         agentId: 'test-agent-id',
-        messageHistory: [
+        messageHistory: options?.history ?? [
           userMessage('earlier turn: fix the login bug'),
           assistantMessage('I fixed the login bug in auth.ts.'),
         ],
@@ -408,6 +419,44 @@ ${'x'.repeat(300)}
     expect(text).toContain('toString')
     expect(text).not.toContain('function toString')
     expect(text).not.toContain('<system_instructions>')
+  })
+
+  it('does not run the agent programmatic step on a manual compact turn', async () => {
+    let programmaticCalls = 0
+    await runCompact([{ type: 'text', text: VALID_SUMMARY }], {
+      template: {
+        handleSteps: (function* () {
+          programmaticCalls += 1
+        }) as AgentTemplate['handleSteps'],
+      },
+    })
+
+    expect(programmaticCalls).toBe(0)
+    const request = runtimeImpl.promptAiSdkStream.mock.calls[0]?.[0] as {
+      messages: Message[]
+    }
+    expect(historyText(request.messages)).toContain('User has typed "compact"')
+  })
+
+  it('does not mechanically compact the history before a manual compact turn', async () => {
+    const history = [
+      userMessage('earlier turn: fix the login bug'),
+      ...Array.from({ length: 30 }, (_, i) =>
+        assistantMessage(`step ${i} ${'z'.repeat(2000)}`),
+      ),
+    ]
+    await runCompact([{ type: 'text', text: VALID_SUMMARY }], {
+      template: { compactContext: true },
+      history,
+      contextWindow: 10_000,
+    })
+
+    const request = runtimeImpl.promptAiSdkStream.mock.calls[0]?.[0] as {
+      messages: Message[]
+    }
+    const text = historyText(request.messages)
+    expect(text).not.toContain('<conversation_summary>')
+    expect(text).toContain('User has typed "compact"')
   })
 
   it('leaves no /compact scaffolding in the history after a skipped attempt', async () => {

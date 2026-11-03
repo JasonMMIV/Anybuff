@@ -967,7 +967,8 @@ bun run test:host-core
 - [x] 桌面／Android slash 清單有 `compact`，確認 modal 可送出
 - [x] 空對話或執行中時，確認 modal 的主按鈕停用
 - [x] `INSTRUCTIONS_PROMPT` 不再跨輪累積，且該輪模型請求仍含 instructions
-- [x] 上述測試全綠（`packages/agent-runtime` 688 pass；desktop 壓縮相關 17 pass；host-core 229 pass）
+- [x] 手動 `/compact` turn 不觸發機會性機械壓縮（inline context-pruner／`maybeCompactHistory`）
+- [x] 上述測試全綠（`packages/agent-runtime` 690 pass；desktop 壓縮相關 17 pass；host-core 229 pass）
 - [x] `cd desktop && bun run typecheck` 通過
 - [x] `bun run build:sdk` 通過
 - [x] ADR-37 的「維護注意」追加：**指令辨識一律使用 `isCompactCommandPrompt`／`hasAdditionalSystemPrompt`，不得用 `prompt.toLowerCase()` 比對，也不得用 `in` 查表**
@@ -1111,12 +1112,47 @@ expireMessages(history, 'userPrompt')
 
 **已知近似**：`max` 依「目前 routing」解析。若上次 run 之後換過模型，`used / max` 會是近似值，下一次 `context_window` 事件會校正。
 
-### 13.4 驗證結果
+### 13.4 手動 `/compact` 不觸發機械壓縮
+
+**問題**：`/compact` 是使用者主動要求的 LLM 摘要，但 `loopAgentSteps` 在每個 step 前會先跑機械壓縮：
+
+- base2 / base2-plan / base-chat / base-deep：`handleSteps` spawn inline `context-pruner`
+- base3 / base3-lite：`compactContext` → `maybeCompactHistory`
+
+當對話閒置超過 cache TTL（base2 30 分鐘、base3 5 分鐘）後送 `/compact`，機械壓縮會把 `/compact` 與其說明訊息視為 mid-turn，摘要成：
+
+```
+Goal: <system_instructions>User has typed "compact"...
+```
+
+然後用 `Continue the existing assistant turn...` 取代 live prompt。模型只看到「繼續既有回合」，回了正常答案；`summaryFromReply` 正確地判定沒有可用摘要並跳過。使用者的實際 runstate 就是這個形狀。
+
+**修正**（`run-agent-step.ts`）：
+
+```ts
+const manualCompactionTurn = manualCompaction && !initialAgentState.parentId
+```
+
+- `agentTemplate.compactContext && !manualCompactionTurn` 才跑 `maybeCompactHistory`
+- `agentTemplate.handleSteps && !manualCompactionTurn` 才跑 `runProgrammaticStep`
+- 子代理（`parentId` 有值）不受影響；只有根代理的 `/compact` turn 跳過。
+- 機械壓縮仍保留為 **context-overflow resume** 的 fallback；它壓縮的是上一個 run 的歷史，`/compact` prompt 仍完整送達。
+
+**語意**：機會性 cache-gap 機械壓縮不應介入使用者主動要求的 LLM 摘要；`/compact` 應盡可能看到原始歷史，而不是先被壓成一份機械摘要。
+
+**測試**：
+
+- `does not run the agent programmatic step on a manual compact turn`
+- `does not mechanically compact the history before a manual compact turn`
+- 兩者已反向驗證：移除 skip 條件時會失敗，且失敗輸出正好重現 `Goal: <system_instructions>...`。
+
+### 13.5 驗證結果
 
 | 項目 | 結果 |
 |---|---|
-| `packages/agent-runtime` 全量 | 688 pass / 0 fail |
-| `compact-command.test.ts` | 19 pass / 0 fail |
+| `packages/agent-runtime` 全量 | 690 pass / 0 fail |
+| `compact-command.test.ts` | 21 pass / 0 fail |
+| `compact-command` + `compact-history` + `context-pruner-parity` | 84 pass / 0 fail |
 | host-core 全量（`--timeout 10000`） | 229 pass / 0 fail |
 | desktop 壓縮相關 4 檔 | 17 pass / 0 fail |
 | `bun run typecheck:host-core` | 通過 |
