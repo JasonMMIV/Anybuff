@@ -876,6 +876,14 @@ export async function loopAgentSteps(
   // A manual /compact turn is single-step by contract: the summary (or the
   // compact_skipped notice) is the whole outcome, so the loop ends after it.
   const manualCompaction = isCompactCommandPrompt(prompt)
+  // Mechanical pre-step compaction must not run on a root /compact turn. The
+  // user asked for an LLM summary, not an opportunistic cache-gap prune: the
+  // inline context-pruner / maybeCompactHistory would summarize the live
+  // /compact instruction into its knowledge block (Goal = the command), leaving
+  // the model with a synthetic "continue" prompt and no summary request.
+  // Context-overflow resume is the only fallback that may compact mechanically;
+  // it compacts the PREVIOUS run's history, so this prompt still arrives whole.
+  const manualCompactionTurn = manualCompaction && !initialAgentState.parentId
 
   // Resolve the actual context window for the loop scope (used by compaction).
   const loopMaxContextTokens =
@@ -1173,7 +1181,7 @@ export async function loopAgentSteps(
       // Fires once per turn at most: compaction stamps every surviving message
       // with a fresh sentAt and drops the assistant messages that preceded the
       // live prompt, so the cache gap it measured is gone on the next step.
-      if (agentTemplate.compactContext) {
+      if (agentTemplate.compactContext && !manualCompactionTurn) {
         const compacted = maybeCompactHistory({
           // The option object is exactly the tunable subset, so it forwards
           // whole. Spread first: the fields below are not the agent's to set.
@@ -1204,7 +1212,7 @@ export async function loopAgentSteps(
 
       let n: number | undefined = undefined
 
-      if (agentTemplate.handleSteps) {
+      if (agentTemplate.handleSteps && !manualCompactionTurn) {
         const programmaticResult = await runProgrammaticStep({
           ...params,
 
