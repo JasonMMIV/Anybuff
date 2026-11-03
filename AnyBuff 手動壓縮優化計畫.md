@@ -968,7 +968,8 @@ bun run test:host-core
 - [x] 空對話或執行中時，確認 modal 的主按鈕停用
 - [x] `INSTRUCTIONS_PROMPT` 不再跨輪累積，且該輪模型請求仍含 instructions
 - [x] 手動 `/compact` turn 不觸發機會性機械壓縮（inline context-pruner／`maybeCompactHistory`）
-- [x] 上述測試全綠（`packages/agent-runtime` 690 pass；desktop 壓縮相關 17 pass；host-core 229 pass）
+- [x] 舊 runstate 的污染摘要會在手動 compact turn 被修復，且 host-core bundle 重建後生效
+- [x] 上述測試全綠（`packages/agent-runtime` 691 pass；desktop 壓縮相關 17 pass；host-core 229 pass）
 - [x] `cd desktop && bun run typecheck` 通過
 - [x] `bun run build:sdk` 通過
 - [x] ADR-37 的「維護注意」追加：**指令辨識一律使用 `isCompactCommandPrompt`／`hasAdditionalSystemPrompt`，不得用 `prompt.toLowerCase()` 比對，也不得用 `in` 查表**
@@ -1146,13 +1147,17 @@ const manualCompactionTurn = manualCompaction && !initialAgentState.parentId
 - `does not mechanically compact the history before a manual compact turn`
 - 兩者已反向驗證：移除 skip 條件時會失敗，且失敗輸出正好重現 `Goal: <system_instructions>...`。
 
+**舊 runstate 修復**：pre-fix build 產生的機械摘要若把 compact instruction 存成 `Goal`，手動 compact turn 會用 `repairPollutedCompactHistory()` 中和該 Goal 並移除機械 continuation（保留 historical memory）。測試：`repairs a stale mechanical summary that treated /compact as the goal`。
+
+**建置注意**：desktop main 只 external import `@codebuff/host-core`，而 `packages/host-core/dist` 會 bundle SDK／agent-runtime。改 `packages/agent-runtime` 後只跑 `bun run build:sdk` 不會更新 app，必須再跑 `bun run build:host-core` 並完整重啟主程序。
+
 ### 13.5 驗證結果
 
 | 項目 | 結果 |
 |---|---|
-| `packages/agent-runtime` 全量 | 690 pass / 0 fail |
-| `compact-command.test.ts` | 21 pass / 0 fail |
-| `compact-command` + `compact-history` + `context-pruner-parity` | 84 pass / 0 fail |
+| `packages/agent-runtime` 全量 | 691 pass / 0 fail |
+| `compact-command.test.ts` | 22 pass / 0 fail |
+| `compact-command` + `compact-history` + `context-pruner-parity` | 85 pass / 0 fail |
 | host-core 全量（`--timeout 10000`） | 229 pass / 0 fail |
 | desktop 壓縮相關 4 檔 | 17 pass / 0 fail |
 | `bun run typecheck:host-core` | 通過 |

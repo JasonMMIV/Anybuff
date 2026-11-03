@@ -108,6 +108,85 @@ import type {
   ProjectFileContext,
 } from '@codebuff/common/util/file'
 
+/**
+ * The compact instruction, when a pre-fix mechanical prune mistook it for the
+ * conversation goal and stored it in `<knowledge_memory>`.
+ */
+const POLLUTED_COMPACT_GOAL_RE =
+  /^Goal: <system_instructions>User has typed "compact"[\s\S]*?<\/system_instructions>/m
+
+/** Synthetic prompt both mechanical compactors append after a mid-turn prune. */
+const MECHANICAL_CONTINUATION_TEXT =
+  'Continue the existing assistant turn from the historical memory above. The original user request and completed assistant/tool work are recorded there. Do not restart completed work; resume with the next necessary real tool call or final response.'
+
+function messageText(message: Message): string {
+  if (typeof message.content === 'string') return message.content
+  if (!Array.isArray(message.content)) return ''
+  return message.content
+    .filter(
+      (part): part is TextPart =>
+        part.type === 'text' && typeof (part as TextPart).text === 'string',
+    )
+    .map((part) => part.text)
+    .join('\n')
+}
+
+function replaceMessageText(message: Message, text: string): Message {
+  if (typeof message.content === 'string') {
+    return { ...message, content: text } as unknown as Message
+  }
+  if (!Array.isArray(message.content)) return message
+  let replaced = false
+  return {
+    ...message,
+    content: message.content.map((part) => {
+      if (!replaced && part.type === 'text' && typeof part.text === 'string') {
+        replaced = true
+        return { ...part, text }
+      }
+      return part
+    }),
+  } as unknown as Message
+}
+
+/**
+ * A mechanical prune from a pre-fix build could summarize the live /compact
+ * instruction as the conversation goal, then replace the pair with a synthetic
+ * continuation. On the next manual compact turn, neutralize that stale goal and
+ * drop the continuation so the live instruction is authoritative again. The
+ * historical memory itself is preserved.
+ */
+function repairPollutedCompactHistory(messages: Message[]): Message[] {
+  let changed = false
+  const repaired = messages
+    .filter((message) => {
+      const isContinuation =
+        message.role === 'user' &&
+        messageText(message).trim() === MECHANICAL_CONTINUATION_TEXT
+      if (isContinuation) changed = true
+      return !isContinuation
+    })
+    .map((message) => {
+      if (message.role !== 'user') return message
+      const text = messageText(message)
+      if (
+        !text.includes('<conversation_summary>') ||
+        !POLLUTED_COMPACT_GOAL_RE.test(text)
+      ) {
+        return message
+      }
+      changed = true
+      return replaceMessageText(
+        message,
+        text.replace(
+          POLLUTED_COMPACT_GOAL_RE,
+          'Goal: (earlier conversation — see the historical memory; the live compact instruction below supersedes this)',
+        ),
+      )
+    })
+  return changed ? repaired : messages
+}
+
 // Convert a tool's stored inputSchema into JSON Schema suitable for Anthropic's
 // count_tokens API. Built-in and MCP tools store a Zod schema here; serializing
 // it raw ships Zod internals (`def`/`shape`) instead of JSON Schema, so token
@@ -884,6 +963,11 @@ export async function loopAgentSteps(
   // Context-overflow resume is the only fallback that may compact mechanically;
   // it compacts the PREVIOUS run's history, so this prompt still arrives whole.
   const manualCompactionTurn = manualCompaction && !initialAgentState.parentId
+  if (manualCompactionTurn) {
+    initialAgentState.messageHistory = repairPollutedCompactHistory(
+      initialAgentState.messageHistory,
+    )
+  }
 
   // Resolve the actual context window for the loop scope (used by compaction).
   const loopMaxContextTokens =

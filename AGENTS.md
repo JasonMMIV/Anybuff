@@ -42,7 +42,7 @@ an Electron desktop shell. Read "AnyBuff 專案全貌與維護者指南.md" (§2
 ```powershell
 bun install                 # after workspace/package.json changes
 bun run build:sdk           # REQUIRED after sdk|packages|common edits (desktop consumes dist/)
-bun run build:host-core     # REQUIRED after packages/host-core edits (ADR-21: desktop consumes dist/)
+bun run build:host-core     # REQUIRED after packages/host-core OR packages/agent-runtime edits (desktop imports the host-core dist, which bundles the SDK)
 bun run typecheck:host-core
 bun --cwd desktop run typecheck
 bun run test:host-core      # host-core channel/WS contract tests
