@@ -1,11 +1,11 @@
 import './env-shim'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification, screen, shell } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { basename, join } from 'path'
 import { checkNow, initAutoUpdater, registerUpdaterIpc } from './updater'
 import { bindHostToWindow, registerHostIpc } from './host-bridge'
 import { isRunning } from '@codebuff/host-core'
-import { abortRun } from '@codebuff/host-core'
+import { abortAllRuns } from '@codebuff/host-core'
 
 // Handle global uncaught errors gracefully to prevent silent crashes
 process.on('uncaughtException', (error) => {
@@ -176,7 +176,7 @@ function createWindow(): void {
   })
   win.on('close', () => {
     if (isRunning()) {
-      abortRun()
+      abortAllRuns()
     }
     saveWindowState(win)
   })
@@ -341,6 +341,30 @@ function registerShellIpc(): void {
     return { version: app.getVersion() }
   })
 
+  /* Background-run completion toast. The renderer asks unconditionally; the
+   * shell suppresses it while focused so the in-app chime is the only cue. */
+  ipcMain.handle(
+    'AnyBuff:showNotification',
+    (_e, payload: { title?: string; body?: string; taskId?: string } | undefined) => {
+      const win = activeWindow
+      if (!win || win.isDestroyed() || win.isFocused()) return { shown: false, reason: 'focused' }
+      if (!Notification.isSupported()) return { shown: false, reason: 'unsupported' }
+      const notification = new Notification({
+        title: payload?.title?.trim() || 'AnyBuff',
+        body: payload?.body?.trim() || 'A background task finished.',
+        silent: true
+      })
+      notification.on('click', () => {
+        if (win.isDestroyed()) return
+        if (win.isMinimized()) win.restore()
+        win.show()
+        win.focus()
+      })
+      notification.show()
+      return { shown: true }
+    }
+  )
+
   ipcMain.handle('AnyBuff:checkForUpdates', async () => {
     // Single entry point: packaged installs go through electron-updater,
     // dev/unpackaged runs fall back to the plain GitHub API version check
@@ -366,7 +390,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   if (isRunning()) {
-    abortRun()
+    abortAllRuns()
   }
 })
 

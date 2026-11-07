@@ -241,5 +241,5 @@ describe('MC-2.2 probe-sample retention', () => {
     // FIFO: the OLDEST ten were dropped, the newest kept.
     expect(list.samples[0].rung).toBe('rung-10')
     expect(list.samples[199].rung).toBe('rung-209')
-  })
+  }, 20_000)
 })

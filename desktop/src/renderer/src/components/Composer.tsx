@@ -61,9 +61,6 @@ interface ComposerProps {
    *  now" steer (no attachments/no slash/no bash draft) — shows the additive
    *  Send now button next to the queue button. */
   steerable?: boolean
-  /** Another conversation's run is active — sending is temporarily blocked. */
-  sendBlocked?: boolean
-  sendBlockedHint?: string
   disabled: boolean
   attachments: Attachment[]
   onAttachFiles: () => void
@@ -274,8 +271,6 @@ export default function Composer({ ref, ...props }: ComposerProps & { ref?: Ref<
     running,
     stopping,
     steerable,
-    sendBlocked,
-    sendBlockedHint,
     disabled,
     attachments,
     onAttachFiles,
@@ -880,9 +875,7 @@ export default function Composer({ ref, ...props }: ComposerProps & { ref?: Ref<
             title={
               isBashMode
                 ? 'Run command locally and attach output as context (Enter)'
-                : sendBlocked
-                  ? 'Another task is running — this will be queued'
-                  : 'Send (Enter)'
+                : 'Send (Enter)'
             }
           >
             {isBashMode ? <span className="bash-send-glyph">$</span> : <ArrowUpIcon size={16} />}

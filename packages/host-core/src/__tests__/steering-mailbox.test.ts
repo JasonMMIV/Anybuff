@@ -56,12 +56,13 @@ describe('steering mailbox (ADR-30)', () => {
     expect(pushSteeringMessage({ pushId: 'p3', text: 'again' })).toBe(false)
   })
 
-  test('deactivate after a new run started does NOT hand it stale entries', () => {
+  test('a second run gets its own empty buffer; the first keeps its leftovers', () => {
     activateSteering('run-1')
     pushSteeringMessage({ pushId: 'p1', text: 'stale' })
-    activateSteering('run-2') // run-2's activate resets the buffer
-    expect(deactivateSteering('run-1')).toEqual([])
+    activateSteering('run-2') // per-run buffers: run-2 must not inherit run-1's entries
     expect(drainSteeringMessages('run-2')).toEqual([])
+    // The owner still owns its own leftovers (its settle retracts/requeues them).
+    expect(deactivateSteering('run-1')).toEqual([{ pushId: 'p1', text: 'stale' }])
   })
 
   test('re-activating the SAME owner (retry attempt) preserves undrained entries', () => {
@@ -78,7 +79,7 @@ describe('steering mailbox (ADR-30)', () => {
     activateSteering('run-1')
     pushSteeringMessage({ pushId: 'p1', text: 'visible' })
     // The run's drain hook returns [] while aborted — entries stay queued.
-    // (start-run checks currentAbort.signal.aborted before calling drain.)
+    // (start-run checks the run's abort signal before calling drain.)
     expect(drainSteeringMessages('another-owner')).toEqual([])
     expect(deactivateSteering('run-1')).toEqual([{ pushId: 'p1', text: 'visible' }])
   })

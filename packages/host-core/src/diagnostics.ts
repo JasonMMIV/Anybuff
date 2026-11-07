@@ -13,6 +13,7 @@
 
 import { getActiveTerminalCommandProcesses } from '@codebuff/sdk'
 import { getRunningTaskId } from './sessions/session-store'
+import { listRuns } from './run/run-registry'
 
 export interface DiagnosticsSnapshot {
   product: string
@@ -33,8 +34,17 @@ export interface DiagnosticsSnapshot {
   }
   /** In-flight `run_terminal_command` / `!command` subprocesses (pid only). */
   activeTools: Array<{ pid: number; processGroupId?: number }>
-  /** Task id of the currently active run (null while idle). */
+  /** Task id of the currently active run (null while idle / multiple runs). */
   runningTaskId: string | null
+  /** Active runs (P1 concurrent-run diagnostics). */
+  runs: Array<{
+    runId: string
+    taskId: string
+    cwd: string
+    agentId: string
+    mode: 'default' | 'plan' | 'chat'
+    startedAt: number
+  }>
 }
 
 /** AnyBuff:getDiagnostics — current process snapshot. */
@@ -60,5 +70,13 @@ export function getDiagnostics(): DiagnosticsSnapshot {
     },
     activeTools: getActiveTerminalCommandProcesses(),
     runningTaskId: getRunningTaskId(),
+    runs: listRuns().map((run) => ({
+      runId: run.runId,
+      taskId: run.taskId,
+      cwd: run.cwd,
+      agentId: run.agentId,
+      mode: run.mode,
+      startedAt: run.startedAt,
+    })),
   }
 }

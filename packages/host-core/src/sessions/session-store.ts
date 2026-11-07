@@ -46,7 +46,10 @@ import type { TaskViewSnapshot } from '../contracts/types'
 export type { TaskViewSnapshot } from '../contracts/types'
 
 const sessions = new Map<string, SessionEntry>()
-let runningTaskId: string | null = null
+/** Tasks with an active run. A Set (not a scalar) is the concurrency source of
+ *  truth; `getRunningTaskId()` stays as a compatibility view for the old
+ *  single-run callers. */
+const runningTaskIds = new Set<string>()
 
 /** Tools hidden from the conversation timeline (mirrors the renderer's list). */
 function isSilentTool(name?: string): boolean {
@@ -431,11 +434,11 @@ export function getSession(taskId: string): SessionEntry | undefined {
   return sessions.get(taskId)
 }
 
-/** Mark the session running and remember it as the single active run. */
+/** Mark the session running and add it to the active-run set. */
 export function markRunning(taskId: string): void {
   const entry = sessions.get(taskId)
   if (entry) entry.status = 'running'
-  runningTaskId = taskId
+  runningTaskIds.add(taskId)
 }
 
 /**
@@ -482,24 +485,31 @@ export function finishRun(
     // turn; any older mid-turn checkpoint would only regress recovery.
     deleteTaskCheckpoint(taskId)
   }
-  if (runningTaskId === taskId) runningTaskId = null
+  runningTaskIds.delete(taskId)
 }
 
 export function isTaskRunning(taskId: string): boolean {
-  return runningTaskId === taskId
+  return runningTaskIds.has(taskId)
 }
 
+/** Compatibility view: only a single active run has a unique task id. */
 export function getRunningTaskId(): string | null {
-  return runningTaskId
+  if (runningTaskIds.size !== 1) return null
+  return runningTaskIds.values().next().value ?? null
+}
+
+/** All tasks with an active run (renderer reload / diagnostics). */
+export function getRunningTaskIds(): string[] {
+  return Array.from(runningTaskIds)
 }
 
 export function hasActiveRun(): boolean {
-  return runningTaskId !== null
+  return runningTaskIds.size > 0
 }
 
 /** Forget an in-memory session (task deleted). Refuses while its run is active. */
 export function dropSession(taskId: string): boolean {
-  if (runningTaskId === taskId) return false
+  if (runningTaskIds.has(taskId)) return false
   clearFlushTimer(taskId)
   accums.delete(taskId)
   sessions.delete(taskId)

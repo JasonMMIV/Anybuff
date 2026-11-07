@@ -3,7 +3,7 @@
  * convention) for shapes that cross the shell boundary. Previously these were
  * duplicated across desktop/src/main/*, desktop/src/preload and the renderer;
  * both the Electron preload and the WS protocol now import from here so the
- * 56 `AnyBuff:*` channels stay in lockstep.
+ * 54 `AnyBuff:*` channels stay in lockstep.
  */
 
 import type { QueryIndexData, QueryIndexQuery } from './codebase-index'
@@ -54,6 +54,12 @@ export interface UiEvent {
   type: string
   /** Task (conversation) this event belongs to — the renderer filters by it. */
   taskId?: string
+  /** Execution id for concurrent-run routing (host P1). */
+  runId?: string
+  /** Interactive prompt id (approval / ask_user FIFO). */
+  promptId?: string
+  /** Conversation title shown on the interactive prompt modal. */
+  title?: string
   text?: string
   action?: string
   toolName?: string
@@ -121,7 +127,10 @@ export interface AppStateSnapshot {
   cwd: string | null
   settings: unknown
   running: boolean
+  /** Compatibility view: set only when exactly one run is active. */
   runningTaskId: string | null
+  /** All tasks with an active run (renderer reload / diagnostics). */
+  runningTaskIds?: string[]
   agentIds: string[]
 }
 

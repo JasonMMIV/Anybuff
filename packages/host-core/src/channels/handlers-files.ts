@@ -17,6 +17,8 @@ import {
 } from '../files/fs-utils'
 import { readFileSync, statSync } from 'fs'
 import { basename } from 'path'
+import { resolveProjectKey } from '../run/project-key'
+import { listRuns } from '../run/run-registry'
 
 /** AnyBuff:listFiles */
 export function listFiles(root: string): unknown {
@@ -123,13 +125,43 @@ export async function gitDiff(cwd: string): Promise<unknown> {
   return await getGitDiffFn(cwd)
 }
 
+/**
+ * Work-tree mutation guard. Run admission no longer serializes a project, but
+ * accepting/reverting a file while ANY run is active in the same tree can
+ * still race a read-modify-write and corrupt diff/revert attribution. This is
+ * a write-operation guard, not a run-concurrency limit.
+ */
+async function projectBusy(cwd: string): Promise<
+  { ok: false; code: 'project-busy'; error: string; runningTaskId: string } | null
+> {
+  const projectKey = await resolveProjectKey(cwd)
+  // Only a Build/default run can mutate the work tree. Plan/chat runs are
+  // read-only by design, so they must not block accept/revert — otherwise a
+  // Build + Plan pair would still be unable to review the Build result until
+  // Plan finishes.
+  const owner = listRuns().find(
+    (run) => run.projectKey === projectKey && run.mode === 'default'
+  )
+  if (!owner) return null
+  return {
+    ok: false,
+    code: 'project-busy',
+    error: 'This project has an active build run. Stop it before accepting or reverting files.',
+    runningTaskId: owner.taskId,
+  }
+}
+
 /** AnyBuff:gitAccept */
 export async function gitAccept(payload: { cwd: string; file: string }): Promise<unknown> {
+  const busy = await projectBusy(payload.cwd)
+  if (busy) return busy
   return await gitAcceptFile(payload.cwd, payload.file)
 }
 
 /** AnyBuff:gitRevert */
 export async function gitRevert(payload: { cwd: string; file: string }): Promise<unknown> {
+  const busy = await projectBusy(payload.cwd)
+  if (busy) return busy
   return await gitRevertFile(payload.cwd, payload.file)
 }
 

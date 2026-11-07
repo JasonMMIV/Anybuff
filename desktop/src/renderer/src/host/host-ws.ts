@@ -629,11 +629,33 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     /** ADR-30 "Send now" mid-turn steering (WS transport mirrors the preload). */
     sendNow: (payload: { text: string; taskId?: string }) =>
       call<{ ok: boolean; pushId?: string; error?: string }>('sendNow', payload),
-    abort: () => call('abort'),
+    abort: (payload?: { taskId?: string; runId?: string }) => call('abort', payload),
     runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
       call('runBashCommand', payload),
     respondAskUser: (payload: unknown) => call('respondAskUser', payload),
-    respondApproval: (approved: boolean) => call('approvalResponse', approved),
+    respondApproval: (
+      input:
+        | boolean
+        | { approved?: boolean; promptId?: string; taskId?: string; runId?: string }
+    ) => call('approvalResponse', input),
+    /** Browser/WebView toast fallback; the Electron shell uses a native one. */
+    showNotification: async (payload: { title?: string; body?: string; taskId?: string }) => {
+      try {
+        if (typeof Notification === 'undefined') {
+          return { shown: false, reason: 'unsupported' }
+        }
+        if (Notification.permission !== 'granted') {
+          return { shown: false, reason: 'permission' }
+        }
+        new Notification(payload.title?.trim() || 'AnyBuff', {
+          body: payload.body?.trim() || 'A background task finished.',
+          silent: true
+        })
+        return { shown: true }
+      } catch (error) {
+        return { shown: false, reason: String(error) }
+      }
+    },
     listFiles: (root: string) => call('listFiles', root),
     listDir: (dir: string) => call('listDir', dir),
     readFile: (path: string) => call('readFile', path),

@@ -23,14 +23,17 @@ export interface QueuedMessage {
   taskId?: string | null
   tabId?: string | null
   cwd?: string
+  /** Agent mode captured when the message was queued (background dispatch). */
+  mode?: 'default' | 'plan' | 'chat'
 }
 
 interface MessageQueuePanelProps {
   items: QueuedMessage[]
-  /** Ids whose own conversation is currently on screen (safe to auto-send). */
+  /** Ids whose own conversation is currently on screen (inline edit only). */
   readyIds: ReadonlySet<string>
-  /** ADR-30: pause-if-pending after a user interrupt requeued steering leftovers —
-   *  nothing auto-dispatches until the user resumes (or submits a fresh run). */
+  /** Ids held by a per-conversation ADR-30 pause. */
+  pausedIds?: ReadonlySet<string>
+  /** True when this view owns at least one paused item. */
   paused?: boolean
   onResume?: () => void
   onEdit: (id: string, text: string) => void
@@ -39,7 +42,7 @@ interface MessageQueuePanelProps {
   onSendNext: (id: string) => void
 }
 
-export default function MessageQueuePanel({ items, readyIds, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
+export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -55,8 +58,7 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
   }, [editingId])
 
   if (items.length === 0) return null
-  const waitingCount = items.filter((item) => !readyIds.has(item.id)).length
-  const nextReadyIndex = items.findIndex((item) => readyIds.has(item.id))
+  const nextIndex = items.findIndex((item) => !pausedIds?.has(item.id))
 
   return (
     <div className="queue-panel">
@@ -65,10 +67,8 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
         <span>{items.length} queued{paused ? ' (paused)' : ''}</span>
         <span className="queue-panel-hint">
           {paused
-            ? 'paused after stop — nothing sends until you resume'
-            : waitingCount > 0
-              ? `sent when its conversation is visible — ${waitingCount} waiting for another chat`
-              : 'sent automatically when the current turn finishes'}
+            ? 'paused after stop — resume this chat’s queue to continue'
+            : 'sent automatically when the current turn finishes, in its own chat'}
         </span>
         <ChevronDownIcon size={12} className={`queue-chevron${collapsed ? '' : ' open'}`} />
       </button>
@@ -93,24 +93,25 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
       {!collapsed && items.length > 0 && (
         <div className="queue-items">
           {items.map((item, i) => {
-            const ready = readyIds.has(item.id)
-            const isNext = i === nextReadyIndex
+            const editable = readyIds.has(item.id)
+            const itemPaused = pausedIds?.has(item.id) === true
+            const isNext = i === nextIndex
             return (
               <div
                 key={item.id}
-                className={`queue-item${isNext ? ' next' : ''}${ready ? '' : ' waiting'}`}
+                className={`queue-item${isNext ? ' next' : ''}${editable ? '' : ' waiting'}${itemPaused ? ' paused' : ''}`}
               >
                 <span
                   className="queue-order"
                   title={
-                    isNext
-                      ? 'Sends next'
-                      : ready
-                        ? `Position ${i + 1}`
-                        : 'Waiting for its conversation'
+                    itemPaused
+                      ? 'Paused until you resume'
+                      : isNext
+                        ? 'Sends next'
+                        : `Position ${i + 1}`
                   }
                 >
-                  {isNext ? 'next' : i + 1}
+                  {itemPaused ? '⏸' : isNext ? 'next' : i + 1}
                 </span>
 
                 {editingId === item.id ? (
@@ -143,14 +144,14 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
                   <button
                     type="button"
                     className="queue-text"
-                    disabled={!ready}
+                    disabled={!editable}
                     title={
-                      ready
+                      editable
                         ? 'Click to edit (note: attachments captured at enqueue time are kept)'
-                        : 'Waiting for its conversation to be visible before it can send'
+                        : 'Open this chat to edit its queued message'
                     }
                     onClick={() => {
-                      if (!ready) return
+                      if (!editable) return
                       setDraft(item.text)
                       setEditingId(item.id)
                     }}
@@ -159,7 +160,7 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
                   </button>
                 )}
 
-                {!ready && (
+                {!editable && (
                   <span
                     className="queue-route-badge"
                     title="This message belongs to another conversation and sends there"
@@ -174,7 +175,6 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
                       type="button"
                       className="mini-btn"
                       title="Promote to next"
-                      disabled={!ready}
                       onClick={() => onSendNext(item.id)}
                     >
                       <ArrowUpIcon size={11} />
@@ -185,7 +185,6 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
                       type="button"
                       className="mini-btn"
                       title="Move up"
-                      disabled={!ready}
                       onClick={() => onMove(item.id, -1)}
                     >
                       ↑
@@ -196,7 +195,6 @@ export default function MessageQueuePanel({ items, readyIds, paused, onResume, o
                       type="button"
                       className="mini-btn"
                       title="Move down"
-                      disabled={!ready}
                       onClick={() => onMove(item.id, 1)}
                     >
                       ↓

@@ -9,7 +9,7 @@ import {
   setLearnedContextWindowSink
 } from '@codebuff/sdk'
 import { isSensitiveFile } from '../files/file-filter'
-import { applySettingsToEnv, saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig, recordProviderModelCapability } from '../settings/settings'
+import { saveTaskCheckpoint, loadTaskRunState, loadSettings, getProviderApiKeyOverrides, getWebSearchConfig, recordProviderModelCapability } from '../settings/settings'
 import type { AgentRoute } from '../settings/settings'
 import type { Message as MainAgentHistoryMessage } from '@codebuff/common/types/messages/codebuff-message'
 import { applyMcpServersToAgents, getEnabledMcpServers } from '../mcp/mcp-settings'
@@ -33,6 +33,24 @@ import {
   drainSteeringMessages as drainSteeringMailbox,
   type SteeringEntry
 } from './steering-mailbox'
+import {
+  dropPromptsForRun,
+  enqueuePrompt,
+  resolvePromptFor,
+  setInteractivePromptEmitter,
+  type InteractivePrompt,
+  type PromptTarget
+} from './interactive-queue'
+import {
+  countRuns,
+  createRun,
+  getRun,
+  getRunByTaskId,
+  listRuns,
+  releaseRun,
+  type RunContext
+} from './run-registry'
+import { resolveRunAdmission } from './admission'
 import type { QueryIndexData, QueryIndexQuery, QueryIndexResult } from '../contracts/codebase-index'
 import type { EventSink } from '../events'
 import type { FileChange, TodoItem, UiEvent } from '../contracts/types'
@@ -369,10 +387,6 @@ function extractQueryIndexData(output: unknown): QueryIndexData | undefined {
   return undefined
 }
 
-let client: CodebuffClient | null = null
-let currentAbort: AbortController | null = null
-/** Task id of the active run — used to tag every outgoing event. */
-let activeRunTaskId: string | null = null
 /**
  * Event sinks (ADR-21) — every transport that wants run UiEvents attaches a
  * sink here: the Electron shell's BrowserWindow adapter, plus the EventBus
@@ -380,25 +394,15 @@ let activeRunTaskId: string | null = null
  * semantics let a desktop window and a headless WS host coexist.
  */
 const eventSinks = new Set<EventSink>()
-let pendingApprovalResolver: ((approved: boolean) => void) | null = null
 
-let pendingAskUserResolver: ((answers: unknown) => void) | null = null
-
-/** Resolve the in-flight ask_user override (null answers = skipped). */
-export function respondAskUser(answers: unknown): void {
-  if (pendingAskUserResolver) {
-    const fn = pendingAskUserResolver
-    pendingAskUserResolver = null
-    fn(answers ?? { skipped: true })
-  }
+/** Resolve the current ask_user prompt. Legacy callers (no promptId) settle
+ *  the head of the FIFO; targeted callers pass promptId/taskId/runId. */
+export function respondAskUser(answers: unknown, target: PromptTarget = {}): boolean {
+  return resolvePromptFor('ask_user', target, answers ?? { skipped: true })
 }
 
-export function respondApproval(approved: boolean): void {
-  if (pendingApprovalResolver) {
-    const fn = pendingApprovalResolver
-    pendingApprovalResolver = null
-    fn(approved)
-  }
+export function respondApproval(approved: boolean, target: PromptTarget = {}): boolean {
+  return resolvePromptFor('approval', target, approved === true)
 }
 /** Custom agents loaded for the current cwd (used by the Settings status panel). */
 let lastLocalAgents: LocalAgentsResult = { agents: [], validationErrors: [] }
@@ -426,19 +430,50 @@ function hasInteractiveSink(): boolean {
   return false
 }
 
-function sendEvent(event: UiEvent): void {
+function broadcastEvent(event: UiEvent): void {
   if (event.type === 'ignored') return
-  // Tag every run-derived event with the owning task so the renderer can
-  // route it to the right conversation view.
-  const tagged = event.taskId ? event : { ...event, taskId: activeRunTaskId ?? undefined }
+  // Invariant 1: every run event carries its own taskId before it reaches the
+  // sink. A global fallback would let two concurrent runs steal each other's
+  // events; drop + log rather than guessing.
+  if (!event.taskId) {
+    console.warn('[anybuff-run] dropping event without taskId:', event.type)
+    return
+  }
   for (const sink of eventSinks) {
     try {
-      sink.send(tagged)
+      sink.send(event)
     } catch {
       // a misbehaving transport must never break the run loop
     }
   }
 }
+
+/** Approval / ask_user prompts are serialized through one FIFO; this emitter
+ *  turns the current head into the renderer's modal event. */
+function emitInteractivePrompt(prompt: InteractivePrompt): void {
+  broadcastEvent(
+    prompt.kind === 'approval'
+      ? {
+          type: 'approval_request',
+          taskId: prompt.taskId,
+          runId: prompt.runId,
+          promptId: prompt.promptId,
+          title: prompt.title,
+          message: String((prompt.payload as { command?: unknown } | null)?.command ?? ''),
+          raw: prompt.payload
+        }
+      : {
+          type: 'ask_user',
+          taskId: prompt.taskId,
+          runId: prompt.runId,
+          promptId: prompt.promptId,
+          title: prompt.title,
+          raw: prompt.payload
+        }
+  )
+}
+
+setInteractivePromptEmitter(emitInteractivePrompt)
 
 /** Normalize the SDK's PrintModeEvent into a compact event the UI can render.
  *  Exported so the host contract tests can pin the wire fields (e.g. the
@@ -654,8 +689,9 @@ export function normalizeEvent(event: PrintModeEvent): UiEvent {
 }
 
 export function isRunning(): boolean {
-  return currentAbort !== null
+  return countRuns() > 0
 }
+
 
 /** Custom agents (.agents/) discovered for the current project. */
 export function getLastLocalAgents(): LocalAgentsResult {
@@ -704,6 +740,8 @@ export interface RunResult {
   ok: boolean
   taskId?: string
   error?: string
+  code?: 'task-busy'
+  runningTaskId?: string
   interrupted?: boolean
   reason?: string
   errorMessage?: string
@@ -715,6 +753,8 @@ export interface RunResult {
 
 export interface StartRunOptions {
   cwd: string
+  /** Canonical project key resolved by runPrompt before admission. */
+  projectKey: string
   /** Final prompt sent to the SDK (attachments/skills already resolved). */
   prompt: string
   /** Raw user text persisted in the transcript. */
@@ -892,15 +932,22 @@ export function planOverflowResume(params: {
  * keyed by taskId; all context resolution (previousRun) happens here, so the
  * renderer never needs to hold or restore an opaque state blob.
  */
+/** Best available conversation title for approval/ask_user prompts. */
+function conversationTitle(entry: { transcript: Array<{ kind: string; text?: string }> }): string {
+  for (let i = entry.transcript.length - 1; i >= 0; i -= 1) {
+    const item = entry.transcript[i]
+    if (item.kind === 'user' && item.text?.trim()) return item.text.trim().slice(0, 120)
+  }
+  return 'Conversation'
+}
+
 export async function startRun(opts: StartRunOptions): Promise<RunResult> {
-  const { cwd, prompt, displayText, taskId } = opts
-  // Owner id for the steering mailbox (ADR-30): opens with the run, closes
-  // when it settles; one run at a time is a process-level invariant below.
-  const steeringOwnerId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const { cwd, prompt, displayText, taskId, projectKey } = opts
   // Upstream semantics (ADR-23): the run's root agent comes ONLY from the UI
   // mode — an @agent token in the prompt is handled by the root itself
   // ("Spawn mentioned agents") as a sub-agent spawn, not a root override.
-  const agentId = AGENT_ID_FOR_MODE[opts.mode ?? 'default']
+  const mode = opts.mode ?? 'default'
+  const agentId = AGENT_ID_FOR_MODE[mode]
   // #17: normalize image content once — the SDK accepts base64 image parts on
   // the run; a malformed entry is dropped rather than failing the whole turn.
   const imageContent = (opts.content ?? []).filter(
@@ -908,22 +955,30 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       p.type === 'image' && typeof p.image === 'string' && p.image.length > 0 && typeof p.mediaType === 'string'
   )
 
-  if (currentAbort) return { ok: false, taskId, error: 'Another task is already running' }
-
   const entry = getSession(taskId)
   if (!entry) return { ok: false, taskId, error: 'Unknown task' }
   if (!prompt.trim()) return { ok: false, taskId, error: 'Empty prompt' }
 
-  currentAbort = new AbortController()
-  activeRunTaskId = taskId
-  markRunning(taskId)
-  // ADR-30: open the steering mailbox for THIS run only. The sendNow handler
-  // falls back to the queue before this point (no earlier run may accept
-  // steering). Closed in every settle path below via settleSteering().
-  activateSteering(steeringOwnerId)
+  // Admission → registry are one synchronous section (no await between them),
+  // so two prompts for the same task cannot both pass the check. The project
+  // is deliberately NOT part of admission: Build + Plan may run concurrently
+  // on the same working tree, and work-tree conflicts are user-managed.
+  const admission = resolveRunAdmission({ taskId, runs: listRuns() })
+  if (!admission.ok) {
+    return {
+      ok: false,
+      taskId,
+      error: 'Another task is already running',
+      code: admission.code,
+      runningTaskId: admission.runningTaskId,
+    }
+  }
+
+  const runCtx = createRun({ taskId, cwd, projectKey, agentId, mode })
+
   /** Owner-guarded leftovers capture + transcript-echo retract for this run. */
   const settleSteering = (): { steeredLeftovers?: { pushId: string; text: string }[] } => {
-    const leftovers: SteeringEntry[] = deactivateSteering(steeringOwnerId)
+    const leftovers: SteeringEntry[] = deactivateSteering(runCtx.steeringOwnerId)
     if (leftovers.length > 0) {
       retractSteeringEcho(taskId, leftovers.map((e) => e.pushId))
       return { steeredLeftovers: leftovers.map(({ pushId, text }) => ({ pushId, text })) }
@@ -931,18 +986,29 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
     return {}
   }
 
-  // Open a fresh assistant bubble in the transcript (and the user message for
-  // non-resume turns), then announce the run so any view can show its status.
-  if (opts.resume === true) {
-    beginResumeTurn(taskId)
-  } else {
-    beginUserTurn(taskId, displayText || prompt.trim())
+  /** Tag every event with THIS run's identity before it reaches the sink. */
+  const emit = (event: UiEvent): void => {
+    broadcastEvent({ ...event, taskId, runId: runCtx.runId })
   }
-  sendEvent({ type: 'run_status', status: 'running', taskId })
+
+  // Test seams may have cleared the module-level emitter; a live run always
+  // needs it installed before enqueueing its first approval/ask_user prompt.
+  setInteractivePromptEmitter(emitInteractivePrompt)
 
   try {
-    // Apply provider settings (API key + config path) before each run
-    applySettingsToEnv()
+    markRunning(taskId)
+    // ADR-30: open the steering mailbox for THIS run only. The sendNow handler
+    // resolves the run by taskId; the mailbox owner guards late drains.
+    activateSteering(runCtx.steeringOwnerId)
+
+    // Open a fresh assistant bubble in the transcript (and the user message for
+    // non-resume turns), then announce the run so any view can show its status.
+    if (opts.resume === true) {
+      beginResumeTurn(taskId)
+    } else {
+      beginUserTurn(taskId, displayText || prompt.trim())
+    }
+    emit({ type: 'run_status', status: 'running' })
 
     // P1 B1d: fill unknown model windows from the catalogs in the background
     // (persisted for the next run; the current one keeps the 1M fallback).
@@ -956,7 +1022,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       definitions = built.definitions
     } catch (agentLoadError) {
       definitions = bundledAgents
-      sendEvent({ type: 'error', message: `Custom agents failed to load: ${agentLoadError instanceof Error ? agentLoadError.message : String(agentLoadError)}` })
+      emit({ type: 'error', message: `Custom agents failed to load: ${agentLoadError instanceof Error ? agentLoadError.message : String(agentLoadError)}` })
     }
     const currentSettings = loadSettings()
 
@@ -987,7 +1053,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         resumeReason = resumable
           ? classifyFailure(resumable.errorMessage ?? '')
           : undefined
-        if (attempt > 1) sendEvent({ type: 'run_status', status: 'running', taskId })
+        if (attempt > 1) emit({ type: 'run_status', status: 'running', taskId })
       } else {
         // Plain continuation: the last completed turn's state only — never a
         // mid-turn checkpoint (its pending prompt would duplicate the turn).
@@ -1027,14 +1093,15 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
             interrupted: true,
             errorMessage: plan.message,
           })
-          sendEvent({ type: 'error', message: plan.message, taskId })
-          sendEvent({ type: 'run_status', status: 'interrupted', taskId })
+          emit({ type: 'error', message: plan.message, taskId })
+          emit({ type: 'run_status', status: 'interrupted', taskId })
           return {
             ok: true,
             taskId,
             interrupted: true,
             reason: 'context-overflow',
-            errorMessage: plan.message
+            errorMessage: plan.message,
+            ...settleSteering()
           }
         }
         if (plan.action === 'compact') {
@@ -1065,7 +1132,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
                 }
               }
             }
-            sendEvent({
+            emit({
               type: 'context_compaction',
               action: 'overflow_resume',
               taskId
@@ -1074,25 +1141,20 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         }
       }
 
-      client = new CodebuffClient({
+      const client = new CodebuffClient({
         cwd,
         agentDefinitions: Object.values(definitions),
         approvalMode: currentSettings.approvalMode ?? 'balanced',
         requestApproval: async (request: { command: string; cwd: string; mode: string }) => {
           if (!hasInteractiveSink()) return false
-
-          // Cancel previous pending approval if any
-          if (pendingApprovalResolver) {
-            const prev = pendingApprovalResolver
-            pendingApprovalResolver = null
-            prev(false)
-          }
-
-          sendEvent({ type: 'approval_request', message: request.command, raw: request })
-
-          return new Promise<boolean>((resolve) => {
-            pendingApprovalResolver = resolve
+          const approved = await enqueuePrompt({
+            runId: runCtx.runId,
+            taskId,
+            title: conversationTitle(entry),
+            kind: 'approval',
+            payload: request,
           })
+          return approved === true
         },
         overrideTools: {
           ask_user: async (input: { questions?: unknown }) => {
@@ -1100,14 +1162,12 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
             if (!hasInteractiveSink() || questions.length === 0) {
               return [{ type: 'json', value: { skipped: true } }]
             }
-            if (pendingAskUserResolver) {
-              const prev = pendingAskUserResolver
-              pendingAskUserResolver = null
-              prev({ skipped: true })
-            }
-            sendEvent({ type: 'ask_user', raw: questions })
-            const answers: unknown = await new Promise((resolve) => {
-              pendingAskUserResolver = resolve as (v: unknown) => void
+            const answers: unknown = await enqueuePrompt({
+              runId: runCtx.runId,
+              taskId,
+              title: conversationTitle(entry),
+              kind: 'ask_user',
+              payload: questions,
             })
             // The renderer replies with the shape it collected from the user;
             // `skipped` marks a dismiss. Host-core accepts JSON-able values only.
@@ -1123,7 +1183,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           if (normalized.type !== 'ignored') {
             if (isSilentAgentEvent(normalized)) return
             applyEvent(taskId, normalized)
-            sendEvent(normalized)
+            emit(normalized)
           }
         },
         handleStreamChunk: (chunk) => {
@@ -1133,22 +1193,23 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
           // main assistant message (that caused duplicated/spliced replies).
           if (typeof chunk === 'string') {
             applyEvent(taskId, { type: 'stream', text: chunk })
-            sendEvent({ type: 'stream', text: chunk })
+            emit({ type: 'stream', text: chunk })
           } else if (chunk && typeof chunk === 'object' && 'chunk' in chunk) {
             if (chunk.type === 'subagent_chunk') {
               const ev = { type: 'subagent_stream', text: String(chunk.chunk), agentType: chunk.agentType ? String(chunk.agentType) : undefined }
               if (ev.agentType && SILENT_AGENT_TYPES.has(ev.agentType)) return
               applyEvent(taskId, ev)
-              sendEvent(ev)
+              emit(ev)
             } else if (chunk.type === 'reasoning_chunk') {
               const ev = { type: 'reasoning_stream', text: String(chunk.chunk) }
               applyEvent(taskId, ev)
-              sendEvent(ev)
+              emit(ev)
             }
           }
         },
       })
 
+      runCtx.client = client
       const runState = await client.run({
         agent: agentId,
         // Upstream resume semantics: when the restored history already ends
@@ -1162,8 +1223,8 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // hands over the texts. Returning [] on abort leaves the entries in
         // the mailbox for the leftover handling at settle (settleSteering).
         drainSteeringMessages: () => {
-          if (currentAbort?.signal.aborted) return []
-          return drainSteeringMailbox(steeringOwnerId)
+          if (runCtx.abort.signal.aborted) return []
+          return drainSteeringMailbox(runCtx.steeringOwnerId)
         },
         // #4 圖片附件: base64 image parts ride the SDK's multimodal content
         // channel (never the prompt string) so vision-capable models see them.
@@ -1180,7 +1241,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // base2's baked 400k pruner budgets scale with the real model window.
         params: buildRunContextParams(agentId),
         previousRun: previousRun as RunState | undefined,
-        signal: currentAbort.signal,
+        signal: runCtx.abort.signal,
         // ADR-12: decrypted provider keys travel through the SDK injection
         // channel, not process.env.
         apiKeyOverrides: getProviderApiKeyOverrides(),
@@ -1217,14 +1278,14 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         // the k-cap is scoped to consecutive overflow failures only.
         resetOverflowResumeCount(taskId)
         finishRun(taskId, runState, { interrupted: false })
-        sendEvent({ type: 'run_status', status: 'idle', taskId })
+        emit({ type: 'run_status', status: 'idle', taskId })
         return { ok: true, taskId, interrupted: false, ...settleSteering() }
       }
 
       // Transient failures (network / timeout / rate-limit) auto-retry with
       // backoff before giving up and falling back to the manual Resume banner.
       const retryEligible =
-        !currentAbort.signal.aborted &&
+        !runCtx.abort.signal.aborted &&
         failure.reason !== undefined &&
         AUTO_RETRY_REASONS.has(failure.reason) &&
         failure.autoRetryable !== false
@@ -1232,7 +1293,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
 
       if (!canAutoRetry) {
         finishRun(taskId, runState, { interrupted: true, errorMessage: failure.errorMessage })
-        sendEvent({ type: 'run_status', status: 'interrupted', taskId })
+        emit({ type: 'run_status', status: 'interrupted', taskId })
         return {
           ok: true,
           taskId,
@@ -1247,9 +1308,12 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       // a crash-safety net) without spamming the transcript with the raw error —
       // the next attempt will likely succeed and make the noise pointless.
       finishRun(taskId, runState, { interrupted: true, errorMessage: failure.errorMessage, silentError: true })
+      // The retry backoff still owns this task: keeping it in the running set
+      // prevents delete/remove/dropSession from tearing down a live run.
+      markRunning(taskId)
 
       const delayMs = computeRetryDelayMs(attempt)
-      sendEvent({
+      emit({
         type: 'auto_retry',
         taskId,
         status: failure.reason,
@@ -1260,10 +1324,10 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         nextAt: Date.now() + delayMs
       })
 
-      const elapsed = await waitForDelay(delayMs, currentAbort.signal)
+      const elapsed = await waitForDelay(delayMs, runCtx.abort.signal)
       if (!elapsed) {
         // User pressed Stop while waiting — treat as an intentional stop.
-        sendEvent({ type: 'run_status', status: 'interrupted', taskId })
+        emit({ type: 'run_status', status: 'interrupted', taskId })
         return {
           ok: true,
           taskId,
@@ -1280,13 +1344,13 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       // idempotent per owner (steering-mailbox.ts), so entries pushed since the
       // failed attempt's last drain survive to the fresh attempt instead of
       // being wiped or reported as leftovers of a dead attempt.
-      activateSteering(steeringOwnerId)
+      activateSteering(runCtx.steeringOwnerId)
     }
   } catch (error) {
     // The SDK resolves (not rejects) on abort/API errors, so this only fires on
     // unexpected failures. Report the error so the UI can offer to retry.
     finishRun(taskId, null, { interrupted: true, errorMessage: error instanceof Error ? error.message : String(error) })
-    sendEvent({ type: 'run_status', status: 'interrupted', taskId })
+    emit({ type: 'run_status', status: 'interrupted', taskId })
     return {
       ok: false,
       taskId,
@@ -1296,21 +1360,16 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
       ...settleSteering()
     }
   } finally {
-    // ask_user parked across abort/run-end: resolve as skipped
-    
-if (pendingAskUserResolver) {
-      const fnAsk = pendingAskUserResolver
-      pendingAskUserResolver = null
-      fnAsk({ skipped: true })
+    // Settle anything this run left waiting before releasing its identity.
+    dropPromptsForRun(runCtx.runId)
+    const leftovers = deactivateSteering(runCtx.steeringOwnerId)
+    if (leftovers.length > 0) {
+      // Safety net for early returns that skipped settleSteering: never leave
+      // push-time steering echoes orphaned in the transcript.
+      retractSteeringEcho(taskId, leftovers.map((entry) => entry.pushId))
     }
-    if (pendingApprovalResolver) {
-      const fn = pendingApprovalResolver
-      pendingApprovalResolver = null
-      fn(false)
-    }
-    client = null
-    activeRunTaskId = null
-    currentAbort = null
+    runCtx.client = null
+    releaseRun(runCtx.runId)
   }
 }
 
@@ -1372,18 +1431,47 @@ function autoRetryHeadline(reason: string | undefined): string {
   }
 }
 
-export function abortRun(): void {
-  // ask_user parked across abort/run-end: resolve as skipped
-  
-if (pendingAskUserResolver) {
-    const fnAsk = pendingAskUserResolver
-    pendingAskUserResolver = null
-    fnAsk({ skipped: true })
+export interface AbortRunResult {
+  ok: boolean
+  code?: 'ambiguous-target' | 'not-found'
+  error?: string
+  runningTaskIds?: string[]
+}
+
+/**
+ * Abort one run. With no target, only a single active run is unambiguous; a
+ * multi-run process returns ambiguous-target (there is no implicit stop-all
+ * renderer channel).
+ */
+export function abortRun(target: { taskId?: string; runId?: string } = {}): AbortRunResult {
+  let run: RunContext | undefined
+  if (target.runId) {
+    run = getRun(target.runId)
+  } else if (target.taskId) {
+    run = getRunByTaskId(target.taskId)
+  } else {
+    const all = listRuns()
+    if (all.length === 0) return { ok: true }
+    if (all.length > 1) {
+      return {
+        ok: false,
+        code: 'ambiguous-target',
+        error: 'More than one run is active — specify taskId or runId.',
+        runningTaskIds: all.map((item) => item.taskId)
+      }
+    }
+    run = all[0]
   }
-  if (pendingApprovalResolver) {
-    const fn = pendingApprovalResolver
-    pendingApprovalResolver = null
-    fn(false)
+  if (!run) return { ok: false, code: 'not-found', error: 'No matching active run' }
+  dropPromptsForRun(run.runId)
+  run.abort.abort()
+  return { ok: true }
+}
+
+/** Internal quit/cleanup path: abort every active run (not a renderer channel). */
+export function abortAllRuns(): void {
+  for (const run of listRuns()) {
+    dropPromptsForRun(run.runId)
+    run.abort.abort()
   }
-  currentAbort?.abort()
 }

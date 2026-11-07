@@ -32,7 +32,7 @@ import {
   type CatalogWarmTarget,
 } from '../model-catalog-warm'
 import { isRunning } from '../run/start-run'
-import { getRunningTaskId } from '../sessions/session-store'
+import { getRunningTaskId, getRunningTaskIds } from '../sessions/session-store'
 
 /** ADR-31: the only settings-path catalog wait — a model ADDED by this save.
  *  Snapshot hits still resolve instantly; this caps a genuine round-trip. */
@@ -107,6 +107,7 @@ export function getState(): unknown {
     settings,
     running: isRunning(),
     runningTaskId: getRunningTaskId(),
+    runningTaskIds: getRunningTaskIds(),
     agentIds: Object.keys(bundledAgents).sort(),
     ...configHealthField(),
   }

@@ -1543,6 +1543,12 @@ export function getProviderConfigHealth(): ProviderConfigHealth {
   return { dropped }
 }
 
+/** Last successful provider-config write. applySettingsToEnv runs once per
+ *  run; with concurrent runs an unchanged config must not be rewritten (and
+ *  fsynced) for every start. Keyed by path so tests with different data dirs
+ *  cannot reuse each other's cache entry. */
+let lastProviderConfigWrite: { file: string; json: string } | null = null
+
 /** Generate the anybuff.json used by the SDK (provider config + routing); returns the file path */
 export function writeProviderConfigFile(): string {
   const file = join(hostPaths().dataDir, 'anybuff.json')
@@ -1573,13 +1579,17 @@ export function writeProviderConfigFile(): string {
       `[anybuff-settings] dropped invalid provider entry from anybuff.json (${entry})`,
     )
   }
-  writeFileAtomic(file, JSON.stringify(writable, null, 2))
+  const json = JSON.stringify(writable, null, 2)
+  if (lastProviderConfigWrite?.file === file && lastProviderConfigWrite.json === json) {
+    return file
+  }
+  writeFileAtomic(file, json)
+  lastProviderConfigWrite = { file, json }
   return file
 }
 
 /** Apply saved settings to process.env (call before each run) */
 export function applySettingsToEnv(): void {
-  const s = loadSettings()
   // ADR-12: decrypted keys are NO LONGER written into process.env — they
   // reach the SDK through the per-run apiKeyOverrides channel instead, so
   // agent-spawned child processes never inherit plaintext credentials.

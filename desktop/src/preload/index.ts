@@ -17,6 +17,12 @@ export interface UiEvent {
   type: string
   /** Task (conversation) this event belongs to — filter chat events by it. */
   taskId?: string
+  /** Execution id for concurrent-run routing (host P1). */
+  runId?: string
+  /** Interactive prompt id (approval / ask_user FIFO). */
+  promptId?: string
+  /** Conversation title shown on the interactive prompt modal. */
+  title?: string
   text?: string
   action?: string
   toolName?: string
@@ -168,7 +174,8 @@ const api = {
     /** #4 base64 image parts (composer paste/attach), see host contracts. */
     content?: Array<{ type: 'image'; image: string; mediaType: string }>
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),
-  abort: () => ipcRenderer.invoke('AnyBuff:abort'),
+  abort: (payload?: { taskId?: string; runId?: string }) =>
+    ipcRenderer.invoke('AnyBuff:abort', payload),
   /** ADR-30 "Send now" mid-turn steering: hand a plain-text message to the
    *  active run (host gate accepts only while steering is possible). This is
    *  the EXPLICIT entry only — the composer calls it from Ctrl/Cmd+Enter or its
@@ -181,7 +188,17 @@ const api = {
   runBashCommand: (payload: { command: string; cwd: string; timeoutSeconds?: number }) =>
     ipcRenderer.invoke('AnyBuff:runBashCommand', payload),
   respondAskUser: (payload: unknown) => ipcRenderer.invoke('AnyBuff:respondAskUser', payload),
-  respondApproval: (approved: boolean) => ipcRenderer.invoke('AnyBuff:approvalResponse', approved),
+  respondApproval: (
+    input:
+      | boolean
+      | { approved?: boolean; promptId?: string; taskId?: string; runId?: string }
+  ) => ipcRenderer.invoke('AnyBuff:approvalResponse', input),
+  /** Native toast when the window is in the background (main checks focus). */
+  showNotification: (payload: { title?: string; body?: string; taskId?: string }) =>
+    ipcRenderer.invoke('AnyBuff:showNotification', payload) as Promise<{
+      shown: boolean
+      reason?: string
+    }>,
   listFiles: (root: string) => ipcRenderer.invoke('AnyBuff:listFiles', root),
   listDir: (dir: string) => ipcRenderer.invoke('AnyBuff:listDir', dir),
   readFile: (path: string) => ipcRenderer.invoke('AnyBuff:readFile', path),

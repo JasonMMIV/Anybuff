@@ -37,7 +37,22 @@ import { compactionNote } from './utils/compaction-note'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
-import { firstReadyQueueIndex, queueTargetMatchesView } from './utils/queue-routing'
+import {
+  queueTargetKey,
+  queueTargetMatchesView,
+} from './utils/queue-routing'
+import {
+  terminalRunBody,
+  terminalRunHeading,
+  terminalRunKey,
+} from './utils/run-notifications'
+import {
+  addTaskId,
+  dropTaskValue,
+  isStaleTerminalRun,
+  removeTaskId,
+  setTaskValue,
+} from './utils/run-state'
 import { clampComposerSelection, composerDraftKey, createComposerDraft, EMPTY_COMPOSER_DRAFT, isComposerTextEmpty, type ComposerDraft } from './utils/composer-draft'
 import {
   findDraftTab,
@@ -335,6 +350,32 @@ export interface FollowupItem {
   label?: string
 }
 
+interface RetryNotice {
+  attempt: number
+  maxAttempts: number
+  nextAt: number
+  reason?: string
+  headline?: string
+  detail?: string
+}
+
+interface ApprovalPromptState {
+  message: string
+  raw?: unknown
+  promptId?: string
+  taskId?: string
+  runId?: string
+  title?: string
+}
+
+interface AskUserPromptState {
+  questions: Array<Record<string, any>>
+  promptId?: string
+  taskId?: string
+  runId?: string
+  title?: string
+}
+
 /** Extract next-step suggestions from the suggest_followups tool output or raw text. */
 function parseFollowups(message: unknown): FollowupItem[] {
   if (!message) return []
@@ -494,8 +535,12 @@ export default function App() {
   const [projectName, setProjectName] = useState('')
   const [branch, setBranch] = useState('')
   const [hasProvider, setHasProvider] = useState(false)
-  const [running, setRunning] = useState(false)
-  const [stopping, setStopping] = useState(false)
+  /** Per-task run state. A Set (not a single id) so a background run cannot
+   *  be cleared by another run's terminal event. */
+  const [runningTaskIds, setRunningTaskIds] = useState<ReadonlySet<string>>(() => new Set())
+  const running = runningTaskIds.size > 0
+  const [stoppingTaskIds, setStoppingTaskIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [runStartedAtByTask, setRunStartedAtByTask] = useState<Record<string, number>>({})
   // M-C3 keep-screen-on: one sink for EVERY run lifecycle transition (optimistic
   // submit, run_status events, resume, stop, engine-state reload) — the shell
   // keeps the screen awake only while a run is actually in flight. No-ops on
@@ -508,10 +553,11 @@ export default function App() {
   }, [running])
   /** #2 執行中訊息佇列：messages parked while a run is in flight. */
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
-  /** ADR-30: the queue was paused by a user interrupt that requeued steering
-   *  leftovers (upstream 'pause-if-pending') — nobody auto-dispatches it
-   *  until the user resumes or submits a fresh run. */
-  const [queuePaused, setQueuePaused] = useState(false)
+  /** Extra drain tick after a blocked/failed queued dispatch. */
+  const [queueRetryTick, setQueueRetryTick] = useState(0)
+  /** ADR-30 pause is per conversation: one tab's Stop must not hold every
+   *  other tab's queue. Keys come from queueTargetKey(). */
+  const [queuePausedKeys, setQueuePausedKeys] = useState<ReadonlySet<string>>(() => new Set())
   const [prompt, setPrompt] = useState('')
   const [chatItems, setChatItems] = useState<ChatItem[]>([])
   const [events, setEvents] = useState<UiEvent[]>([])
@@ -595,7 +641,7 @@ export default function App() {
   const [compactConfirmOpen, setCompactConfirmOpen] = useState(false)
   const [interviewArmed, setInterviewArmed] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [followups, setFollowups] = useState<FollowupItem[]>([])
+  const [followupsByTask, setFollowupsByTask] = useState<Record<string, FollowupItem[]>>({})
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [historyTask, setHistoryTask] = useState<{ id: string; prompt: string } | null>(null)
   const [historyResults, setHistoryResults] = useState<SearchResult[]>([])
@@ -604,32 +650,28 @@ export default function App() {
   const [focusSignal, setFocusSignal] = useState(0)
   /** Set when the last run failed (stopped, API error, timeout) but its state was preserved. */
   const [resumeInfo, setResumeInfo] = useState<{ prompt: string; reason?: string; errorMessage?: string } | null>(null)
-  /** Live auto-retry countdown for a transient failure (network/timeout/rate-limit). Transient only. */
-  const [retryNotice, setRetryNotice] = useState<{
-    attempt: number
-    maxAttempts: number
-    nextAt: number
-    reason?: string
-    headline?: string
-    detail?: string
-  } | null>(null)
+  /** Per-task live auto-retry countdown (network/timeout/rate-limit). */
+  const [retryNoticeByTask, setRetryNoticeByTask] = useState<Record<string, RetryNotice>>({})
   /** Ticking clock so the retry strip + the #22 elapsed timer stay live. */
   const [nowTick, setNowTick] = useState(() => Date.now())
-  /** #22：目前 run 的啟動時間（頂欄 badge / Composer 的即時耗時由此推算）。 */
-  const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
-  const [approvalRequest, setApprovalRequest] = useState<{ message: string; raw?: unknown } | null>(null)
+
+  const [approvalRequest, setApprovalRequest] = useState<ApprovalPromptState | null>(null)
   // ask_user override: questions awaiting user answers (rendered as a banner)
-  const [pendingAskUser, setPendingAskUser] = useState<Array<Record<string, any>> | null>(null)
+  const [pendingAskUser, setPendingAskUser] = useState<AskUserPromptState | null>(null)
   const [askSelections, setAskSelections] = useState<Record<number, string[]>>({})
   const [askOther, setAskOther] = useState<Record<number, string>>({})
-  const [activeTodos, setActiveTodos] = useState<TodoTodo[]>([])
+  const [todosByTask, setTodosByTask] = useState<Record<string, TodoTodo[]>>({})
   const [todoPanelCollapsed, setTodoPanelCollapsed] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
-  /** The conversation that owns the active agent run (may differ from the view). */
-  const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
+  /** Background completions: taskId → done/error until its tab is viewed. */
+  const [attentionByTask, setAttentionByTask] = useState<Record<string, 'done' | 'error'>>({})
+  /** Close-running-tab confirmation (Ctrl+W / close button). */
+  const [closeRunningTab, setCloseRunningTab] = useState<{ tabId: string; title: string } | null>(null)
   /** Reactive mirror of currentTaskRef — which conversation is displayed. */
   const [activeViewTaskId, setActiveViewTaskId] = useState<string | null>(null)
-  /** Titlebar tabs: open conversations / unsent drafts (renderer-scoped, one run at a time). */
+  /** The viewed task's live retry countdown (background retries stay parked). */
+  const activeRetryNotice = activeViewTaskId ? retryNoticeByTask[activeViewTaskId] ?? null : null
+  /** Titlebar tabs: open conversations / unsent drafts (renderer-scoped). */
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   /** Live titlebar drag-reorder state: source tab + current insertion point. */
@@ -652,10 +694,26 @@ export default function App() {
   workspaceTabsRef.current = workspaceTabs
   const activeTabIdRef = useRef(activeTabId)
   activeTabIdRef.current = activeTabId
+  const runningTaskIdsRef = useRef(runningTaskIds)
+  runningTaskIdsRef.current = runningTaskIds
   const projectsRef = useRef(projects)
   projectsRef.current = projects
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
+  /** Terminal notifications already played/toasted (runId + status). */
+  const notifiedTerminalRef = useRef<Set<string>>(new Set())
+  /** Legacy-host project-busy fallback; not used by the current host. */
+  const blockedQueueCwdsRef = useRef<Set<string>>(new Set())
+  /** Task-scoped retry backoff after a failed queue dispatch. */
+  const blockedQueueTaskIdsRef = useRef<Set<string>>(new Set())
+  /** Guards the async drain loop from double-dispatching one task/draft tab. */
+  const dispatchingTaskIdsRef = useRef<Set<string>>(new Set())
+  const dispatchingTabIdsRef = useRef<Set<string>>(new Set())
+  /** Last run token per task: an older run's finally must not clear a newer run. */
+  const runTokenByTaskRef = useRef<Record<string, number>>({})
+  const nextRunTokenRef = useRef(0)
+  /** Task → current runId (or `starting:<token>` before the first event). */
+  const runIdByTaskRef = useRef<Record<string, string>>({})
   /** Mirror of tabDrag for handlers that run before React commits the state. */
   const tabDragRef = useRef<TabDragState | null>(null)
   /** A press that began on the close button must not start a tab drag. */
@@ -993,6 +1051,8 @@ export default function App() {
       const state = (await window.AnyBuff.getState()) as {
         cwd: string | null
         running: boolean
+        runningTaskId?: string | null
+        runningTaskIds?: string[]
         settings: {
           providers: { id: string; label: string; models: string[] }[]
           activeModel: string
@@ -1006,10 +1066,18 @@ export default function App() {
         }
       }
       setCwd(state.cwd)
-      setRunning(state.running)
-      setRunningTaskId((state as { runningTaskId?: string | null }).runningTaskId ?? null)
+      const runningIds = Array.isArray(state.runningTaskIds)
+        ? state.runningTaskIds
+        : state.runningTaskId
+          ? [state.runningTaskId]
+          : []
+      setRunningTaskIds(new Set(runningIds))
       // #22：重新載入時若 run 仍在進行，以載入時間為近似起點。
-      setRunStartedAt(state.running ? Date.now() : null)
+      setRunStartedAtByTask(
+        runningIds.length > 0
+          ? Object.fromEntries(runningIds.map((id) => [id, Date.now()]))
+          : {}
+      )
       setHasProvider(state.settings.hasProvider)
       setSettings({
         providers: state.settings.providers,
@@ -1187,39 +1255,51 @@ export default function App() {
   // not re-fire on every cwd change mid-pick.
 
   /**
-   * First prompt of a draft: turn the active tab into a task tab. Existing task
-   * tabs keep their title (a conversation is named by its first prompt).
+   * First prompt of a draft: turn a tab into a task tab. Existing task tabs
+   * keep their title (a conversation is named by its first prompt). `tabId`
+   * is explicit so a background queue dispatch can bind its own tab, while
+   * the composer draft bucket is only moved when that tab is the visible one.
    */
-  const bindActiveTabToTask = useCallback((taskId: string, title?: string) => {
-    const tabId = activeTabIdRef.current
-    if (!tabId) return
-    // The draft bucket `tab:<id>` (or the Android project bucket) ends here:
-    // drop it before the key flips to the task id so its text cannot leak back
-    // into a later new-chat tab.
-    if (draftKeyRef.current === `tab:${tabId}` || draftKeyRef.current.startsWith('__new__:')) {
-      draftsRef.current.delete(draftKeyRef.current)
-      composerSessionsRef.current.delete(draftKeyRef.current)
-      draftKeyRef.current = taskId
-    }
-    // Messages queued while this tab was still a draft now belong to the task
-    // that just started; otherwise they would wait for a draft that no longer
-    // exists and never dispatch.
-    setQueuedMessages((prev) =>
-      prev.map((m) => (m.taskId == null && m.tabId === tabId ? { ...m, taskId } : m))
-    )
-    setWorkspaceTabs((prev) =>
-      prev.map((tab) =>
-        tab.id === tabId
-          ? {
-              ...tab,
-              taskId: tab.taskId ?? taskId,
-              projectPath: cwdRef.current ?? tab.projectPath,
-              title: tab.taskId ? tab.title : tabTitleFromPrompt(title, tab.title)
-            }
-          : tab
+  const bindTabToTask = useCallback(
+    (tabId: string, taskId: string, title?: string, projectPath?: string | null) => {
+      if (activeTabIdRef.current === tabId) {
+        // The draft bucket `tab:<id>` (or the Android project bucket) ends
+        // here: drop it before the key flips to the task id so its text
+        // cannot leak back into a later new-chat tab.
+        if (draftKeyRef.current === `tab:${tabId}` || draftKeyRef.current.startsWith('__new__:')) {
+          draftsRef.current.delete(draftKeyRef.current)
+          composerSessionsRef.current.delete(draftKeyRef.current)
+          draftKeyRef.current = taskId
+        }
+      }
+      // Messages queued while this tab was still a draft now belong to the
+      // task that just started; otherwise they would wait for a draft that no
+      // longer exists and never dispatch.
+      setQueuedMessages((prev) =>
+        prev.map((m) => (m.taskId == null && m.tabId === tabId ? { ...m, taskId } : m))
       )
-    )
-  }, [])
+      setWorkspaceTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === tabId
+            ? {
+                ...tab,
+                taskId: tab.taskId ?? taskId,
+                projectPath: projectPath ?? cwdRef.current ?? tab.projectPath,
+                title: tab.taskId ? tab.title : tabTitleFromPrompt(title, tab.title)
+              }
+            : tab
+        )
+      )
+    },
+    []
+  )
+  const bindActiveTabToTask = useCallback(
+    (taskId: string, title?: string) => {
+      const tabId = activeTabIdRef.current
+      if (tabId) bindTabToTask(tabId, taskId, title)
+    },
+    [bindTabToTask]
+  )
   useEffect(() => {
     if (isPreview) return
     const nativeTakeStagedFolder = (
@@ -1350,57 +1430,129 @@ export default function App() {
   // (The #22 elapsed timer is a self-contained component with its own 1s
   // clock — it must not re-render the whole App every second.)
   useEffect(() => {
-    if (!retryNotice) return
+    if (!activeRetryNotice) return
     const timer = setInterval(() => setNowTick(Date.now()), 500)
     return () => clearInterval(timer)
-  }, [retryNotice])
+  }, [activeRetryNotice])
 
   // SDK events → UI
   useEffect(() => {
     if (isPreview) return
     const unsubscribe = window.AnyBuff.onEvent((event) => {
+      /** Best available title for a task not currently on screen. */
+      const titleForTask = (taskId: string | undefined): string | undefined => {
+        if (!taskId) return undefined
+        const tab = workspaceTabsRef.current.find((t) => t.taskId === taskId)
+        if (tab?.title) return tab.title
+        for (const project of projectsRef.current) {
+          const task = project.tasks.find((t) => t.id === taskId)
+          if (task?.prompt) return task.prompt
+        }
+        return undefined
+      }
+
       /* ── Global lifecycle events (apply regardless of visible conversation) ── */
 
-      // Run ownership lives in the main process; these events keep the global
-      // running indicator accurate even when viewing another conversation.
+      // Run ownership lives in the main process; every event carries its own
+      // taskId, so one run can never clear another run's state.
       if (event.type === 'run_status') {
+        const taskId = event.taskId
+        if (!taskId) return
         if (event.status === 'running') {
-          setRunning(true)
-          if (event.taskId) setRunningTaskId(event.taskId)
+          if (event.runId) runIdByTaskRef.current[taskId] = event.runId
+          setRunningTaskIds((prev) => addTaskId(prev, taskId))
           // #22：計時起點。同一 run 的後續 running 事件（L3 retry / resume）
           // 保留第一個起點，避免重新計時。
-          setRunStartedAt((prev) => prev ?? Date.now())
+          setRunStartedAtByTask((prev) =>
+            Object.hasOwn(prev, taskId) ? prev : { ...prev, [taskId]: Date.now() }
+          )
+          setAttentionByTask((prev) => dropTaskValue(prev, taskId))
+          // A legacy host without runId keys terminal notifications by task;
+          // clear that task's old keys so its NEXT completion still chimes.
+          for (const key of notifiedTerminalRef.current) {
+            if (key.startsWith(`${taskId}:`)) notifiedTerminalRef.current.delete(key)
+          }
         } else {
-          setRunning(false)
-          setRunningTaskId(null)
-          setRunStartedAt(null)
-          // Notification cue: a terminal run transition the user may not be
-          // watching — 'idle' = finished successfully, 'interrupted' = stopped/errored.
-          if (event.status === 'interrupted') playRunInterruptedSound()
-          else playRunFinishedSound()
-          // The run is over — close out any card still marked running in the
-          // viewed conversation (Stop mid-tool, a result event that never
-          // arrived). Nothing is live anymore; a card left on "Running…" also
-          // keeps its whole process group header on "Working…" forever.
-          if (!event.taskId || event.taskId === currentTaskRef.current) {
-            const endStatus: 'done' | 'interrupted' = event.status === 'interrupted' ? 'interrupted' : 'done'
+          // A duplicate terminal from an OLD run must never clear the newer
+          // run that replaced it on the same task.
+          const knownRunId = runIdByTaskRef.current[taskId]
+          if (isStaleTerminalRun(knownRunId, event.runId)) return
+          if (event.runId) delete runIdByTaskRef.current[taskId]
+          setRunningTaskIds((prev) => removeTaskId(prev, taskId))
+          setStoppingTaskIds((prev) => removeTaskId(prev, taskId))
+          setRunStartedAtByTask((prev) => dropTaskValue(prev, taskId))
+          setRetryNoticeByTask((prev) => dropTaskValue(prev, taskId))
+          setTodosByTask((prev) => dropTaskValue(prev, taskId))
+          // The host settles any prompt owned by this run when it ends.
+          setApprovalRequest((prev) => (prev?.taskId === taskId ? null : prev))
+          setPendingAskUser((prev) => (prev?.taskId === taskId ? null : prev))
+
+          // Play/toast each terminal transition once. A reconnecting host may
+          // re-emit the terminal status; `runId + status` is the dedupe key.
+          const terminalStatus = event.status === 'interrupted' ? 'interrupted' : 'idle'
+          const terminalKey = terminalRunKey({ ...event, status: terminalStatus })
+          if (terminalKey && !notifiedTerminalRef.current.has(terminalKey)) {
+            notifiedTerminalRef.current.add(terminalKey)
+            if (terminalStatus === 'interrupted') playRunInterruptedSound()
+            else playRunFinishedSound()
+            if (typeof document !== 'undefined' && !document.hasFocus()) {
+              const title = event.title ?? titleForTask(taskId)
+              try {
+                const notify = window.AnyBuff.showNotification
+                if (typeof notify === 'function') {
+                  void notify
+                    .call(window.AnyBuff, {
+                      title: terminalRunHeading(terminalStatus),
+                      body: terminalRunBody(title, terminalStatus),
+                      taskId
+                    })
+                    .catch(() => {})
+                }
+              } catch {
+                // An older preload/native shell may not expose notifications.
+              }
+            }
+          }
+
+          if (taskId !== currentTaskRef.current) {
+            setAttentionByTask((prev) =>
+              setTaskValue(prev, taskId, event.status === 'interrupted' ? 'error' : 'done')
+            )
+          } else {
+            setAttentionByTask((prev) => dropTaskValue(prev, taskId))
+            // Close out any card still marked running in the viewed
+            // conversation (Stop mid-tool, a result event that never arrived).
+            const endStatus: 'done' | 'interrupted' =
+              event.status === 'interrupted' ? 'interrupted' : 'done'
             setChatItems((prev) => {
               const swept = sweepRunningCards(prev, endStatus)
               return swept === prev ? prev : [...swept]
             })
           }
+          // A settled run frees its project for the next queued message.
+          blockedQueueCwdsRef.current.clear()
+          blockedQueueTaskIdsRef.current.delete(taskId)
+          setQueueRetryTick((n) => n + 1)
         }
-        // Any run transition ends the current retry wait (a new attempt is
-        // starting, or the run reached a terminal state).
-        setRetryNotice(null)
         return
       }
 
-      // Approval requests pause the single active run wherever it is — always surface.
+      // Approval / ask_user prompts are serialized by the host FIFO, so the
+      // renderer still needs only one visible slot at a time.
       if ((event as any).type === 'ask_user') {
         playRunPausedSound()
         const qs = (event as any).raw
-        setPendingAskUser(Array.isArray(qs) && qs.length > 0 ? qs : null)
+        setPendingAskUser(
+          Array.isArray(qs) && qs.length > 0
+            ? {
+                questions: qs,
+                promptId: event.promptId,
+                taskId: event.taskId,
+                runId: event.runId,
+                title: event.title
+              }
+            : null
+        )
         setAskSelections({})
         setAskOther({})
         return
@@ -1408,7 +1560,14 @@ export default function App() {
 
       if (event.type === 'approval_request') {
         playRunPausedSound()
-        setApprovalRequest({ message: event.message ?? 'Permission requested', raw: event.raw })
+        setApprovalRequest({
+          message: event.message ?? 'Permission requested',
+          raw: event.raw,
+          promptId: event.promptId,
+          taskId: event.taskId,
+          runId: event.runId,
+          title: event.title
+        })
         return
       }
 
@@ -1424,28 +1583,57 @@ export default function App() {
         return
       }
 
-      // Per-task cost: `finish.totalCost` is that run's credits (cents). Keep it
-      // per task so background runs never pollute the visible conversation.
-      if (event.type === 'finish' && typeof event.totalCost === 'number') {
-        setTaskCosts((prev) => addTaskCost(prev, event.taskId, event.totalCost))
+      // Per-task metadata is recorded even for background runs; only the
+      // timeline below is view-gated.
+      if (event.taskId) {
+        const eventTaskId = event.taskId
+        if (event.type === 'auto_retry') {
+          setRetryNoticeByTask((prev) =>
+            setTaskValue<RetryNotice>(prev, eventTaskId, {
+              attempt: Number(event.attempt ?? 0),
+              maxAttempts: Number(event.maxAttempts ?? 0),
+              nextAt: Number(event.nextAt ?? Date.now()),
+              reason: typeof event.status === 'string' ? event.status : undefined,
+              headline: typeof event.message === 'string' ? event.message : undefined,
+              detail: typeof event.text === 'string' ? event.text : undefined
+            })
+          )
+          setNowTick(Date.now())
+          return
+        }
+        if (event.type === 'finish') {
+          setTodosByTask((prev) => dropTaskValue(prev, eventTaskId))
+          if (typeof event.totalCost === 'number') {
+            setTaskCosts((prev) => addTaskCost(prev, eventTaskId, event.totalCost))
+          }
+        }
+        if (
+          (event.type === 'tool_start' || event.type === 'tool_call') &&
+          event.toolName === 'write_todos' &&
+          Array.isArray(event.todos)
+        ) {
+          setTodosByTask((prev) =>
+            setTaskValue(prev, eventTaskId, event.todos as TodoTodo[])
+          )
+        }
+        if (
+          event.toolName === 'suggest_followups' &&
+          (event.type === 'tool_start' ||
+            event.type === 'tool_call' ||
+            event.type === 'tool_result')
+        ) {
+          const parsed = parseFollowups(event.message ?? event.raw ?? '')
+          if (parsed.length > 0) {
+            setFollowupsByTask((prev) => setTaskValue(prev, eventTaskId, parsed))
+          }
+        }
       }
 
       /* ── Conversation-scoped events ── */
       // Route by taskId so background runs never pollute the visible timeline.
       if (!event.taskId || event.taskId !== currentTaskRef.current) return
 
-      if (event.type === 'auto_retry') {
-        setRetryNotice({
-          attempt: Number(event.attempt ?? 0),
-          maxAttempts: Number(event.maxAttempts ?? 0),
-          nextAt: Number(event.nextAt ?? Date.now()),
-          reason: typeof event.status === 'string' ? event.status : undefined,
-          headline: typeof event.message === 'string' ? event.message : undefined,
-          detail: typeof event.text === 'string' ? event.text : undefined
-        })
-        setNowTick(Date.now())
-        return
-      }
+      if (event.type === 'auto_retry') return
 
       if (event.type === 'context_compaction') {
         setChatItems((prev) => [...prev, compactionNote(event)])
@@ -1479,7 +1667,7 @@ export default function App() {
         if (fnMatch) {
           const parsed = parseFollowups(fnMatch[1])
           if (parsed.length > 0) {
-            setFollowups(parsed)
+            setFollowupsByTask((prev) => setTaskValue(prev, event.taskId, parsed))
           }
         }
 
@@ -1494,7 +1682,7 @@ export default function App() {
             if (fullMatch) {
               const parsed = parseFollowups(fullMatch[1])
               if (parsed.length > 0) {
-                setFollowups(parsed)
+                setFollowupsByTask((prev) => setTaskValue(prev, event.taskId, parsed))
               }
             }
             next[next.length - 1] = {
@@ -1516,11 +1704,6 @@ export default function App() {
       }
 
       if (event.type === 'tool_start' || event.type === 'tool_call') {
-        // The SDK surfaces the followup items on the tool_call input
-        if (event.toolName === 'suggest_followups') {
-          const parsed = parseFollowups(event.message ?? event.raw ?? '')
-          if (parsed.length > 0) setFollowups(parsed)
-        }
         // Remember files mutated this run so the Revert button can undo them.
         if (event.files?.length) {
           changedFilesRef.current = [...new Set([...changedFilesRef.current, ...event.files])]
@@ -1545,19 +1728,12 @@ export default function App() {
           toolInput: event.toolInput,
           blockedPaths: event.blockedPaths
         }
-        if (event.toolName === 'write_todos' && Array.isArray(event.todos)) {
-          setActiveTodos(event.todos)
-        }
         setChatItems((prev) => [...prev, { kind: 'tool', tool }])
         return
       }
 
       if (event.type === 'tool_result') {
         if (isSilentTool(event.toolName)) {
-          if (event.toolName === 'suggest_followups') {
-            const parsed = parseFollowups(event.message ?? event.raw ?? '')
-            if (parsed.length > 0) setFollowups(parsed)
-          }
           return
         }
         // Match by toolCallId inside the updater so the lookup always sees the
@@ -1579,7 +1755,6 @@ export default function App() {
       }
 
       if (event.type === 'finish') {
-        setActiveTodos([])
         // #21 訊息 footer 完成時間戳：stamp the assistant message that just finished.
         const completedAt = Date.now()
         setChatItems((prev) => {
@@ -1676,7 +1851,7 @@ export default function App() {
       }
 
       if (event.type === 'error') {
-        setApprovalRequest(null)
+        setApprovalRequest((prev) => (prev?.taskId === event.taskId ? null : prev))
         const msg = event.message ?? 'An error occurred'
         if (
           msg.includes('suggest_followups already ended') ||
@@ -1944,12 +2119,52 @@ export default function App() {
         ...leftoverRequeueItems(leftovers).map((item) => ({ ...item, ...target })),
         ...prev
       ])
-      if (pausedByStop) setQueuePaused(true)
+      if (pausedByStop) {
+        const key = queueTargetKey(target ?? {})
+        setQueuePausedKeys((prev) => {
+          if (prev.has(key)) return prev
+          const next = new Set(prev)
+          next.add(key)
+          return next
+        })
+      }
     },
     []
   )
 
-  const resumeQueueDispatch = useCallback(() => setQueuePaused(false), [])
+  const resumeQueueDispatch = useCallback(() => {
+    const key = queueTargetKey({
+      taskId: activeViewTaskId ?? undefined,
+      tabId: activeTabIdRef.current,
+      cwd: cwdRef.current ?? undefined
+    })
+    setQueuePausedKeys((prev) => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+  }, [activeViewTaskId])
+
+  /** #4: turn image attachments into SDK RunImagePart base64 content. */
+  const buildImageContent = useCallback(
+    (atts: Attachment[]): Array<{ type: 'image'; image: string; mediaType: string }> => {
+      const parts: Array<{ type: 'image'; image: string; mediaType: string }> = []
+      for (const att of atts) {
+        if (!att.isImage || !att.previewUrl) continue
+        const commaIdx = att.previewUrl.indexOf(',')
+        const meta = /^data:([^;]+);/.exec(att.previewUrl.slice(0, commaIdx >= 0 ? commaIdx : 0))
+        const base64 = commaIdx >= 0 ? att.previewUrl.slice(commaIdx + 1) : ''
+        if (base64) {
+          const semiIdx = att.previewUrl.indexOf(';')
+          const fallbackType = semiIdx > 5 ? att.previewUrl.slice(5, semiIdx) : 'image/png'
+          parts.push({ type: 'image', image: base64, mediaType: meta?.[1] ?? fallbackType })
+        }
+      }
+      return parts
+    },
+    []
+  )
 
   /** #6：/init 的聊天氣泡標題（實際送出的 prompt 固定為 '/init'，用於觸發引擎
    *  內建 initPrompt——'User has typed "init"…'，讓 agent 分析專案後建立/更新
@@ -1961,7 +2176,7 @@ export default function App() {
     async (
       textOverride?: string,
       prebuiltPrompt?: string,
-      opts?: { mode?: AgentMode; steer?: boolean }
+      opts?: { mode?: AgentMode; steer?: boolean; attachments?: Attachment[] }
     ) => {
       let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
@@ -1970,9 +2185,24 @@ export default function App() {
       const sendTabId = activeTabIdRef.current
       const sendDraftKey = draftKeyRef.current
       const sendCwd = cwd
+      const sendAttachments = opts?.attachments ?? attachments
+      const sendTaskId = currentTaskRef.current ?? (isPreview ? (sendTabId ?? 'preview') : null)
+      const viewIsRunning = sendTaskId
+        ? runningTaskIdsRef.current.has(sendTaskId)
+        : false
+      const sendQueueKey = queueTargetKey({
+        taskId: sendTaskId,
+        tabId: sendTabId,
+        cwd: sendCwd
+      })
       // ADR-30: an explicit user submit unpauses a queue that a Stop left
       // paused ('pause-if-pending') — the user is driving again.
-      setQueuePaused(false)
+      setQueuePausedKeys((prev) => {
+        if (!prev.has(sendQueueKey)) return prev
+        const next = new Set(prev)
+        next.delete(sendQueueKey)
+        return next
+      })
 
       /* ── #6：/init → 專案知識庫初始化（取代舊的「開啟 Agent Workshop」快捷）──
        * 舊版把 bare `/init` 當作建立自訂 agent 精靈（Agent Workshop）的隱藏入口，
@@ -2100,7 +2330,7 @@ export default function App() {
 
       // Bake @file contents etc. in BEFORE queueing so a queued message keeps
       // exactly what was selected when it was written (#2 執行中訊息佇列).
-      const bakedBody = await buildFinalPrompt(text)
+      const bakedBody = await buildFinalPrompt(text, sendAttachments)
       // #9: prepend any captured `!command` outputs as <user_terminal_commands>
       // context, then clear the stash (they belong to this turn only).
       const bashContext =
@@ -2118,7 +2348,7 @@ export default function App() {
             ? (builtPrompt === '/init' ? builtPrompt : `${bashContext}${builtPrompt}`)
             : bakedWithContext)
 
-      if (running) {
+      if (viewIsRunning) {
         if (isPreview) {
           setChatItems((prev) => [...prev, { kind: 'user', text, ts: Date.now() }])
           setPrompt('')
@@ -2138,21 +2368,24 @@ export default function App() {
         // after the turn. Gate logic: utils/send-routing.ts (unit-tested in
         // desktop/test/send-routing.test.ts).
         if (
+          viewIsRunning &&
           canSteerRunningTurn({
             sendNowIntent: opts?.steer === true,
             text,
             prebuiltPrompt: builtPrompt,
             interviewWrap,
             bashContext,
-            attachmentCount: attachments.length,
+            attachmentCount: sendAttachments.length,
             hasSendNowApi: typeof window.AnyBuff.sendNow === 'function'
           })
         ) {
           try {
-            // The host routes the steer to the ACTIVE run (per-process
-            // singleton) regardless of the viewed conversation (ADR-30 單一
-            // run 語意) — no taskId from the renderer.
-            const res = (await window.AnyBuff.sendNow({ text })) as {
+            // Address the steer to THIS view's run. With concurrent tabs a
+            // bare sendNow would be ambiguous (or hit another tab's run).
+            const res = (await window.AnyBuff.sendNow({
+              text,
+              taskId: sendTaskId ?? undefined
+            })) as {
               ok: boolean
               pushId?: string
               error?: string
@@ -2163,7 +2396,7 @@ export default function App() {
               // the run's transcript (host-side echo), which that view loads
               // on switch. The steeringId lets handleSteeredLeftovers retract
               // the bubble when the run settles without draining the entry.
-              if (!runningTaskId || runningTaskId === currentTaskRef.current) {
+              if (sendTaskId === currentTaskRef.current) {
                 setChatItems((prev) => [
                   ...prev,
                   { kind: 'user', text, ts: Date.now(), steeringId: res.pushId }
@@ -2179,8 +2412,8 @@ export default function App() {
             // Transport-level failure (WS timeout, host down): fall through.
           }
         }
-        // A run is in flight → park the message in the execution queue instead
-        // of rejecting it; the queue drains automatically when the turn ends.
+        // This view is already running → park the message for its own
+        // conversation instead of rejecting it.
         const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
         setQueuedMessages((prev) => [
           ...prev,
@@ -2189,12 +2422,13 @@ export default function App() {
             text,
             finalPrompt,
             // Snapshot so an inline edit re-bakes with the same files.
-            attachments,
+            attachments: sendAttachments,
             // Route the message back to the conversation/project it was
             // composed in — tabs make cross-conversation queueing routine.
             taskId: currentTaskRef.current,
-            tabId: activeTabIdRef.current,
-            cwd
+            tabId: sendTabId,
+            cwd: sendCwd,
+            mode: opts?.mode ?? (initRun ? 'default' : agentMode)
           }
         ])
         setPrompt('')
@@ -2211,28 +2445,43 @@ export default function App() {
       setAttachments([])
       changedFilesRef.current = []
       accumulatedFileChangesRef.current = []
-      setFollowups([])
       autoScrollRef.current = true
       setChatItems((prev) => [...prev, { kind: 'user', text, ts: Date.now() }, { kind: 'assistant', text: '' }])
-      setRunning(true)
-      // #22：從送出瞬間開始計時（之後的 run_status running 只會保留這個起點）。
-      setRunStartedAt(Date.now())
       setNotice(null)
       setHistoryTask(null)
       setResumeInfo(null)
       // New conversations get their id up front so streamed events route to
       // this view immediately; existing conversations reuse their id. The tab
       // that owned the draft becomes this task's tab (title = first prompt).
-      if (!currentTaskRef.current && !isPreview) {
+      let runTaskId = sendTaskId
+      if (!runTaskId && !isPreview) {
         const newId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
         // A snapshot request from the previous view may still be in flight;
         // it must not overwrite the task this submit is about to start.
         viewLoadSeqRef.current += 1
         setViewTask(newId)
         bindActiveTabToTask(newId, text)
+        runTaskId = newId
       }
-      // Optimistic: this view owns the run until events say otherwise.
-      if (!isPreview) setRunningTaskId(currentTaskRef.current)
+      if (isPreview && !runTaskId) runTaskId = sendTabId ?? 'preview'
+      const optimisticTaskId = runTaskId
+      // A racing task-busy means another run already owns this task; remember
+      // its local ownership so the loser does not clear the winner's state.
+      const previousOwnership = optimisticTaskId
+        ? {
+            token: runTokenByTaskRef.current[optimisticTaskId],
+            runId: runIdByTaskRef.current[optimisticTaskId],
+            startedAt: runStartedAtByTask[optimisticTaskId]
+          }
+        : null
+      if (optimisticTaskId) {
+        setFollowupsByTask((prev) => dropTaskValue(prev, optimisticTaskId))
+        setAttentionByTask((prev) => dropTaskValue(prev, optimisticTaskId))
+        // Optimistic: this view owns the run until events say otherwise.
+        setRunningTaskIds((prev) => addTaskId(prev, optimisticTaskId))
+        // #22：從送出瞬間開始計時（之後的 run_status running 只會保留這個起點）。
+        setRunStartedAtByTask((prev) => ({ ...prev, [optimisticTaskId]: Date.now() }))
+      }
 
     if (isPreview) {
       const reply =
@@ -2247,9 +2496,11 @@ export default function App() {
             next[next.length - 1] = { kind: 'assistant', text: reply }
             return next
           })
-          setRunning(false)
-          setRunStartedAt(null)
-          setStopping(false)
+          if (optimisticTaskId) {
+            setRunningTaskIds((prev) => removeTaskId(prev, optimisticTaskId))
+            setRunStartedAtByTask((prev) => dropTaskValue(prev, optimisticTaskId))
+            setStoppingTaskIds((prev) => removeTaskId(prev, optimisticTaskId))
+          }
         } else {
           setChatItems((prev) => {
             const next = [...prev]
@@ -2260,15 +2511,17 @@ export default function App() {
       }, 40)
       return
     }
+    const taskIdAtSend = runTaskId
+    const runToken = taskIdAtSend ? ++nextRunTokenRef.current : 0
+    if (taskIdAtSend) {
+      runTokenByTaskRef.current[taskIdAtSend] = runToken
+      if (!isPreview) runIdByTaskRef.current[taskIdAtSend] = `starting:${runToken}`
+    }
     try {
       // The main process owns the run and all conversation context. Passing the
       // existing taskId continues that conversation with full history; omitting
       // it starts (and names) a new one.
-      const imageContent = buildImageContent(attachments)
-      // The task id this prompt runs against (a freshly minted draft id above,
-      // or the conversation already on screen). Captured before the await so
-      // leftover requeues know their owner even if the view changes.
-      const taskIdAtSend = currentTaskRef.current
+      const imageContent = buildImageContent(sendAttachments)
       const runPromise = window.AnyBuff.runPrompt({
         cwd,
         prompt: finalPrompt,
@@ -2277,14 +2530,73 @@ export default function App() {
         mode: opts?.mode ?? (initRun ? 'default' : agentMode),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
-      }) as Promise<{ ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }>
+      }) as Promise<{ ok: boolean; taskId?: string; error?: string; code?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }>
       // The task record is created synchronously at the start of the main-process
       // handler — refresh the sidebar immediately so the conversation shows up
       // (and is reachable) while it is still streaming.
       refreshProjects()
       const result = await runPromise
       if (!result.ok) {
-        setChatItems((prev) => [...prev, { kind: 'system', text: result.error ?? 'Execution failed' }])
+        const busy = result.code === 'task-busy' || result.code === 'project-busy'
+        if (busy) {
+          // The host refused because another run owns this task/project. Roll
+          // back the optimistic turn and park the message in its own queue.
+          setChatItems((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.kind === 'assistant' && !last.text) next.pop()
+            const lastUser = next[next.length - 1]
+            if (lastUser?.kind === 'user' && lastUser.text === text) next.pop()
+            return next
+          })
+          setQueuedMessages((prev) => [
+            ...prev,
+            {
+              id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+              text,
+              finalPrompt,
+              attachments: sendAttachments,
+              taskId: taskIdAtSend,
+              tabId: sendTabId,
+              cwd: sendCwd,
+              mode: opts?.mode ?? (initRun ? 'default' : agentMode)
+            }
+          ])
+          if (result.code === 'task-busy') {
+            // The task is still running elsewhere. Keep the live spinner and
+            // put this attempt's ownership back the way we found it.
+            if (taskIdAtSend && previousOwnership) {
+              if (previousOwnership.token === undefined) delete runTokenByTaskRef.current[taskIdAtSend]
+              else runTokenByTaskRef.current[taskIdAtSend] = previousOwnership.token
+              if (previousOwnership.runId === undefined) delete runIdByTaskRef.current[taskIdAtSend]
+              else runIdByTaskRef.current[taskIdAtSend] = previousOwnership.runId
+              setRunStartedAtByTask((prev) => {
+                const next = { ...prev }
+                if (previousOwnership.startedAt === undefined) delete next[taskIdAtSend]
+                else next[taskIdAtSend] = previousOwnership.startedAt
+                return next
+              })
+            }
+            setNotice('This conversation is already running — your message was queued.')
+            if (taskIdAtSend) {
+              blockedQueueTaskIdsRef.current.add(taskIdAtSend)
+              window.setTimeout(() => {
+                blockedQueueTaskIdsRef.current.delete(taskIdAtSend)
+                setQueueRetryTick((n) => n + 1)
+              }, 1500)
+            }
+          } else {
+            // Legacy host fallback only; the current host is task-only.
+            setNotice('Another chat in this project is running — your message was queued.')
+            blockedQueueCwdsRef.current.add(sendCwd)
+            window.setTimeout(() => {
+              blockedQueueCwdsRef.current.delete(sendCwd)
+              setQueueRetryTick((n) => n + 1)
+            }, 1500)
+          }
+        } else {
+          setChatItems((prev) => [...prev, { kind: 'system', text: result.error ?? 'Execution failed' }])
+        }
       } else {
         // Only retarget the view if the submitting tab is still the visible
         // one — a run finishing in the background owns its own tab.
@@ -2297,21 +2609,26 @@ export default function App() {
       handleSteeredLeftovers(
         result.steeredLeftovers,
         result.interrupted === true && result.reason === 'stopped',
-        { taskId: result.taskId ?? taskIdAtSend, tabId: sendTabId, cwd }
+        { taskId: result.taskId ?? taskIdAtSend, tabId: sendTabId, cwd: sendCwd }
       )
-      void window.AnyBuff.gitBranch(cwd).then(setBranch)
+      void window.AnyBuff.gitBranch(sendCwd).then(setBranch)
     } catch (err) {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
     } finally {
-      setRunning(false)
-      // #22：run 已結束（成功/失敗/中斷皆然），清除計時起點。
-      setRunStartedAt(null)
-      setStopping(false)
-      setRetryNotice(null)
-      setApprovalRequest(null)
+      // A newer run on the same task may have started between the terminal
+      // event and this promise resolving; only the latest owner may clear.
+      if (taskIdAtSend && runTokenByTaskRef.current[taskIdAtSend] === runToken) {
+        delete runTokenByTaskRef.current[taskIdAtSend]
+        delete runIdByTaskRef.current[taskIdAtSend]
+        setRunningTaskIds((prev) => removeTaskId(prev, taskIdAtSend))
+        // #22：run 已結束（成功/失敗/中斷皆然），清除計時起點。
+        setRunStartedAtByTask((prev) => dropTaskValue(prev, taskIdAtSend))
+        setStoppingTaskIds((prev) => removeTaskId(prev, taskIdAtSend))
+        setRetryNoticeByTask((prev) => dropTaskValue(prev, taskIdAtSend))
+      }
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, runningTaskId, agentMode, buildFinalPrompt, refreshProjects, setViewTask, bindActiveTabToTask, interviewArmed, attachments])
+  }, [prompt, cwd, agentMode, buildFinalPrompt, buildImageContent, refreshProjects, setViewTask, bindActiveTabToTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -2339,57 +2656,203 @@ export default function App() {
     void send(INIT_DISPLAY_TEXT, '/init', { mode: 'default' })
   }, [send, agentMode])
 
-  // When the current turn ends, automatically dispatch the first queued message
-  // whose own conversation is on screen. drainingQueueRef serializes against
-  // re-entrant effect runs (StrictMode dev double-invoke included); `send`
-  // flips `running` synchronously so the follow-up run sees the in-flight state
-  // immediately. Items parked for other tabs keep waiting for their tab.
-  const drainingQueueRef = useRef(false)
+  /**
+   * Start a queued message in its own conversation without touching the view.
+   * The host already owns the transcript; the tab only needs its spinner, and
+   * a terminal event clears that. Never call send() here: send() mutates the
+   * visible chat/prompt and would stream a background run into the wrong tab.
+   */
+  const dispatchQueuedMessage = useCallback(
+    async (item: QueuedMessage) => {
+      const taskId = item.taskId
+      const cwd = item.cwd
+      if (!taskId || !cwd || !item.finalPrompt) return
+      // A task-busy result means another run already owns this task; restore
+      // its ownership instead of clearing the live run's spinner/tracking.
+      const runToken = ++nextRunTokenRef.current
+      const prevToken = runTokenByTaskRef.current[taskId]
+      const prevRunId = runIdByTaskRef.current[taskId]
+      const restorePreviousOwnership = (): void => {
+        if (prevToken === undefined) delete runTokenByTaskRef.current[taskId]
+        else runTokenByTaskRef.current[taskId] = prevToken
+        if (prevRunId === undefined) delete runIdByTaskRef.current[taskId]
+        else runIdByTaskRef.current[taskId] = prevRunId
+      }
+      const clearOwnership = (): void => {
+        if (runTokenByTaskRef.current[taskId] !== runToken) return
+        delete runTokenByTaskRef.current[taskId]
+        delete runIdByTaskRef.current[taskId]
+        setRunningTaskIds((prev) => removeTaskId(prev, taskId))
+        setRunStartedAtByTask((prev) => dropTaskValue(prev, taskId))
+        setStoppingTaskIds((prev) => removeTaskId(prev, taskId))
+      }
+      runTokenByTaskRef.current[taskId] = runToken
+      runIdByTaskRef.current[taskId] = `starting:${runToken}`
+      setRunningTaskIds((prev) => addTaskId(prev, taskId))
+      setRunStartedAtByTask((prev) =>
+        Object.hasOwn(prev, taskId) ? prev : { ...prev, [taskId]: Date.now() }
+      )
+      setAttentionByTask((prev) => dropTaskValue(prev, taskId))
+      try {
+        const imageContent = buildImageContent(item.attachments ?? [])
+        const result = (await window.AnyBuff.runPrompt({
+          cwd,
+          prompt: item.finalPrompt,
+          displayText: item.text,
+          taskId,
+          mode: item.mode ?? agentMode,
+          ...(imageContent.length > 0 ? { content: imageContent } : {})
+        })) as {
+          ok: boolean
+          error?: string
+          code?: string
+          interrupted?: boolean
+          reason?: string
+          steeredLeftovers?: { pushId: string; text: string }[]
+        }
+        if (!result.ok) {
+          if (result.code === 'task-busy') restorePreviousOwnership()
+          else clearOwnership()
+          setQueuedMessages((prev) =>
+            prev.some((m) => m.id === item.id) ? prev : [item, ...prev]
+          )
+          if (result.code === 'project-busy') {
+            // Legacy host fallback only; the current host is task-only.
+            blockedQueueCwdsRef.current.add(cwd)
+            window.setTimeout(() => {
+              blockedQueueCwdsRef.current.delete(cwd)
+              setQueueRetryTick((n) => n + 1)
+            }, 1500)
+          } else {
+            blockedQueueTaskIdsRef.current.add(taskId)
+            window.setTimeout(() => {
+              blockedQueueTaskIdsRef.current.delete(taskId)
+              setQueueRetryTick((n) => n + 1)
+            }, 1500)
+          }
+          if (result.code !== 'task-busy' && result.code !== 'project-busy') {
+            setNotice(result.error ?? 'A queued message could not start.')
+          }
+        } else {
+          // Preserve ADR-30 semantics for a run that was started from the
+          // queue and later steered: retract/requeue undrained texts even
+          // though this dispatch never owned the visible view.
+          handleSteeredLeftovers(
+            result.steeredLeftovers,
+            result.interrupted === true && result.reason === 'stopped',
+            { taskId, tabId: item.tabId, cwd }
+          )
+        }
+      } catch (err) {
+        clearOwnership()
+        setQueuedMessages((prev) =>
+          prev.some((m) => m.id === item.id) ? prev : [item, ...prev]
+        )
+        blockedQueueTaskIdsRef.current.add(taskId)
+        setNotice(`Queued message failed to start: ${String(err)}`)
+        window.setTimeout(() => {
+          blockedQueueTaskIdsRef.current.delete(taskId)
+          setQueueRetryTick((n) => n + 1)
+        }, 1500)
+      } finally {
+        // The run is over; drop our token without touching a newer owner.
+        if (runTokenByTaskRef.current[taskId] === runToken) {
+          delete runTokenByTaskRef.current[taskId]
+          delete runIdByTaskRef.current[taskId]
+        }
+      }
+    },
+    [agentMode, buildImageContent, handleSteeredLeftovers]
+  )
+
+  // Dispatch queued messages to their OWN conversation/project. A background
+  // task may start while another tab is streaming — even in the same project.
+  // Only a draft (taskId null) needs its tab on screen, because only then can
+  // the new task id be bound to it.
   useEffect(() => {
     if (isPreview) return
-    if (running || drainingQueueRef.current) return
-    // ADR-30: a user interrupt requeued steering leftovers and paused the
-    // queue ('pause-if-pending') — it must wait for an explicit resume (or a
-    // fresh user submit) instead of instantly restarting the stopped turn.
-    if (queuePaused) return
-    const view = {
-      taskId: currentTaskRef.current,
-      tabId: activeTabIdRef.current,
-      cwd: cwdRef.current
-    }
-    const readyIdx = firstReadyQueueIndex(queuedMessages, view)
-    if (readyIdx < 0) return
-    const next = queuedMessages[readyIdx]
-    drainingQueueRef.current = true
-    setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id))
-    void send(next.text, next.finalPrompt).finally(() => {
-      drainingQueueRef.current = false
+    const nextIdx = queuedMessages.findIndex((item) => {
+      if (!item.cwd) return false
+      if (queuePausedKeys.has(queueTargetKey(item))) return false
+      if (blockedQueueCwdsRef.current.has(item.cwd)) return false
+      if (item.taskId && blockedQueueTaskIdsRef.current.has(item.taskId)) return false
+      if (item.taskId) {
+        return (
+          !runningTaskIds.has(item.taskId) &&
+          !dispatchingTaskIdsRef.current.has(item.taskId)
+        )
+      }
+      // A draft's task id is minted by runPrompt; only the visible tab can
+      // receive that id and turn its draft into a task tab.
+      if (!item.tabId || dispatchingTabIdsRef.current.has(item.tabId)) return false
+      return item.tabId === activeTabIdRef.current && item.cwd === cwdRef.current
     })
-  }, [running, queuedMessages, send, queuePaused, activeViewTaskId, activeTabId, cwd])
+    if (nextIdx < 0) return
+    const next = queuedMessages[nextIdx]
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id))
+    if (next.taskId) dispatchingTaskIdsRef.current.add(next.taskId)
+    if (next.tabId) dispatchingTabIdsRef.current.add(next.tabId)
+    const finish = (): void => {
+      if (next.taskId) dispatchingTaskIdsRef.current.delete(next.taskId)
+      if (next.tabId) dispatchingTabIdsRef.current.delete(next.tabId)
+      setQueueRetryTick((n) => n + 1)
+    }
+    if (next.taskId) {
+      void dispatchQueuedMessage(next).finally(finish)
+    } else {
+      void send(next.text, next.finalPrompt, {
+        mode: next.mode,
+        attachments: next.attachments
+      }).finally(finish)
+    }
+  }, [
+    isPreview,
+    queuedMessages,
+    queuePausedKeys,
+    runningTaskIds,
+    send,
+    dispatchQueuedMessage,
+    queueRetryTick,
+    activeViewTaskId,
+    activeTabId,
+    cwd
+  ])
 
   const stop = useCallback(() => {
-    setApprovalRequest(null)
-    setStopping(true)
+    const stopTaskId = currentTaskRef.current ?? (isPreview ? activeTabIdRef.current : null)
+    setApprovalRequest((prev) => (prev?.taskId === stopTaskId ? null : prev))
+    setPendingAskUser((prev) => (prev?.taskId === stopTaskId ? null : prev))
+    if (stopTaskId) {
+      setStoppingTaskIds((prev) => addTaskId(prev, stopTaskId))
+    }
     setNotice('Stop requested. Waiting for agent to safely halt...')
-    if (!isPreview) void window.AnyBuff.abort()
+    if (!isPreview) {
+      void window.AnyBuff.abort(stopTaskId ? { taskId: stopTaskId } : undefined)
+    }
   }, [])
 
   // Resume an interrupted run from its preserved state (no re-appending the user prompt).
   const resumeRun = useCallback(async () => {
     const info = resumeInfo
     const taskId = currentTaskRef.current
-    if (!info || !cwd || running || !taskId) return
-    setRunning(true)
-    setRunningTaskId(taskId)
+    if (!info || !cwd || !taskId || runningTaskIds.has(taskId)) return
+    const runToken = ++nextRunTokenRef.current
+    runTokenByTaskRef.current[taskId] = runToken
+    runIdByTaskRef.current[taskId] = `starting:${runToken}`
+    setRunningTaskIds((prev) => addTaskId(prev, taskId))
     // #22：resume 時重新起算耗時。
-    setRunStartedAt(Date.now())
+    setRunStartedAtByTask((prev) => ({ ...prev, [taskId]: Date.now() }))
     setNotice(null)
     setResumeInfo(null)
     setChatItems((prev) => [...prev, { kind: 'assistant', text: '' }])
     if (isPreview) {
-      setRunning(false)
-      setRunStartedAt(null)
-      setStopping(false)
+      if (runTokenByTaskRef.current[taskId] === runToken) {
+        delete runTokenByTaskRef.current[taskId]
+        delete runIdByTaskRef.current[taskId]
+        setRunningTaskIds((prev) => removeTaskId(prev, taskId))
+        setRunStartedAtByTask((prev) => dropTaskValue(prev, taskId))
+        setStoppingTaskIds((prev) => removeTaskId(prev, taskId))
+      }
       setNotice('Resume is available in the Electron app (preview mode does not persist run state).')
       return
     }
@@ -2411,19 +2874,27 @@ export default function App() {
       // ADR-30: a resumed run can be steered too — settle its leftovers exactly
       // like send()'s path (retract echo bubbles, requeue undrained texts,
       // pause-if-pending after a Stop) or the steered text is silently dropped.
-      handleSteeredLeftovers(result.steeredLeftovers, result.interrupted === true && result.reason === 'stopped')
+      handleSteeredLeftovers(
+        result.steeredLeftovers,
+        result.interrupted === true && result.reason === 'stopped',
+        { taskId, tabId: activeTabIdRef.current, cwd }
+      )
       void window.AnyBuff.gitBranch(cwd).then(setBranch)
       refreshProjects()
     } catch (err) {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
     } finally {
-      setRunning(false)
-      // #22：run 已結束，清除計時起點。
-      setRunStartedAt(null)
-      setStopping(false)
+      if (runTokenByTaskRef.current[taskId] === runToken) {
+        delete runTokenByTaskRef.current[taskId]
+        delete runIdByTaskRef.current[taskId]
+        setRunningTaskIds((prev) => removeTaskId(prev, taskId))
+        // #22：run 已結束，清除計時起點。
+        setRunStartedAtByTask((prev) => dropTaskValue(prev, taskId))
+        setStoppingTaskIds((prev) => removeTaskId(prev, taskId))
+      }
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [resumeInfo, cwd, running, agentMode, refreshProjects, handleSteeredLeftovers])
+  }, [resumeInfo, cwd, runningTaskIds, agentMode, refreshProjects, handleSteeredLeftovers])
 
   // Discard the banner; the preserved state simply stays on disk unused.
   const discardResume = useCallback(() => {
@@ -2541,7 +3012,6 @@ export default function App() {
     changedFilesRef.current = []
     accumulatedFileChangesRef.current = []
     setTokenUsage(null)
-    setFollowups([])
     setHistoryTask(null)
     setResumeInfo(null)
     setViewTask(null)
@@ -2585,7 +3055,9 @@ export default function App() {
     setEvents([])
     changedFilesRef.current = []
     accumulatedFileChangesRef.current = []
-    setFollowups([])
+    if (currentTaskRef.current) {
+      setFollowupsByTask((prev) => dropTaskValue(prev, currentTaskRef.current))
+    }
     setHistoryTask(null)
     setResumeInfo(null)
     // Undo the file changes in parallel so a large exchange doesn't stall the UI.
@@ -3147,26 +3619,6 @@ export default function App() {
     })
   }, [])
 
-  /** #4: turn image attachments into SDK RunImagePart base64 content. */
-  const buildImageContent = useCallback(
-    (atts: Attachment[]): Array<{ type: 'image'; image: string; mediaType: string }> => {
-      const parts: Array<{ type: 'image'; image: string; mediaType: string }> = []
-      for (const att of atts) {
-        if (!att.isImage || !att.previewUrl) continue
-        const commaIdx = att.previewUrl.indexOf(',')
-        const meta = /^data:([^;]+);/.exec(att.previewUrl.slice(0, commaIdx >= 0 ? commaIdx : 0))
-        const base64 = commaIdx >= 0 ? att.previewUrl.slice(commaIdx + 1) : ''
-        if (base64) {
-          const semiIdx = att.previewUrl.indexOf(';')
-          const fallbackType = semiIdx > 5 ? att.previewUrl.slice(5, semiIdx) : 'image/png'
-          parts.push({ type: 'image', image: base64, mediaType: meta?.[1] ?? fallbackType })
-        }
-      }
-      return parts
-    },
-    []
-  )
-
   // Right panel tab
   const onRightTab = useCallback((tab: RightTab) => {
     setRightTab(tab)
@@ -3586,6 +4038,23 @@ export default function App() {
     [activateWorkspaceTab, discardTabDraft, focusWorkspaceTab, newTab]
   )
 
+  /**
+   * User-initiated close. A running tab asks first: closing must not be a
+   * hidden Stop. Forced closes (task/project deletion) still call
+   * closeWorkspaceTab directly.
+   */
+  const requestCloseWorkspaceTab = useCallback(
+    (tabId: string) => {
+      const tab = workspaceTabsRef.current.find((t) => t.id === tabId)
+      if (tab?.taskId && runningTaskIdsRef.current.has(tab.taskId)) {
+        setCloseRunningTab({ tabId, title: tab.title || 'This task' })
+        return
+      }
+      closeWorkspaceTab(tabId)
+    },
+    [closeWorkspaceTab]
+  )
+
   // Browser-style tab shortcuts: Ctrl/Cmd+T (new), Ctrl/Cmd+W (close),
   // Ctrl+Tab / Ctrl+Shift+Tab (cycle). Ignored while a pure modifier is held.
   useEffect(() => {
@@ -3599,7 +4068,7 @@ export default function App() {
       }
       if (key === 'w' && !e.shiftKey) {
         e.preventDefault()
-        if (activeTabIdRef.current) closeWorkspaceTab(activeTabIdRef.current)
+        if (activeTabIdRef.current) requestCloseWorkspaceTab(activeTabIdRef.current)
         return
       }
       if (e.key === 'Tab') {
@@ -3614,7 +4083,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activateWorkspaceTab, closeWorkspaceTab, newTab])
+  }, [activateWorkspaceTab, newTab, requestCloseWorkspaceTab])
 
   // Keep tab labels in lockstep with host records (rename, refreshed sidebar).
   useEffect(() => {
@@ -3683,7 +4152,21 @@ export default function App() {
       setTaskCosts((prev) => removeTaskCost(prev, task.id))
       // Parked messages for a deleted conversation can never dispatch.
       setQueuedMessages((prev) => prev.filter((m) => m.taskId !== task.id))
+      setAttentionByTask((prev) => dropTaskValue(prev, task.id))
+      setFollowupsByTask((prev) => dropTaskValue(prev, task.id))
+      setTodosByTask((prev) => dropTaskValue(prev, task.id))
+      setRetryNoticeByTask((prev) => dropTaskValue(prev, task.id))
+      setRunStartedAtByTask((prev) => dropTaskValue(prev, task.id))
+      setStoppingTaskIds((prev) => removeTaskId(prev, task.id))
+      setRunningTaskIds((prev) => removeTaskId(prev, task.id))
+      delete runIdByTaskRef.current[task.id]
       const openTab = workspaceTabsRef.current.find((t) => t.taskId === task.id)
+      setQueuePausedKeys((prev) => {
+        const keys = new Set(prev)
+        keys.delete(`task:${task.id}`)
+        if (openTab) keys.delete(`tab:${openTab.id}`)
+        return keys.size === prev.size ? prev : keys
+      })
       if (openTab) {
         // Closing the tab picks the neighbouring tab (or a fresh draft); the
         // deleted conversation can never be re-opened from the strip.
@@ -3870,9 +4353,23 @@ export default function App() {
   // View-scoped run state: only the conversation being VIEWED shows streaming
   // cursors, stop buttons, activity animations, and the topbar Working badge —
   // a background run elsewhere is surfaced by its own TAB spinner instead.
-  const viewRunning = running && runningTaskId !== null && runningTaskId === activeViewTaskId
-  const viewStopping = stopping && viewRunning
-  const busyElsewhere = running && !viewRunning
+  const viewTaskKey = activeViewTaskId ?? (isPreview ? activeTabId : null)
+  const viewRunning = viewTaskKey !== null && runningTaskIds.has(viewTaskKey)
+  const viewStopping = viewTaskKey !== null && stoppingTaskIds.has(viewTaskKey)
+  const activeRunStartedAt = viewTaskKey ? runStartedAtByTask[viewTaskKey] ?? null : null
+  const activeTodos = activeViewTaskId ? todosByTask[activeViewTaskId] ?? [] : []
+  const followups = activeViewTaskId ? followupsByTask[activeViewTaskId] ?? [] : []
+  const viewQueueKey = queueTargetKey({
+    taskId: activeViewTaskId ?? undefined,
+    tabId: activeTabId ?? undefined,
+    cwd: cwd ?? undefined
+  })
+  const viewQueuePaused = queuePausedKeys.has(viewQueueKey)
+  const pausedQueueIds = new Set(
+    queuedMessages
+      .filter((m) => queuePausedKeys.has(queueTargetKey(m)))
+      .map((m) => m.id)
+  )
   // ADR-30: the composer offers its separate "Send now" entry only when the
   // running turn could actually take the draft as a mid-turn steer. This MIRRORS
   // every refusal in the send() routing gate (utils/send-routing.ts) — plain
@@ -3884,7 +4381,6 @@ export default function App() {
   // steer that silently queues instead.
   const composerSteerable =
     viewRunning &&
-    !busyElsewhere &&
     !isPreview &&
     typeof window.AnyBuff.sendNow === 'function' &&
     prompt.trim().length > 0 &&
@@ -3914,6 +4410,12 @@ export default function App() {
   useEffect(() => {
     setOpenGroups({})
   }, [viewIdentity])
+
+  // Opening a task consumes its background-completion dot.
+  useEffect(() => {
+    if (!activeViewTaskId) return
+    setAttentionByTask((prev) => dropTaskValue(prev, activeViewTaskId))
+  }, [activeViewTaskId])
 
   /**
    * Search / history jumps. A hit inside a collapsed process group has no mounted
@@ -4057,7 +4559,8 @@ export default function App() {
           >
             {workspaceTabs.map((tab) => {
               const isActive = tab.id === activeTabId
-              const isRunningTab = Boolean(tab.taskId && runningTaskId === tab.taskId)
+              const isRunningTab = Boolean(tab.taskId && runningTaskIds.has(tab.taskId))
+              const tabAttention = tab.taskId ? attentionByTask[tab.taskId] : undefined
               return (
                 <div
                   key={tab.id}
@@ -4067,8 +4570,10 @@ export default function App() {
                   tabIndex={isActive ? 0 : -1}
                   draggable={workspaceTabs.length > 1}
                   className={`titlebar-tab${isActive ? ' active' : ''}${isRunningTab ? ' running' : ''}${
-                    tabDrag?.sourceId === tab.id ? ' dragging' : ''
-                  }${tabDrag?.overId === tab.id ? ` drop-${tabDrag.edge}` : ''}`}
+                    tabAttention ? ' attention' : ''
+                  }${tabDrag?.sourceId === tab.id ? ' dragging' : ''}${
+                    tabDrag?.overId === tab.id ? ` drop-${tabDrag.edge}` : ''
+                  }`}
                   title={`${tab.title}${tab.projectPath ? `\n${tab.projectPath}` : ''}`}
                   onClick={() => void activateWorkspaceTab(tab)}
                   onDragStart={(e) => onTabDragStart(e, tab.id)}
@@ -4088,7 +4593,7 @@ export default function App() {
                     // Middle-click closes, like a browser tab.
                     if (e.button === 1) {
                       e.preventDefault()
-                      closeWorkspaceTab(tab.id)
+                      requestCloseWorkspaceTab(tab.id)
                     }
                   }}
                   onKeyDown={(e) => {
@@ -4100,6 +4605,25 @@ export default function App() {
                 >
                   {isRunningTab && (
                     <span className="spinner-ring titlebar-tab-spinner" role="status" aria-label="Running" />
+                  )}
+                  {tabAttention && (
+                    <span
+                      className={`titlebar-tab-attention ${tabAttention}`}
+                      role="status"
+                      aria-label={tabAttention === 'error' ? 'Finished with errors' : 'Finished in the background'}
+                      title={
+                        tabAttention === 'error'
+                          ? 'This background run ended with an error'
+                          : 'This background run finished — open the tab to review it'
+                      }
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        flex: '0 0 auto',
+                        background: tabAttention === 'error' ? '#ef4444' : '#f59e0b'
+                      }}
+                    />
                   )}
                   {tab.projectPath ? (
                     <span className="titlebar-tab-avatar" aria-hidden="true">
@@ -4124,7 +4648,7 @@ export default function App() {
                     }}
                     onClick={(e) => {
                       e.stopPropagation()
-                      closeWorkspaceTab(tab.id)
+                      requestCloseWorkspaceTab(tab.id)
                     }}
                   >
                     <XIcon size={11} />
@@ -4235,7 +4759,7 @@ export default function App() {
               searchResults={searchResults}
               onSearchJump={onSearchJump}
               projects={projects}
-              runningTaskId={runningTaskId}
+              runningTaskIds={runningTaskIds}
               onNewProject={() => void selectFolder()}
               onOpenProject={(p) => void switchProjectInCurrentTab(p)}
               onOpenTask={(p, t) => void openTaskInTab(p, t)}
@@ -4333,7 +4857,7 @@ export default function App() {
                       title="Agent is working on this conversation"
                     >
                       <span className="spinner-ring" /> {currentStage ?? 'Working'}
-                      {runStartedAt && <RunElapsed startedAt={runStartedAt} />}
+                      {activeRunStartedAt && <RunElapsed startedAt={activeRunStartedAt} />}
                     </span>
                   )}
                 </div>
@@ -4435,7 +4959,7 @@ export default function App() {
                                   if (!tool) return null
                                   return (
                                     <div key={entry.key} className="process-entry" data-index={entry.index} ref={setMsgRef}>
-                                      <ToolCard tool={tool} isLast={entry.index === chatItems.length - 1 && running} />
+                                      <ToolCard tool={tool} isLast={entry.index === chatItems.length - 1 && viewRunning} />
                                     </div>
                                   )
                                 }
@@ -4529,7 +5053,7 @@ export default function App() {
                           <button
                             key={i}
                             className="followup-card"
-                            disabled={running}
+                            disabled={viewRunning}
                             onClick={() => setPrompt(f.prompt)}
                             title={f.label && f.label !== f.prompt ? f.prompt : undefined}
                           >
@@ -4540,14 +5064,14 @@ export default function App() {
                     )}
                   </div>
 
-                  {retryNotice && viewRunning && (
-                    <div className={`retry-strip reason-${retryNotice.reason ?? 'network'}`}>
+                  {activeRetryNotice && viewRunning && (
+                    <div className={`retry-strip reason-${activeRetryNotice.reason ?? 'network'}`}>
                       <span className="spinner-ring retry-spinner" />
                       <span className="resume-text">
-                        <span className="resume-text-main">{autoRetryStripText(retryNotice, nowTick)}</span>
-                        {retryNotice.detail && (
-                          <span className="resume-text-detail" title={retryNotice.detail}>
-                            {retryNotice.detail.length > 220 ? `${retryNotice.detail.slice(0, 220)}…` : retryNotice.detail}
+                        <span className="resume-text-main">{autoRetryStripText(activeRetryNotice, nowTick)}</span>
+                        {activeRetryNotice.detail && (
+                          <span className="resume-text-detail" title={activeRetryNotice.detail}>
+                            {activeRetryNotice.detail.length > 220 ? `${activeRetryNotice.detail.slice(0, 220)}…` : activeRetryNotice.detail}
                           </span>
                         )}
                       </span>
@@ -4578,13 +5102,23 @@ export default function App() {
                     <div className="resume-banner">
                       <span className="resume-icon" style={{ color: '#f59e0b' }}>🛡</span>
                       <span className="resume-text">
-                        <strong>Action requires approval:</strong> {approvalRequest.message}
+                        <strong>
+                          Action requires approval
+                          {approvalRequest.title ? ` · ${approvalRequest.title}` : ''}:
+                        </strong>{' '}
+                        {approvalRequest.message}
                       </span>
                       <button
                         className="btn primary small"
                         onClick={() => {
+                          const target = approvalRequest
                           setApprovalRequest(null)
-                          void window.AnyBuff.respondApproval(true)
+                          void window.AnyBuff.respondApproval({
+                            approved: true,
+                            promptId: target.promptId,
+                            taskId: target.taskId,
+                            runId: target.runId
+                          })
                         }}
                       >
                         Allow
@@ -4592,8 +5126,14 @@ export default function App() {
                       <button
                         className="btn ghost small"
                         onClick={() => {
+                          const target = approvalRequest
                           setApprovalRequest(null)
-                          void window.AnyBuff.respondApproval(false)
+                          void window.AnyBuff.respondApproval({
+                            approved: false,
+                            promptId: target.promptId,
+                            taskId: target.taskId,
+                            runId: target.runId
+                          })
                         }}
                       >
                         Deny
@@ -4601,12 +5141,20 @@ export default function App() {
                     </div>
                   )}
 
-                  {pendingAskUser && pendingAskUser.length > 0 && (
+                  {pendingAskUser && pendingAskUser.questions.length > 0 && (
                     <AskUserBanner
-                      questions={pendingAskUser}
+                      questions={pendingAskUser.questions}
+                      contextTitle={pendingAskUser.title}
                       onRespond={(payload) => {
+                        const target = pendingAskUser
                         setPendingAskUser(null)
-                        window.AnyBuff.respondAskUser(payload)
+                        void window.AnyBuff.respondAskUser({
+                          answers: payload.answers,
+                          skipped: payload.skipped,
+                          promptId: target.promptId,
+                          taskId: target.taskId,
+                          runId: target.runId
+                        })
                       }}
                     />
                   )}
@@ -4619,7 +5167,8 @@ export default function App() {
                   <MessageQueuePanel
                     items={queuedMessages}
                     readyIds={readyQueueIds}
-                    paused={queuePaused}
+                    pausedIds={pausedQueueIds}
+                    paused={viewQueuePaused}
                     onResume={() => resumeQueueDispatch()}
                     onEdit={(id, text) => void queueEdit(id, text)}
                     onDelete={queueDelete}
@@ -4639,13 +5188,11 @@ export default function App() {
                     interviewArmed={interviewArmed}
                     onInitKnowledge={runInitKnowledge}
                     onCompactRequest={() => {
-                      if (!viewRunning && !busyElsewhere) setCompactConfirmOpen(true)
+                      if (!viewRunning) setCompactConfirmOpen(true)
                     }}
                     running={viewRunning}
                     stopping={viewStopping}
                     steerable={composerSteerable}
-                    sendBlocked={busyElsewhere}
-                    sendBlockedHint="Another task is still running — wait for it to finish or stop it first."
                     disabled={!hasProvider}
                     attachments={attachments}
                     onAttachFiles={() => void onAttachFiles()}
@@ -4833,6 +5380,44 @@ export default function App() {
               <button type="button" className="btn btn-revert-confirm" onClick={() => void confirmRevert()}>
                 <UndoIcon size={13} />
                 <span>Revert</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closeRunningTab && (
+        <div className="modal-backdrop" onClick={() => setCloseRunningTab(null)}>
+          <div
+            className="modal confirm-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-running-title"
+          >
+            <h3 id="close-running-title">Close a running tab?</h3>
+            <p className="hint">
+              “{closeRunningTab.title}” is still running. Closing the tab keeps the run going in
+              the background; you can reopen it from the sidebar.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setCloseRunningTab(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => {
+                  const tabId = closeRunningTab.tabId
+                  setCloseRunningTab(null)
+                  closeWorkspaceTab(tabId)
+                }}
+              >
+                Keep running &amp; close
               </button>
             </div>
           </div>

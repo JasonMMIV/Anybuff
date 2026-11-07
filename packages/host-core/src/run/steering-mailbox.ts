@@ -3,18 +3,16 @@
  *
  * The engine hook `RunOptions.drainSteeringMessages` drains this at every
  * step boundary: returned texts are appended to the live turn as user
- * prompts (tags USER_PROMPT, keepDuringTruncation) and keep the turn going.
- * This module is the host-side mailbox between the AnyBuff:sendNow channel
- * and the active run, mirroring the claim/accept shape upstream uses in
- * `cli/src/utils/steering-buffer.ts` (owner-guarded like active-run.ts).
+ * prompts and keep the turn going. The mailbox is keyed by run owner id, so
+ * two concurrent runs have independent buffers.
  *
- * The transcript echo is the session-store's job: pushSteeringMessage
- * appends a role-'user' TaskMessage (push-time echo) and records its index
- * here, so an entry the run never drained can have its bubble retracted
- * when the text is requeued as a fresh turn (which mints its own bubble).
+ * The transcript echo is the session-store's job: pushSteeringMessage appends
+ * a role-'user' TaskMessage (push-time echo) and records its push id here, so
+ * an entry the run never drained can have its bubble retracted when the text
+ * is requeued as a fresh turn (which mints its own bubble).
  *
- * Owner-guard: an aborted run resolving late must not drain or clear a
- * newer run's buffer.
+ * Owner-guard: an aborted run resolving late must not drain or clear a newer
+ * run's buffer.
  */
 
 export interface SteeringEntry {
@@ -23,62 +21,68 @@ export interface SteeringEntry {
   text: string
 }
 
-let activeOwnerId: string | null = null
-let buffer: SteeringEntry[] = []
+const buffers = new Map<string, SteeringEntry[]>()
+/** Legacy single-owner compatibility: tests and old callers omit the owner. */
+let lastOwnerId: string | null = null
 
 /**
- * Called by startRun right before client.run() with the run's owner id.
- * Idempotent for the SAME owner: startRun re-activates before each auto-retry
- * attempt with the same id (ADR-30), and that re-open must preserve entries
- * pushed since the previous attempt (e.g. during a failed attempt's tail)
- * instead of wiping them. A NEW owner (fresh run) always starts empty.
+ * Called by startRun before each attempt with the run's owner id. Idempotent
+ * for the same owner: a retry re-activates without wiping entries pushed since
+ * the failed attempt's last drain. A fresh owner always starts empty.
  */
 export function activateSteering(ownerId: string): void {
-  if (activeOwnerId === ownerId) return
-  activeOwnerId = ownerId
-  buffer = []
+  if (!buffers.has(ownerId)) buffers.set(ownerId, [])
+  lastOwnerId = ownerId
 }
 
 /**
- * Called by startRun when the run settles. Returns any entries the run
- * never drained (submitted after its last step boundary) so the caller can
- * retract their transcript echoes and requeue the texts instead of dropping
- * them. Owner-guarded: a stale run's settle must not clear a newer buffer.
+ * Called by startRun when the run settles. Returns entries this owner never
+ * drained so the caller can retract their echoes and requeue the texts.
+ * Owner-guarded: a stale run's settle never touches another run's buffer.
  */
 export function deactivateSteering(ownerId: string): SteeringEntry[] {
-  if (activeOwnerId !== ownerId) return []
-  activeOwnerId = null
-  const leftovers = buffer
-  buffer = []
+  const leftovers = buffers.get(ownerId)
+  if (!leftovers) return []
+  buffers.delete(ownerId)
+  if (lastOwnerId === ownerId) {
+    lastOwnerId = buffers.size > 0 ? Array.from(buffers.keys()).at(-1) ?? null : null
+  }
   return leftovers
 }
 
-/**
- * Called by the sendNow handler on a mid-turn submit. The gate (run active
- * + pure text) lives in the handler/hook; this only refuses when no run is
- * accepting steering (caller falls back to the queue).
- */
-export function pushSteeringMessage(entry: SteeringEntry): boolean {
-  if (activeOwnerId === null) return false
+/** Push a steering entry for a specific run. */
+export function pushSteeringMessageFor(ownerId: string, entry: SteeringEntry): boolean {
+  const buffer = buffers.get(ownerId)
+  if (!buffer) return false
   buffer.push(entry)
   return true
 }
 
-/** True while a run is accepting steering pushes. */
-export function isSteeringActive(): boolean {
-  return activeOwnerId !== null
+/**
+ * Legacy single-owner entry point. New callers (the sendNow channel) use
+ * pushSteeringMessageFor so a concurrent run cannot receive the entry.
+ */
+export function pushSteeringMessage(entry: SteeringEntry): boolean {
+  if (!lastOwnerId) return false
+  return pushSteeringMessageFor(lastOwnerId, entry)
+}
+
+/** True while a run (or the specified run) is accepting steering pushes. */
+export function isSteeringActive(ownerId?: string): boolean {
+  if (ownerId !== undefined) return buffers.has(ownerId)
+  return buffers.size > 0
 }
 
 /** Called by startRun's drainSteeringMessages hook at each step boundary. */
 export function drainSteeringMessages(ownerId: string): string[] {
-  if (activeOwnerId !== ownerId || buffer.length === 0) return []
-  const drained = buffer
-  buffer = []
-  return drained.map((entry) => entry.text)
+  const buffer = buffers.get(ownerId)
+  if (!buffer || buffer.length === 0) return []
+  buffers.set(ownerId, [])
+  return buffer.map((entry) => entry.text)
 }
 
 /** Test seam. */
 export function __resetSteeringForTests(): void {
-  activeOwnerId = null
-  buffer = []
+  buffers.clear()
+  lastOwnerId = null
 }

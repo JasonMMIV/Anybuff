@@ -21,9 +21,12 @@ type AskUserAnswer = {
  */
 export default function AskUserBanner({
   questions,
+  contextTitle,
   onRespond,
 }: {
   questions: Array<Record<string, any>>
+  /** Conversation title when the prompt comes from a background tab. */
+  contextTitle?: string
   onRespond: (payload: { answers?: AskUserAnswer[]; skipped?: boolean }) => void
 }) {
   const [selections, setSelections] = useState<Record<number, string[]>>({})
@@ -54,7 +57,9 @@ export default function AskUserBanner({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <span className="resume-text">
           <strong>The agent has questions</strong>
-          <span style={{ color: 'var(--text-2)', fontWeight: 400 }}> — {questions.length} question{questions.length > 1 ? 's' : ''}</span>
+          <span style={{ color: 'var(--text-2)', fontWeight: 400 }}>
+            {' '}— {contextTitle ? `${contextTitle} · ` : ''}{questions.length} question{questions.length > 1 ? 's' : ''}
+          </span>
         </span>
         <button
           className="mini-btn"

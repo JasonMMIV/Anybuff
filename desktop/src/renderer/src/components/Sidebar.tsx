@@ -50,8 +50,8 @@ interface SidebarProps {
   searchResults: SearchResult[]
   onSearchJump: (r: SearchResult) => void
   projects: ProjectRecord[]
-  /** Task that owns the active agent run — shown with a live indicator. */
-  runningTaskId?: string | null
+  /** Tasks with a live agent run — each gets its own spinner (concurrent runs). */
+  runningTaskIds?: ReadonlySet<string>
   onNewProject: () => void
   onOpenProject: (path: string) => void
   onOpenTask: (project: ProjectRecord, task: TaskRecord) => void
@@ -345,7 +345,7 @@ export default function Sidebar(props: SidebarProps) {
                         }}
                         title={t.prompt}
                       >
-                        {t.id === props.runningTaskId ? (
+                        {props.runningTaskIds?.has(t.id) ? (
                           <span className="spinner-ring task-running-spinner" />
                         ) : null}
                         <span className="task-text">{t.prompt}</span>

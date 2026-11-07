@@ -2,10 +2,11 @@
  * Cross-tab execution-queue routing.
  *
  * A queued message was composed in a specific conversation (and its
- * `finalPrompt` was baked against that project's cwd). The host runs one task
- * at a time, so an item must never auto-dispatch into whichever conversation
- * happens to be visible when the previous run ends. Drain only items whose
- * target is on screen; everything else stays parked until its tab returns.
+ * `finalPrompt` was baked against that project's cwd). It must run in THAT
+ * conversation/project, never in whichever tab happens to be visible when a
+ * run ends. P2 dispatches background items too, so visibility is only a UI
+ * concern (editing/badges); targeting and pause keys decide where a message
+ * runs.
  */
 
 export interface QueueTarget {
@@ -21,6 +22,14 @@ export interface QueueView {
   taskId: string | null
   tabId: string | null
   cwd: string | null
+}
+
+/** Stable identity of a queue target. Used for per-conversation pause state. */
+export function queueTargetKey(target: QueueTarget): string {
+  if (target.taskId) return `task:${target.taskId}`
+  if (target.tabId) return `tab:${target.tabId}`
+  if (target.cwd) return `cwd:${target.cwd}`
+  return 'global'
 }
 
 /** True when the queued message belongs to the conversation currently on screen. */
@@ -41,4 +50,33 @@ export function firstReadyQueueIndex(
   view: QueueView
 ): number {
   return items.findIndex((item) => queueTargetMatchesView(item, view))
+}
+
+export interface QueueDispatchFilter {
+  /** Per-conversation ADR-30 pauses. */
+  pausedKeys?: ReadonlySet<string>
+  /** Tasks with a live run — never start their queued message twice. */
+  runningTaskIds?: ReadonlySet<string>
+  /** Project cwds whose last dispatch was rejected as project-busy. */
+  blockedCwds?: ReadonlySet<string>
+}
+
+/**
+ * Index of the first item the drain loop may start now. Background targets are
+ * allowed (the prompt carries its own cwd/task); paused targets are skipped so
+ * one conversation's Stop cannot hold every other conversation's queue.
+ * A queued message for a task that is already running must wait — dispatching
+ * it again would only earn a `task-busy` rejection.
+ */
+export function firstDispatchableQueueIndex(
+  items: readonly QueueTarget[],
+  filter: QueueDispatchFilter = {}
+): number {
+  return items.findIndex((item) => {
+    if (!item.cwd) return false
+    if (filter.pausedKeys?.has(queueTargetKey(item))) return false
+    if (item.taskId && filter.runningTaskIds?.has(item.taskId)) return false
+    if (filter.blockedCwds?.has(item.cwd)) return false
+    return true
+  })
 }
