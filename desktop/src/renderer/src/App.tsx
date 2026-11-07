@@ -3546,6 +3546,7 @@ export default function App() {
                               plan={node.plan}
                               ts={node.ts}
                               streaming={node.streaming}
+                              isFinal={node.isFinal && !node.streaming}
                             />
                           </div>
                         )

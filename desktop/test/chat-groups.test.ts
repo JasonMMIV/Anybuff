@@ -194,6 +194,82 @@ describe('buildChatNodes', () => {
   })
 })
 
+describe('BodyNode.isFinal (copy button ownership)', () => {
+  const bodies = (nodes: ChatNode<Item>[]): BodyNode[] =>
+    nodes.filter((node): node is BodyNode => node.type === 'body')
+
+  test('transitional narration before a tool call is not final', () => {
+    const nodes = buildChatNodes(
+      [
+        user('Fix it'),
+        assistant('Let me read the file first.'),
+        tool('done'),
+        assistant('Now I will run the tests.'),
+        tool('done'),
+        assistant('Fixed.'),
+      ],
+      { streaming: false },
+    )
+
+    const [first, second, last] = bodies(nodes)
+    expect(first.isFinal).toBe(false)
+    expect(second.isFinal).toBe(false)
+    expect(last.isFinal).toBe(true)
+  })
+
+  test('a body followed by a tool call has no copy button even at the timeline tail', () => {
+    const nodes = buildChatNodes(
+      [user('Run the suite'), assistant('Running the tests now.'), tool('running')],
+      { streaming: true },
+    )
+
+    expect(bodies(nodes).map((body) => body.isFinal)).toEqual([false])
+  })
+
+  test('every turn keeps a copy button on its own final answer', () => {
+    const nodes = buildChatNodes(
+      [
+        user('First'),
+        assistant('First answer.'),
+        user('Second'),
+        assistant('Checking.'),
+        tool('done'),
+        assistant('Second answer.'),
+      ],
+      { streaming: false },
+    )
+
+    expect(bodies(nodes).map((body) => body.isFinal)).toEqual([
+      true,
+      false,
+      true,
+    ])
+  })
+
+  test('non-tool rows after the answer do not revoke finality', () => {
+    const nodes = buildChatNodes(
+      [
+        user('Go'),
+        assistant('Done.'),
+        { kind: 'file-changes' },
+        { kind: 'compaction', text: 'trimmed' },
+      ],
+      { streaming: false },
+    )
+
+    expect(bodies(nodes).map((body) => body.isFinal)).toEqual([true])
+  })
+
+  test('consecutive body blocks: only the last one is final', () => {
+    const nodes = buildChatNodes(
+      [user('Go'), assistant('Part one.'), assistant('Part two.')],
+      { streaming: false },
+    )
+
+    expect(bodies(nodes).map((body) => body.isFinal)).toEqual([false, true])
+  })
+})
+
 describe('isGroupOpen', () => {
   test('an untouched group follows the run; a toggle pins it', () => {
     // No explicit choice → `live` decides: open while working, folded when done.

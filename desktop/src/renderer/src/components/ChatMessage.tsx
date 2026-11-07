@@ -650,7 +650,8 @@ export const AssistantBubble = memo(function AssistantBubble({
   text,
   plan: planProp,
   streaming,
-  ts
+  ts,
+  isFinal = true
 }: {
   text: string
   /** 過程收闔: the timeline builder (utils/chat-groups) already lifted the reasoning
@@ -659,6 +660,10 @@ export const AssistantBubble = memo(function AssistantBubble({
   plan?: string
   streaming: boolean
   ts?: number
+  /** Only the turn's final answer owns the footer (timestamp + copy);
+   *  transitional narration between tool calls renders neither
+   *  (chat-groups marks it via BodyNode.isFinal). */
+  isFinal?: boolean
 }) {
   // Regex-extract  thinking blocks once per text — not once per parent render.
   const extracted = useMemo(() => extractThinkTags(text), [text])
@@ -666,6 +671,11 @@ export const AssistantBubble = memo(function AssistantBubble({
   const planExtracted = useMemo(() => extractPlanBlocks(extracted.text), [extracted.text])
   const mainText = planExtracted.text
   const plan = planProp ?? planExtracted.plan
+  const showCopy = isFinal && Boolean(mainText.trim())
+  // Transitional messages get no footer at all — the date/time belongs to the
+  // final answer just like the copy button.
+  const showFooter =
+    isFinal && (Boolean(mainText.trim()) || Boolean(plan && ts))
 
   return (
     <div className="msg-row assistant">
@@ -681,12 +691,12 @@ export const AssistantBubble = memo(function AssistantBubble({
             thinking 區塊與後續工具卡之間。plan-only 仍以 plan 為可見內容。
             Boolean()：ts 為 0 時（formatMsgTime 亦視為無時間戳）不可讓 JSX
             渲染出字面「0」。 */}
-        {(mainText.trim() || Boolean(plan && ts)) && (
+        {showFooter && (
           <span className="msg-footer" onClick={(e) => e.stopPropagation()}>
             {/* 時間戳與複製按鈕同一組：整組 hover 才顯現（見 .msg-actions） */}
             <span className="msg-actions">
               {ts && <span className="msg-time">{formatMsgTime(ts)}</span>}
-              {mainText.trim() && (
+              {showCopy && (
                 <button className="mini-btn" title="Copy" onClick={() => copyText(mainText)}>
                   <CopyIcon size={12} />
                 </button>

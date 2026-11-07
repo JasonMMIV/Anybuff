@@ -69,6 +69,12 @@ export type BodyNode = {
   plan?: string
   streaming: boolean
   ts?: number
+  /**
+   * True for the turn's final prose block — no tool call follows it. Only this
+   * bubble owns the copy button; transitional narration between tool calls
+   * (e.g. "Let me read the file…") does not.
+   */
+  isFinal: boolean
 }
 
 /** User / file-changes / compaction / system rows — rendered as before. */
@@ -181,6 +187,7 @@ export function buildChatNodes<T extends GroupableChatItem>(
           plan: parsed.plan,
           streaming: opts.streaming && isLast,
           ts: item.ts,
+          isFinal: false,
         })
         closeGroup()
       }
@@ -202,6 +209,27 @@ export function buildChatNodes<T extends GroupableChatItem>(
       ) ||
       (opts.streaming && i === nodes.length - 1)
   })
+
+  // Which prose block owns the turn's copy action. Walking backwards, the
+  // FIRST body of each turn that has no tool call after it is the final answer;
+  // every earlier body (and any body followed by a tool) is transitional
+  // narration. User rows reset the scan for the preceding turn.
+  let laterToolOrBody = false
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i]
+    if (node.type === 'plain' && node.item.kind === 'user') {
+      laterToolOrBody = false
+      continue
+    }
+    if (node.type === 'process') {
+      if (node.entries.some((entry) => entry.type === 'tool'))
+        laterToolOrBody = true
+      continue
+    }
+    if (node.type !== 'body') continue
+    node.isFinal = !laterToolOrBody
+    laterToolOrBody = true
+  }
 
   return nodes
 }
