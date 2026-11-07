@@ -1,8 +1,9 @@
 import FileTree, { type TreeNode } from './FileTree'
-import ActivityPanel from './ActivityPanel'
+import ChangesPanel from './ChangesPanel'
+import { ChangesIcon, FilesIcon } from './Icons'
 import type { UiEvent } from '../../../preload'
 
-export type RightTab = 'files' | 'activity'
+export type RightTab = 'files' | 'changes'
 
 interface RightPanelProps {
   open: boolean
@@ -16,31 +17,31 @@ interface RightPanelProps {
   longPressEnabled: boolean
   onOpenFile: (path: string) => void
   events: UiEvent[]
-  running: boolean
   onClose?: () => void
 }
 
 /**
- * Right panel: shows 2 tabs at the top (File Tree / Agent Activity & Diff);
- * the content renders inside the right panel itself.
+ * Right panel: two tabs (Files / Changes).
  *
  * Gap #14 re-scope: the old inline <pre> preview is gone — clicking a file
- * opens the floating preview modal; the File Tree tab always shows the tree
- * and highlights the file currently being previewed.
+ * opens the floating preview modal; the Files tab always shows the tree and
+ * highlights the file currently being previewed. The Changes tab also only
+ * lists changed files; clicking one opens its diff in a floating window.
  */
 export default function RightPanel(props: RightPanelProps) {
-  const { open, tab, onTab, cwd, selectedPath, onPreviewFile, onMenuFile, longPressEnabled, onOpenFile, events, running, onClose } = props
+  const { open, tab, onTab, cwd, selectedPath, onPreviewFile, onMenuFile, longPressEnabled, onOpenFile, events, onClose } = props
 
   return (
     <aside className={`activity-panel right-content-panel ${open ? 'open' : 'closed'}`}>
       <div className="tabs right-panel-tabs">
         <div className="tabs-left">
           <button className={`tab ${tab === 'files' ? 'active' : ''}`} onClick={() => onTab('files')}>
-            File Tree
+            <FilesIcon size={14} />
+            Files
           </button>
-          <button className={`tab ${tab === 'activity' ? 'active' : ''}`} onClick={() => onTab('activity')}>
-            Activity & Diff
-            {running && <span className="rail-dot" />}
+          <button className={`tab ${tab === 'changes' ? 'active' : ''}`} onClick={() => onTab('changes')}>
+            <ChangesIcon size={14} />
+            Changes
           </button>
         </div>
         {onClose && (
@@ -68,7 +69,7 @@ export default function RightPanel(props: RightPanelProps) {
       )}
       {tab === 'files' && !cwd && <div className="panel-empty">Select a project folder first.</div>}
 
-      {tab === 'activity' && <ActivityPanel events={events} cwd={cwd} onOpenFile={onOpenFile} />}
+      {tab === 'changes' && <ChangesPanel events={events} cwd={cwd} onOpenFile={onOpenFile} />}
     </aside>
   )
 }

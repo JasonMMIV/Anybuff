@@ -19,6 +19,19 @@ export function FilesIcon(props: IconProps) {
   )
 }
 
+/** File with +/- marks (right-panel Changes tab). */
+export function ChangesIcon(props: IconProps) {
+  const b = base(props)
+  return (
+    <svg {...b} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M9 13v4M7 15h4" />
+      <path d="M14 17h4" />
+    </svg>
+  )
+}
+
 export function ChatIcon(props: IconProps) {
   const b = base(props)
   return (

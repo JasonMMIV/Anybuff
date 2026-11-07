@@ -492,7 +492,7 @@ export default function App() {
         : true
   )
   const [rightOpen, setRightOpen] = useState(false)
-  const [rightTab, setRightTab] = useState<RightTab>('activity')
+  const [rightTab, setRightTab] = useState<RightTab>('files')
 
   const toggleLeft = useCallback(() => {
     setLeftOpen((v) => {
@@ -2217,7 +2217,7 @@ export default function App() {
   }, [pendingRevert])
 
   /**
-   * Gap #14: open the floating preview for a file path. FileTree / activity
+   * Gap #14: open the floating preview for a file path. FileTree / Changes
    * panel pass absolute paths; file-changes rows / search results are relative
    * and resolve against cwd.
    *
@@ -3762,7 +3762,6 @@ export default function App() {
               longPressEnabled={longPressEnabled}
               onOpenFile={(path) => openPreviewByPath(path)}
               events={events}
-              running={viewRunning}
             />
           </>
         )}
