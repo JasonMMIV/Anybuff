@@ -176,6 +176,32 @@ the tail got worse (73s → 100s) and total runner-seconds spent on setup rose
 floor for *every* job is now ~40s of cache restore to produce an install that
 then takes about a second.
 
+## Concurrent runs (desktop manual matrix)
+
+Automated coverage lives in `bun run test:host-core` and `bun run --cwd desktop test`. Those tests prove admission, event tagging, interactive FIFO and per-task renderer state, but they cannot prove that two real model-backed runs overlap in the shipped shell. Run this matrix before a release that touches `start-run.ts`, `run-registry.ts`, the run channels or the renderer queue.
+
+Setup:
+
+- Start the desktop dev shell with `bun run dev` and open DevTools.
+- Use two different projects, or one Build tab and one Plan tab on the same project.
+- Give both runs a prompt that lasts long enough to overlap (for example, “inspect the repo, run the tests and summarize what changed”).
+- Confirm the provider keys are configured; never paste keys into the diagnostics report.
+
+| # | Case | Steps | Expected |
+| --- | --- | --- | --- |
+| 1 | Cross-project parallel | Start a run in project A, switch to project B and send another prompt. | Both task tabs show their own spinner. The topbar `Working` badge and stage belong only to the visible conversation. Stop A leaves B running. |
+| 2 | Same-project Build + Plan | Start a Build run, then start a Plan run in another tab on the same project. | Both runs start; the renderer does not queue the second one. `gitAccept` / `gitRevert` return `project-busy` while the Build run is active; Plan does not block them after Build settles. |
+| 3 | Same-task second prompt | Send a second prompt to a task that is already running. | The prompt enters that conversation's queue. Pressing Enter never starts a second run for the same task. The queue drains after the first run reaches a terminal state. |
+| 4 | Send now / steering | With a task running, press Ctrl/Cmd+Enter (or `Send now`) in that task. | Only that run receives the steering message. A run in another tab is untouched, and the visible composer does not move to another task. |
+| 5 | Interactive FIFO | Make two runs request approval or `ask_user` at nearly the same time. | Exactly one prompt is visible, labelled with its background task title. Resolving it reveals the next. Aborting the head run closes its prompt and does not strand the queue. |
+| 6 | Close a running tab | Close a tab whose run is active. | The confirmation defaults to “Keep running & close”. The run continues; reopening the task shows its transcript and Stop still targets it. |
+| 7 | Background terminal | Start a run, switch to another tab, let it finish there. | A completion dot appears on the background tab (red on error); the foreground tab's retry notice, followups and todos are not cleared. Opening the finished tab clears the dot. |
+| 8 | Notifications | Unfocus the window, let a run finish, then focus it and let another finish. | Exactly one native notification per terminal run while unfocused; no notification for the focused run. |
+| 9 | Reload during a run | In dev, reload the renderer (F5 / dev reload) while a run is active. | `getState` re-seeds `runningTaskIds`; the task keeps its spinner and Stop control instead of looking idle. |
+| 10 | Diagnostics | Open `/diagnostics` with two active runs. | The Active runs list shows each short task id, mode label, full cwd and elapsed time. The copy report includes the same runs but only the project basename, not the full path. The terminal subprocess list stays separate. |
+
+After the matrix, stop all runs, close the app and confirm no `run_terminal_command` child processes remain. For the known same-project trade-offs (lost updates, whole-worktree revert, file hooks on a half-edited tree), record the observed behaviour in the release notes rather than treating it as a test failure; ADR-38 delegates that risk to the user.
+
 ## CLI tmux Testing
 
 For testing CLI behavior via tmux, use the helper scripts in `scripts/tmux/`. These handle bracketed paste mode and session logging automatically. Session data is saved to `debug/tmux-sessions/` in YAML format and can be viewed with `bun scripts/tmux/tmux-viewer/index.tsx`. See `scripts/tmux/README.md` for details.

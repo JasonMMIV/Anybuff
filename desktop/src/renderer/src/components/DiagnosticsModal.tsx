@@ -2,17 +2,25 @@
  * #15 /diagnostics — 診斷面板（Modal Panel）。
  *
  * 顯示 host（main process）自身的 CPU / 記憶體(RSS+heap) / 運行時間 / 各
- * terminal 工具子程序 PID，用來排查「變慢、卡死在哪個指令」。資料來自
- * `AnyBuff:getDiagnostics` host channel（desktop IPC 或 WS 皆同）。
+ * active agent run（taskId／cwd／耗時）與 terminal 工具子程序 PID，用來排查
+ * 「變慢、卡死在哪個指令／哪條 run」。資料來自 `AnyBuff:getDiagnostics` host
+ * channel（desktop IPC 或 WS 皆同）。
  *
  * - 彈出式獨立浮層，不污染對話串。
  * - 每 2 秒自動刷新 + 手動 Refresh。
- * - 一鍵複製診斷報告：只含 pid / 用量數字，不含任何指令內容、環境變數或
- *   API keys（ADR-12 自動脫敏）。
+ * - 一鍵複製診斷報告：只含 pid / 用量數字與專案 basename，不含完整路徑、
+ *   指令內容、環境變數或 API keys（ADR-12 自動脫敏）。
  * - Esc / 點擊 backdrop 關閉。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  formatRunDuration,
+  projectBasename,
+  runModeLabel,
+  shortTaskId,
+  type RunMode,
+} from '../utils/diagnostics-format'
 import { RefreshIcon, XIcon } from './Icons'
 
 interface DiagnosticsSnapshot {
@@ -33,7 +41,17 @@ interface DiagnosticsSnapshot {
     arrayBuffers?: number
   }
   activeTools?: Array<{ pid: number; processGroupId?: number }>
+  /** Legacy single-run field; new hosts also return `runs`. */
   runningTaskId?: string | null
+  /** Active runs (ADR-38). */
+  runs?: Array<{
+    runId: string
+    taskId: string
+    cwd: string
+    agentId: string
+    mode: RunMode
+    startedAt: number
+  }>
 }
 
 function isErrorEnvelope(value: unknown): value is { ok: false; error: string } {
@@ -131,6 +149,21 @@ export default function DiagnosticsModal({ onClose }: { onClose: () => void }) {
     const snap = snapshot ?? ({} as DiagnosticsSnapshot)
     const mem = snap.memory
     const tools = snap.activeTools ?? []
+    const runs = snap.runs
+    const hasRunList = Array.isArray(runs)
+    const runList = runs ?? []
+    const activeRunSummary = hasRunList
+      ? runList.length > 0
+        ? runList
+            .map(
+              (run) =>
+                `${shortTaskId(run.taskId)} (${runModeLabel(run.mode)}, ${formatRunDuration(run.startedAt)}) project=${projectBasename(run.cwd)}`
+            )
+            .join('; ')
+        : 'none'
+      : snap.runningTaskId
+        ? `${shortTaskId(snap.runningTaskId)} (legacy single-run host)`
+        : 'none'
     const lines = [
       '### AnyBuff process diagnostics',
       '',
@@ -146,7 +179,7 @@ export default function DiagnosticsModal({ onClose }: { onClose: () => void }) {
           ? tools.map((t) => `PID ${t.pid}${t.processGroupId ? ` (PGID ${t.processGroupId})` : ''}`).join(', ')
           : 'none running'
       }`,
-      `- Active run: ${snap.runningTaskId ?? 'idle'}`,
+      `- Active runs: ${activeRunSummary}`,
       '',
       '(No API keys, command text, or environment are included — ADR-12 redaction.)',
     ]
@@ -166,7 +199,18 @@ export default function DiagnosticsModal({ onClose }: { onClose: () => void }) {
 
   const mem = snapshot?.memory
   const tools = snapshot?.activeTools ?? []
-  const busy = (snapshot?.runningTaskId ?? null) !== null
+  const runs = snapshot?.runs
+  const hasRunList = Array.isArray(runs)
+  const runList = runs ?? []
+  const legacyRunningTaskId = snapshot?.runningTaskId ?? null
+  const busy = hasRunList ? runList.length > 0 : legacyRunningTaskId !== null
+  const runStateLabel = hasRunList
+    ? runList.length > 0
+      ? `${runList.length} active`
+      : 'idle'
+    : legacyRunningTaskId
+      ? `active (task ${shortTaskId(legacyRunningTaskId)})`
+      : 'idle'
 
   return (
     <div className="modal-backdrop diagnostics-backdrop" onClick={onClose}>
@@ -230,10 +274,35 @@ export default function DiagnosticsModal({ onClose }: { onClose: () => void }) {
                 <dt>Run state</dt>
                 <dd>
                   <span className={`diag-dot ${busy ? 'busy' : 'idle'}`} />
-                  {busy ? `active (task ${snapshot.runningTaskId})` : 'idle'}
+                  {runStateLabel}
                 </dd>
               </div>
             </dl>
+
+            <div className="diag-runs">
+              <div className="diag-tools-head">
+                <span className="diag-label">Active runs</span>
+                <span className="diag-muted">{runList.length} active</span>
+              </div>
+              {runList.length === 0 ? (
+                <div className="diag-empty">No agent runs in flight.</div>
+              ) : (
+                <ul className="diag-run-list">
+                  {runList.map((run) => (
+                    <li key={run.runId} title={`Run ${run.runId}`}>
+                      <div className="diag-run-head">
+                        <code title={run.taskId}>{shortTaskId(run.taskId)}</code>
+                        <span className="diag-run-mode">{runModeLabel(run.mode)}</span>
+                        <span className="diag-muted">{formatRunDuration(run.startedAt)}</span>
+                      </div>
+                      <div className="diag-run-cwd" title={run.cwd}>
+                        {run.cwd}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             <div className="diag-tools">
               <div className="diag-tools-head">
@@ -255,7 +324,7 @@ export default function DiagnosticsModal({ onClose }: { onClose: () => void }) {
             </div>
 
             <footer className="diagnostics-footer">
-              <span className="hint">Auto-refreshes every 2s · no keys/command text included (ADR-12).</span>
+              <span className="hint">Auto-refreshes every 2s · no keys, command text, or env included (ADR-12).</span>
               <div className="diagnostics-footer-actions">
                 <button type="button" className="btn ghost small" onClick={() => void fetchSnapshot()} title="Refresh now">
                   <RefreshIcon size={12} /> Refresh
