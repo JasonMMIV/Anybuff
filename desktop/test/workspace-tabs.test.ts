@@ -9,6 +9,7 @@ import {
   findDraftTab,
   makeTabId,
   neighborTabAfterClose,
+  retargetDraftTab,
   tabTitleFromPrompt,
   type WorkspaceTab,
 } from '../src/renderer/src/utils/workspace-tabs'
@@ -17,13 +18,13 @@ const tab = (id: string, taskId: string | null, projectPath: string | null = '~/
   id,
   taskId,
   projectPath,
-  title: taskId ? id : 'New chat',
+  title: taskId ? id : 'New Task',
 })
 
 describe('tabTitleFromPrompt', () => {
   test('empty / whitespace-only prompts use the fallback', () => {
-    expect(tabTitleFromPrompt(undefined)).toBe('New chat')
-    expect(tabTitleFromPrompt('   \n\t ')).toBe('New chat')
+    expect(tabTitleFromPrompt(undefined)).toBe('New Task')
+    expect(tabTitleFromPrompt('   \n\t ')).toBe('New Task')
     expect(tabTitleFromPrompt('', 'Untitled')).toBe('Untitled')
   })
 
@@ -78,6 +79,33 @@ describe('neighborTabAfterClose', () => {
 
   test('returns null for an unknown tab id', () => {
     expect(neighborTabAfterClose([tab('a', 't1')], 'missing')).toBeNull()
+  })
+})
+
+describe('retargetDraftTab', () => {
+  test('moves a draft tab to another project in place and leaves the others alone', () => {
+    const tabs = [tab('a', null), tab('b', 'task-1')]
+    const next = retargetDraftTab(tabs, 'a', '~/q')
+    expect(next).not.toBeNull()
+    expect(next?.[0]).toMatchObject({ id: 'a', taskId: null, projectPath: '~/q' })
+    expect(next?.[1]).toEqual(tabs[1])
+    // Pure: the input list is never mutated.
+    expect(tabs[0].projectPath).toBe('~/p')
+    expect(next).not.toBe(tabs)
+  })
+
+  test('refuses a task tab (its host conversation owns the project)', () => {
+    expect(retargetDraftTab([tab('b', 'task-1')], 'b', '~/q')).toBeNull()
+  })
+
+  test('refuses a missing or absent active tab', () => {
+    expect(retargetDraftTab([tab('a', null)], null, '~/q')).toBeNull()
+    expect(retargetDraftTab([tab('a', null)], 'missing', '~/q')).toBeNull()
+  })
+
+  test('keeps a null project path retargetable (folder not picked yet)', () => {
+    const next = retargetDraftTab([tab('a', null, null)], 'a', '~/q')
+    expect(next?.[0].projectPath).toBe('~/q')
   })
 })
 

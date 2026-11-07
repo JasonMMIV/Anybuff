@@ -1046,9 +1046,14 @@ textarea {
   gap: 6px;
   height: 24px;
   min-width: 64px;
-  max-width: 190px;
+  /* A definite width (not just flex-basis) is required: .titlebar-tabs is a
+     shrink-to-fit scroller, so it sizes from the tabs' intrinsic width — a
+     flex-basis alone would never materialize. 252px is ~40% wider than the
+     old 180px; flex-shrink takes over as soon as the strip runs out of room,
+     so crowded tab strips keep the old shrink-to-64px behavior. */
+  width: 252px;
   padding: 0 4px 0 10px;
-  flex: 0 1 180px;
+  flex: 0 1 auto;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;

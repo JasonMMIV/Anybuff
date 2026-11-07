@@ -5,7 +5,7 @@ import RightPanel, { type RightTab } from './components/RightPanel'
 import SettingsModal from './components/SettingsModal'
 import AgentWizardModal from './components/AgentWizardModal'
 import ErrorBoundary from './components/ErrorBoundary'
-import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type SkillInfo } from './components/Composer'
+import Composer, { type AgentMode, type AgentMentionInfo, type Attachment, type ComposerHandle, type SkillInfo } from './components/Composer'
 import MessageQueuePanel, { type QueuedMessage } from './components/MessageQueuePanel'
 import ReviewScopePanel from './components/ReviewScopePanel'
 import CompactConfirmModal from './components/CompactConfirmModal'
@@ -38,10 +38,12 @@ import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
 import { firstReadyQueueIndex, queueTargetMatchesView } from './utils/queue-routing'
+import { composerDraftKey, createComposerDraft, EMPTY_COMPOSER_DRAFT, isComposerTextEmpty, type ComposerDraft } from './utils/composer-draft'
 import {
   findDraftTab,
   makeTabId,
   neighborTabAfterClose,
+  retargetDraftTab,
   tabTitleFromPrompt,
   type WorkspaceTab
 } from './utils/workspace-tabs'
@@ -95,6 +97,23 @@ type ChatItem =
 
 /** Android WebView has no titlebar: one implicit tab preserves the pre-tabs view semantics. */
 const MOBILE_TAB_ID = 'mobile-single-tab'
+
+/** Per-tab composer state that is not the draft text/caret: staged files,
+ *  interview mode, and `!command` output waiting for the next prompt. */
+interface ComposerSession {
+  attachments: Attachment[]
+  interviewArmed: boolean
+  bashResults: BashCommandResult[]
+}
+
+const emptyComposerSession = (): ComposerSession => ({
+  attachments: [],
+  interviewArmed: false,
+  bashResults: [],
+})
+
+const isComposerSessionEmpty = (session: ComposerSession): boolean =>
+  session.attachments.length === 0 && !session.interviewArmed && session.bashResults.length === 0
 
 /** Silent background polling / internal tools that should be hidden from the UI timeline */
 function isSilentTool(name?: string): boolean {
@@ -620,16 +639,32 @@ export default function App() {
    * single implicit tab preserves the pre-tabs behavior. Declared up here so
    * tab close/bind cleanup can reach them.
    */
-  const draftsRef = useRef<Map<string, string>>(new Map())
+  const draftsRef = useRef<Map<string, ComposerDraft>>(new Map())
+  /** Live textarea bridge for the active tab (text + caret/selection + scroll). */
+  const composerRef = useRef<ComposerHandle>(null)
+  /** Restored after the target draft's value has been committed to the DOM. */
+  const pendingComposerRestoreRef = useRef<{ draft: ComposerDraft; focus: boolean } | null>(null)
+  const [composerRestoreSignal, setComposerRestoreSignal] = useState(0)
   const promptRef = useRef(prompt)
   promptRef.current = prompt
   /** The draft key the prompt currently belongs to ('' until first mount). */
   const draftKeyRef = useRef('')
+  /** Attachments / interview mode / `!command` context, keyed by the same draft key. */
+  const composerSessionsRef = useRef<Map<string, ComposerSession>>(new Map())
+  /** Mirrors for the draft-sync effect (which runs on every render). */
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
+  const interviewArmedRef = useRef(interviewArmed)
+  interviewArmedRef.current = interviewArmed
 
   /** Drop a closed/bound tab's composer draft (no session-long leak). */
   const discardTabDraft = useCallback((tab: WorkspaceTab) => {
     draftsRef.current.delete(`tab:${tab.id}`)
-    if (tab.taskId) draftsRef.current.delete(tab.taskId)
+    composerSessionsRef.current.delete(`tab:${tab.id}`)
+    if (tab.taskId) {
+      draftsRef.current.delete(tab.taskId)
+      composerSessionsRef.current.delete(tab.taskId)
+    }
   }, [])
 
   /**
@@ -645,10 +680,11 @@ export default function App() {
       : `tab:${tabId}`
     if (draftKeyRef.current && draftKeyRef.current !== newKey) {
       draftsRef.current.delete(draftKeyRef.current)
+      composerSessionsRef.current.delete(draftKeyRef.current)
       draftKeyRef.current = newKey
     }
     setWorkspaceTabs((prev) =>
-      prev.map((t) => (t.id === tabId ? { ...t, taskId: null, title: 'New chat' } : t))
+      prev.map((t) => (t.id === tabId ? { ...t, taskId: null, title: 'New Task' } : t))
     )
   }, [isAndroidShell])
 
@@ -660,17 +696,58 @@ export default function App() {
   const createDraftTab = useCallback(
     (projectPath: string | null): string => {
       if (isAndroidShell) {
-        setWorkspaceTabs([{ id: MOBILE_TAB_ID, taskId: null, projectPath, title: 'New chat' }])
+        setWorkspaceTabs([{ id: MOBILE_TAB_ID, taskId: null, projectPath, title: 'New Task' }])
         setActiveTabId(MOBILE_TAB_ID)
         return MOBILE_TAB_ID
       }
       const id = makeTabId()
-      setWorkspaceTabs((prev) => [...prev, { id, taskId: null, projectPath, title: 'New chat' }])
+      setWorkspaceTabs((prev) => [...prev, { id, taskId: null, projectPath, title: 'New Task' }])
       setActiveTabId(id)
       return id
     },
     [isAndroidShell]
   )
+
+  /**
+   * Retarget the active DRAFT tab at another project in place — the topbar
+   * project picker on a New Task page must not spawn a second tab. Returns
+   * false for task tabs (their host conversation owns the project) so the
+   * caller can fall back to opening a new tab.
+   */
+  const retargetActiveDraftTab = useCallback((projectPath: string): boolean => {
+    const next = retargetDraftTab(
+      workspaceTabsRef.current,
+      activeTabIdRef.current,
+      projectPath
+    )
+    if (!next) return false
+    // Keep the ref in lockstep so a switch fired before the next render sees
+    // the new project path.
+    workspaceTabsRef.current = next
+    setWorkspaceTabs(next)
+    return true
+  }, [])
+
+  /**
+   * Drop project-relative composer extras when a draft is retargeted in place.
+   * The per-tab store must be cleared too: the draft-sync effect only re-stashes
+   * sessions when the draft key changes, so a bare setAttachments would let the
+   * old project's staged files / `!command` output reappear after a tab switch.
+   */
+  const clearActiveComposerExtras = useCallback(() => {
+    const key = draftKeyRef.current
+    const session = key ? composerSessionsRef.current.get(key) : undefined
+    if (key && session) {
+      const next = { ...session, attachments: [], bashResults: [] }
+      if (isComposerSessionEmpty(next)) composerSessionsRef.current.delete(key)
+      else composerSessionsRef.current.set(key, next)
+    }
+    pendingBashRef.current = []
+    // Keep the render-assigned mirror in lockstep so a draft-sync effect that
+    // lands before the next commit cannot re-stash the cleared session.
+    attachmentsRef.current = []
+    setAttachments([])
+  }, [])
 
   const tabStripRef = useRef<HTMLDivElement>(null)
   /** Move keyboard focus to a tab that just became active (after close/new). */
@@ -1025,6 +1102,7 @@ export default function App() {
     // into a later new-chat tab.
     if (draftKeyRef.current === `tab:${tabId}` || draftKeyRef.current.startsWith('__new__:')) {
       draftsRef.current.delete(draftKeyRef.current)
+      composerSessionsRef.current.delete(draftKeyRef.current)
       draftKeyRef.current = taskId
     }
     // Messages queued while this tab was still a draft now belong to the task
@@ -1584,43 +1662,50 @@ export default function App() {
   // to a fresh conversation in the newly opened project. The ref lets the
   // folder-pending listener (declared earlier) reach it without a TDZ issue.
   const applyOpenedFolder = useCallback(
-    (path: string) => {
-      // Opening a folder starts a fresh conversation in its own tab. Reuse an
-      // existing empty draft for that project instead of piling up blanks;
-      // existing conversations (and any background run) are left untouched.
+    (path: string, opts?: { keepCurrentTab?: boolean }) => {
+      // Opening a folder starts a fresh conversation in its own tab. The New
+      // Task page's project picker passes keepCurrentTab so the current DRAFT
+      // tab is retargeted in place instead of stacking another tab.
       viewLoadSeqRef.current += 1
-      const existingDraft = findDraftTab(workspaceTabsRef.current, path)
-      if (existingDraft) setActiveTabId(existingDraft.id)
-      else createDraftTab(path)
+      if (opts?.keepCurrentTab && retargetActiveDraftTab(path)) {
+        // Attachments and pending `!command` output are project-relative.
+        clearActiveComposerExtras()
+      } else {
+        // Reuse an existing empty draft for that project instead of piling up
+        // blanks; existing conversations (and any background run) are left
+        // untouched. Per-tab composer sessions restore the target's drafts.
+        const existingDraft = findDraftTab(workspaceTabsRef.current, path)
+        if (existingDraft) setActiveTabId(existingDraft.id)
+        else createDraftTab(path)
+      }
       setCwd(path)
       autoScrollRef.current = true
       setChatItems([])
       setEvents([])
       setNotice(null)
-      setAttachments([])
       setTokenUsage(null)
       setHistoryTask(null)
       setResumeInfo(null)
       setViewTask(null)
     },
-    [createDraftTab, setViewTask],
+    [clearActiveComposerExtras, createDraftTab, retargetActiveDraftTab, setViewTask],
   )
   const applyOpenedFolderRef = useRef(applyOpenedFolder)
   applyOpenedFolderRef.current = applyOpenedFolder
 
-  const selectFolder = useCallback(async () => {
+  const selectFolder = useCallback(async (opts?: { keepCurrentTab?: boolean }) => {
     if (isPreview) return
     try {
       const path = await window.AnyBuff.selectFolder()
       if (!path) return
-      applyOpenedFolder(path as string)
+      applyOpenedFolder(path as string, opts)
       refreshProjects()
     } catch (err) {
       // Copy failures / picker errors surface instead of silently doing nothing
       // (the folder pick used to fail quiet — UI stayed on "no project yet").
       setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [refreshProjects, setViewTask, applyOpenedFolder])
+  }, [refreshProjects, applyOpenedFolder])
 
   // Compose final prompt: resolve @ files, /skills, and attachments
   const buildFinalPrompt = useCallback(
@@ -1787,6 +1872,8 @@ export default function App() {
       // The tab that submitted this prompt. Async completions must not drag the
       // view back if the user has since switched to another tab.
       const sendTabId = activeTabIdRef.current
+      const sendDraftKey = draftKeyRef.current
+      const sendCwd = cwd
       // ADR-30: an explicit user submit unpauses a queue that a Stop left
       // paused ('pause-if-pending') — the user is driving again.
       setQueuePaused(false)
@@ -1839,28 +1926,46 @@ export default function App() {
                 exitCode: number
                 errorMessage?: string
               })
-          // Surface the output in the transcript (like the upstream CLI's
-          // bash tool card) and stash it as context for the NEXT prompt.
-          setChatItems((prev) => [
-            ...prev,
-            {
-              kind: 'tool' as const,
-              tool: {
-                toolName: 'run_terminal_command',
-                status: result.ok ? ('done' as const) : ('error' as const),
-                detail: [
-                  result.stdout ? `stdout:\n${result.stdout}` : '',
-                  result.stderr ? `stderr:\n${result.stderr}` : '',
-                  result.errorMessage ? `error: ${result.errorMessage}` : ''
-                ]
-                  .filter(Boolean)
-                  .join('\n') || `exit code ${result.exitCode}`,
-                toolInput: { command: result.command, cwd: result.cwd, processType: 'SYNC' }
+          // A `!command` belongs to the tab AND project that submitted it. If
+          // the user switched tabs while it ran, park the output with that
+          // tab's session; if the same tab was retargeted at another project,
+          // drop it rather than baking the old project's output into the new
+          // project's next prompt. The transcript card is only appended when
+          // this view is still the one that ran the command.
+          const sameTab = draftKeyRef.current === sendDraftKey
+          const sameView = sameTab && cwdRef.current === sendCwd
+          if (sameView) {
+            // Surface the output in the transcript (like the upstream CLI's
+            // bash tool card) and stash it as context for the NEXT prompt.
+            setChatItems((prev) => [
+              ...prev,
+              {
+                kind: 'tool' as const,
+                tool: {
+                  toolName: 'run_terminal_command',
+                  status: result.ok ? ('done' as const) : ('error' as const),
+                  detail: [
+                    result.stdout ? `stdout:\n${result.stdout}` : '',
+                    result.stderr ? `stderr:\n${result.stderr}` : '',
+                    result.errorMessage ? `error: ${result.errorMessage}` : ''
+                  ]
+                    .filter(Boolean)
+                    .join('\n') || `exit code ${result.exitCode}`,
+                  toolInput: { command: result.command, cwd: result.cwd, processType: 'SYNC' }
+                }
               }
-            }
-          ])
-          pendingBashRef.current = [...pendingBashRef.current, result]
-          setNotice(`Bash output captured — it will be attached to your next message (${result.exitCode === 0 ? 'exit 0' : `exit ${result.exitCode}`}).`)
+            ])
+            pendingBashRef.current = [...pendingBashRef.current, result]
+          } else if (!sameTab) {
+            const parked = composerSessionsRef.current.get(sendDraftKey) ?? emptyComposerSession()
+            composerSessionsRef.current.set(sendDraftKey, {
+              ...parked,
+              bashResults: [...parked.bashResults, result],
+            })
+          }
+          if (sameView && activeTabIdRef.current === sendTabId) {
+            setNotice(`Bash output captured — it will be attached to your next message (${result.exitCode === 0 ? 'exit 0' : `exit ${result.exitCode}`}).`)
+          }
           return
         }
       }
@@ -2251,26 +2356,82 @@ export default function App() {
     // project must not share (and overwrite) each other's composer text. The
     // Android WebView has one stable tab, so it keeps the pre-tabs
     // project-scoped key (a new chat in the same project restores its draft).
-    const key =
-      activeViewTaskId ??
-      (isAndroidShell
-        ? `__new__:${cwdRef.current ?? ''}`
-        : activeTabId
-          ? `tab:${activeTabId}`
-          : `__new__:${cwdRef.current ?? ''}`)
+    const key = composerDraftKey({
+      activeViewTaskId,
+      activeTabId,
+      cwd: cwdRef.current,
+      isAndroidShell,
+    })
     const prevKey = draftKeyRef.current
     draftKeyRef.current = key
-    if (prevKey && prevKey !== key) {
-      // View switch: stash the old view's text, restore the new view's draft.
-      if (promptRef.current) draftsRef.current.set(prevKey, promptRef.current)
-      else draftsRef.current.delete(prevKey)
-      setPrompt(draftsRef.current.get(key) ?? '')
-    } else if (prevKey === key) {
-      // Same view: keep the stored draft in lockstep with the composer.
-      if (promptRef.current) draftsRef.current.set(key, promptRef.current)
-      else draftsRef.current.delete(key)
+    if (prevKey !== key) {
+      // View switch: snapshot the LIVE textarea (text + caret + scroll) before
+      // React replaces its value, then restore the target tab's own snapshot.
+      const live = composerRef.current?.snapshot()
+      // An empty prevKey = first mount or a just-closed tab: there is no old
+      // view to stash, but the target tab still needs its draft restored.
+      if (prevKey) {
+        const prevText = live?.text ?? promptRef.current
+        if (isComposerTextEmpty(prevText)) {
+          draftsRef.current.delete(prevKey)
+        } else {
+          draftsRef.current.set(
+            prevKey,
+            createComposerDraft(
+              prevText,
+              live?.selectionStart ?? prevText.length,
+              live?.selectionEnd ?? prevText.length,
+              live?.scrollTop ?? 0
+            )
+          )
+        }
+        const session: ComposerSession = {
+          attachments: attachmentsRef.current,
+          interviewArmed: interviewArmedRef.current,
+          bashResults: pendingBashRef.current,
+        }
+        if (isComposerSessionEmpty(session)) composerSessionsRef.current.delete(prevKey)
+        else composerSessionsRef.current.set(prevKey, session)
+      }
+      const next = draftsRef.current.get(key) ?? EMPTY_COMPOSER_DRAFT
+      const nextSession = composerSessionsRef.current.get(key) ?? emptyComposerSession()
+      setAttachments(nextSession.attachments)
+      setInterviewArmed(nextSession.interviewArmed)
+      pendingBashRef.current = nextSession.bashResults
+      setPrompt(next.text)
+      pendingComposerRestoreRef.current = { draft: next, focus: live?.focused ?? false }
+      // Signal even when both drafts share the same text: the caret/scroll still
+      // need restoring after the value commits.
+      setComposerRestoreSignal((n) => n + 1)
+    } else {
+      // Same view: keep the stored text in lockstep. The caret is snapshotted
+      // lazily at the next switch (no per-keystroke DOM read).
+      const existing = draftsRef.current.get(key)
+      if (isComposerTextEmpty(promptRef.current)) {
+        if (existing) draftsRef.current.delete(key)
+      } else if (!existing || existing.text !== promptRef.current) {
+        draftsRef.current.set(
+          key,
+          createComposerDraft(
+            promptRef.current,
+            existing?.selectionStart,
+            existing?.selectionEnd,
+            existing?.scrollTop
+          )
+        )
+      }
     }
   })
+
+  // Apply the restored caret/scroll AFTER the new draft's value is on the DOM.
+  // The composer's auto-grow effect is a child effect, so it runs first.
+  useEffect(() => {
+    if (composerRestoreSignal === 0) return
+    const pending = pendingComposerRestoreRef.current
+    if (!pending) return
+    pendingComposerRestoreRef.current = null
+    composerRef.current?.restore(pending.draft, { focus: pending.focus })
+  }, [composerRestoreSignal])
 
   const newTask = useCallback(() => {
     // Only resets the VIEW — any active run keeps going in the background and
@@ -2283,7 +2444,6 @@ export default function App() {
     setEvents([])
     changedFilesRef.current = []
     accumulatedFileChangesRef.current = []
-    setAttachments([])
     setTokenUsage(null)
     setFollowups([])
     setHistoryTask(null)
@@ -2973,7 +3133,6 @@ export default function App() {
       setEvents([])
       changedFilesRef.current = []
       accumulatedFileChangesRef.current = []
-      setAttachments([])
       setTokenUsage(null)
       setPreviewFile(null)
       setFileMenu(null)
@@ -2981,6 +3140,7 @@ export default function App() {
       setResumeInfo(null)
       setViewTask(null)
       setProjectMenuOpen(false)
+      setNotice(null)
       const pname = (await window.AnyBuff.projectName(path)) as string
       // A slower project-name lookup from a tab the user already left must not
       // relabel the newer project.
@@ -3000,10 +3160,8 @@ export default function App() {
       // Reset first: same-project switches skip onOpenProject's early return, so
       // a stale count from the previous task must never gate /compact below.
       setTokenUsage(null)
-      // Same-project task switches skip onOpenProject's early return, so clear
-      // the per-turn attachment strip here too — attachments never follow the
-      // user across conversations.
-      setAttachments([])
+      // Attachments/interview/bash context belong to the TAB's composer session;
+      // the draft-sync effect swaps them in after the view id flips.
       if (isPreview) {
         setViewTask(task.id)
         setChatItems((task.messages ?? []) as ChatItem[])
@@ -3150,6 +3308,25 @@ export default function App() {
   )
 
   /**
+   * Topbar project picker on a New Task page: retarget the CURRENT draft tab so
+   * the user stays where they are (and keeps the draft). Task tabs and a missing
+   * tab fall back to the normal "open in a new tab" behavior.
+   */
+  const switchProjectInCurrentTab = useCallback(
+    async (path: string) => {
+      if (path === cwdRef.current) return
+      if (retargetActiveDraftTab(path)) {
+        // Attachments / bash output belong to the previous project.
+        clearActiveComposerExtras()
+        await onOpenProject(path)
+        return
+      }
+      await openProjectInNewTab(path)
+    },
+    [clearActiveComposerExtras, onOpenProject, openProjectInNewTab, retargetActiveDraftTab]
+  )
+
+  /**
    * Sidebar / search entry point: focus the conversation's existing tab or
    * create one, then let `onOpenTask` reload its host snapshot.
    */
@@ -3222,6 +3399,7 @@ export default function App() {
       // Prevent the draft-sync effect from stashing the closed tab's text back
       // into the map after this render.
       draftKeyRef.current = ''
+      pendingComposerRestoreRef.current = null
       setPrompt('')
       const next = neighborTabAfterClose(tabsNow, tabId)
       if (next) {
@@ -3516,8 +3694,8 @@ export default function App() {
   }, [queuedMessages, activeViewTaskId, activeTabId, cwd])
 
   // View-scoped run state: only the conversation being VIEWED shows streaming
-  // cursors, stop buttons, and activity animations — background runs elsewhere
-  // are surfaced via the sidebar spinner and the global topbar badge instead.
+  // cursors, stop buttons, activity animations, and the topbar Working badge —
+  // a background run elsewhere is surfaced by its own TAB spinner instead.
   const viewRunning = running && runningTaskId !== null && runningTaskId === activeViewTaskId
   const viewStopping = stopping && viewRunning
   const busyElsewhere = running && !viewRunning
@@ -3619,7 +3797,7 @@ export default function App() {
     }
   }, [pendingJump, jumpToRow])
 
-  const currentStage = deriveStage(events, running)
+  const currentStage = deriveStage(events, viewRunning)
   // Runs live in the main process now — navigating is always safe.
   const canSwitchProject = chatItems.length === 0 && !historyTask
 
@@ -3713,7 +3891,7 @@ export default function App() {
                   {isRunningTab && (
                     <span className="spinner-ring titlebar-tab-spinner" role="status" aria-label="Running" />
                   )}
-                  <span className="titlebar-tab-title">{tab.title || 'New chat'}</span>
+                  <span className="titlebar-tab-title">{tab.title || 'New Task'}</span>
                   <button
                     type="button"
                     className="titlebar-tab-close"
@@ -3839,7 +4017,7 @@ export default function App() {
               projects={projects}
               runningTaskId={runningTaskId}
               onNewProject={() => void selectFolder()}
-              onOpenProject={(p) => void openProjectInNewTab(p)}
+              onOpenProject={(p) => void switchProjectInCurrentTab(p)}
               onOpenTask={(p, t) => void openTaskInTab(p, t)}
               onRenameTask={onRenameTask}
               onExportTask={onExportTask}
@@ -3905,7 +4083,7 @@ export default function App() {
                             className={`project-menu-item${p.path === cwd ? ' current' : ''}`}
                             onClick={() => {
                               setProjectMenuOpen(false)
-                              if (p.path !== cwd) void openProjectInNewTab(p.path)
+                              if (p.path !== cwd) void switchProjectInCurrentTab(p.path)
                             }}
                             title={p.path}
                           >
@@ -3918,7 +4096,7 @@ export default function App() {
                           className="project-menu-item add"
                           onClick={() => {
                             setProjectMenuOpen(false)
-                            void selectFolder()
+                            void selectFolder({ keepCurrentTab: true })
                           }}
                         >
                           <FolderPlusIcon size={13} />
@@ -3928,10 +4106,10 @@ export default function App() {
                     )}
                   </div>
                   {branch && <span className="branch-badge">⎇ {branch}</span>}
-                  {running && (
+                  {viewRunning && (
                     <span
                       className="running-badge"
-                      title={runningTaskId && runningTaskId !== currentTaskRef.current ? 'A task is running in another conversation' : undefined}
+                      title="Agent is working on this conversation"
                     >
                       <span className="spinner-ring" /> {currentStage ?? 'Working'}
                       {runStartedAt && <RunElapsed startedAt={runStartedAt} />}
@@ -4228,6 +4406,7 @@ export default function App() {
                     onSendNext={queueSendNext}
                   />
                   <Composer
+                    ref={composerRef}
                     prompt={prompt}
                     onChange={setPrompt}
                     onSend={() => void send()}

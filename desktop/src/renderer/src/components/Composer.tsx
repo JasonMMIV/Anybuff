@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import { ArrowUpIcon, ChatIcon, HammerIcon, LightbulbIcon, ListIcon, PaperclipIcon, PlusIcon, SpecialistIcon, SparklesIcon, StopIcon, XIcon } from './Icons'
 import CustomSelect from './CustomSelect'
 
@@ -31,6 +31,13 @@ interface ProviderOption {
   id: string
   label: string
   models: string[]
+}
+
+/** Imperative bridge for per-tab drafts: snapshot the live textarea before a
+ *  tab switch, restore the target draft's caret/scroll after it is committed. */
+export interface ComposerHandle {
+  snapshot: () => ComposerDraft & { focused: boolean }
+  restore: (draft: ComposerDraft, options?: { focus?: boolean }) => void
 }
 
 export interface AgentMentionInfo {
@@ -103,6 +110,7 @@ interface ComposerProps {
 
 import { getReasoningOptionsForModel, hasKnownLadderForModel } from '../utils/reasoning'
 import { SLASH_COMMANDS } from '../utils/composer-commands'
+import { clampComposerSelection, type ComposerDraft } from '../utils/composer-draft'
 
 type Mention =
   | { kind: 'file'; query: string }
@@ -255,7 +263,7 @@ function TokenRing({
   )
 }
 
-export default function Composer(props: ComposerProps) {
+export default function Composer({ ref, ...props }: ComposerProps & { ref?: Ref<ComposerHandle> }) {
   const isWebView = useIsWebView()
   const {
     prompt,
@@ -306,9 +314,48 @@ export default function Composer(props: ComposerProps) {
   const ringOwnsCost = isWebView && hasTokenRing
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  /** Latest prompt for the snapshot fallback when the textarea is unmounted. */
+  const promptRef = useRef(prompt)
+  promptRef.current = prompt
+  /** True when the current prompt came from the user (onChange), not a draft swap. */
+  const lastLocalPromptRef = useRef(prompt)
   const menuItemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [mention, setMention] = useState<Mention>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
+
+  // Per-tab composer state (utils/composer-draft.ts): text is controlled by App,
+  // but the caret/selection and textarea scroll are DOM-only — App grabs them
+  // through this handle immediately before switching tabs.
+  const snapshot = useCallback((): ComposerDraft & { focused: boolean } => {
+    const el = textareaRef.current
+    const text = el?.value ?? promptRef.current
+    return {
+      text,
+      selectionStart: el?.selectionStart ?? text.length,
+      selectionEnd: el?.selectionEnd ?? text.length,
+      scrollTop: el?.scrollTop ?? 0,
+      focused: typeof document !== 'undefined' && document.activeElement === el,
+    }
+  }, [])
+
+  const restore = useCallback((draft: ComposerDraft, options?: { focus?: boolean }) => {
+    const el = textareaRef.current
+    if (!el) return
+    const { start, end } = clampComposerSelection(
+      el.value,
+      draft.selectionStart,
+      draft.selectionEnd
+    )
+    if (options?.focus) el.focus({ preventScroll: true })
+    el.setSelectionRange(start, end)
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight)
+    el.scrollTop = Math.min(Math.max(0, draft.scrollTop), maxScroll)
+    // A tab swap must not leave the previous draft's mention menu open.
+    setMention(null)
+    setMentionIndex(0)
+  }, [])
+
+  useImperativeHandle(ref, () => ({ snapshot, restore }), [snapshot, restore])
   /** #9: the draft is a bash command (first non-space char is `!`). */
   const isBashMode = prompt.trimStart().startsWith('!')
   /** True while the user is dragging files over the composer (drop overlay). */
@@ -357,6 +404,16 @@ export default function Composer(props: ComposerProps) {
     el.style.height = `${Math.min(el.scrollHeight, 184)}px`
   }, [prompt])
 
+  // A prompt change that did not come from onChange is a tab/draft swap (or a
+  // programmatic restore) — close the previous draft's mention menu instead of
+  // letting it float over unrelated text.
+  useEffect(() => {
+    if (prompt === lastLocalPromptRef.current) return
+    lastLocalPromptRef.current = prompt
+    setMention(null)
+    setMentionIndex(0)
+  }, [prompt])
+
   // Detect the @file / @agent or /skill token being typed before the caret.
   // The @-query may contain dots, dashes, slashes and spaces inside paths —
   // but a trailing space (or the caret sitting after one) ends the token.
@@ -382,6 +439,7 @@ export default function Composer(props: ComposerProps) {
   }
 
   const update = (value: string, caret: number) => {
+    lastLocalPromptRef.current = value
     onChange(value)
     const next = detectMention(value, caret)
     setMention(next)
@@ -399,6 +457,7 @@ export default function Composer(props: ComposerProps) {
     if (!tokenMatch) return
     const start = caret - tokenMatch[1].length
     const value = before.slice(0, start) + replacement + after
+    lastLocalPromptRef.current = value
     onChange(value)
     setMention(null)
     // Restore focus after updating the caret

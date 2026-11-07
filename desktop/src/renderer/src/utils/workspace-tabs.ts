@@ -24,7 +24,7 @@ export function makeTabId(now = Date.now(), random = Math.random()): string {
  * First line, collapsed whitespace, capped for a titlebar tab. Code-point
  * slicing keeps surrogate pairs (emoji) intact at the truncation boundary.
  */
-export function tabTitleFromPrompt(prompt: string | undefined, fallback = 'New chat'): string {
+export function tabTitleFromPrompt(prompt: string | undefined, fallback = 'New Task'): string {
   const text = (prompt ?? '').replace(/\s+/g, ' ').trim()
   if (!text) return fallback
   const chars = Array.from(text)
@@ -37,6 +37,26 @@ export function findDraftTab(
   projectPath: string
 ): WorkspaceTab | undefined {
   return tabs.find((tab) => tab.taskId === null && tab.projectPath === projectPath)
+}
+
+/**
+ * Retarget an active DRAFT tab at another project, in place. Returns the next
+ * tab list (the caller commits it) or null when the tab is missing or is a
+ * task tab — a task tab belongs to its host conversation, whose project cannot
+ * be changed by retargeting the view.
+ *
+ * Used by the New Task page's project picker: switching projects there must
+ * keep the current tab (and its composer draft), not spawn another one.
+ */
+export function retargetDraftTab(
+  tabs: readonly WorkspaceTab[],
+  tabId: string | null,
+  projectPath: string
+): WorkspaceTab[] | null {
+  if (!tabId) return null
+  const tab = tabs.find((item) => item.id === tabId)
+  if (!tab || tab.taskId !== null) return null
+  return tabs.map((item) => (item.id === tabId ? { ...item, projectPath } : item))
 }
 
 /** Neighbour to select after closing a tab (null when no tabs remain). */
