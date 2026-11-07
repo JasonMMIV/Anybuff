@@ -25,6 +25,10 @@ export interface QueuedMessage {
   cwd?: string
   /** Agent mode captured when the message was queued (background dispatch). */
   mode?: 'default' | 'plan' | 'chat'
+  /** Model/effort snapshot captured with the same turn, so later tab edits do
+   *  not retroactively change a queued message. */
+  model?: string
+  reasoningEffort?: string
 }
 
 interface MessageQueuePanelProps {

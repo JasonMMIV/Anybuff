@@ -109,6 +109,13 @@ describe('retargetDraftTab', () => {
     const next = retargetDraftTab([tab('a', null, null)], 'a', '~/q')
     expect(next?.[0].projectPath).toBe('~/q')
   })
+
+  test('preserves the draft tab’s per-tab composer selection', () => {
+    const selection = { mode: 'plan' as const, model: 'p/m', reasoningEffort: 'high' }
+    const tabs = [{ ...tab('a', null), selection }]
+    const next = retargetDraftTab(tabs, 'a', '~/q')
+    expect(next?.[0].selection).toEqual(selection)
+  })
 })
 
 describe('makeTabId', () => {

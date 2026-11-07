@@ -765,6 +765,10 @@ export interface StartRunOptions {
   /** UI agent mode — selects the bundled root agent
    *  ('default' → base2, 'plan' → base2-plan, 'chat' → base-chat). */
   mode?: 'default' | 'plan' | 'chat'
+  /** Task-scoped model choice (`${providerId}/${model}`). */
+  model?: string
+  /** Task-scoped reasoning effort; `default` inherits the configured value. */
+  reasoningEffort?: string
   /** #17 multimodal content parts (images pasted/attached in the composer). */
   content?: Array<{ type: 'image'; image: string; mediaType: string }>
 }
@@ -818,8 +822,9 @@ export function resetOverflowResumeCount(taskId: string): void {
 export function resolveRoutedModelForRun(
   settings: { activeModel?: string; agentRouting?: Record<string, AgentRoute> },
   agentId: string,
+  defaultModel?: string,
 ): string | undefined {
-  return settings.agentRouting?.[agentId]?.model ?? settings.activeModel ?? undefined
+  return settings.agentRouting?.[agentId]?.model ?? defaultModel ?? settings.activeModel ?? undefined
 }
 
 /**
@@ -829,14 +834,22 @@ export function resolveRoutedModelForRun(
  * Falls back to the baked trigger of the 1M unknown-window fallback, mirroring
  * the runtime's own compactContext path (B2).
  */
-export function buildRunContextParams(agentId: string): { maxContextLength: number } {
+export function buildRunContextParams(
+  agentId: string,
+  defaultModel?: string
+): { maxContextLength: number } {
+  const model = resolveRoutedModelForRun(loadSettings(), agentId, defaultModel)
   const window =
-    resolveEffectiveContextWindow(resolveRoutedModelForRun(loadSettings(), agentId) ?? '') ??
+    resolveEffectiveContextWindow(model ?? '', Boolean(defaultModel)) ??
     UNKNOWN_MODEL_CONTEXT_FALLBACK
   return {
     maxContextLength: toCompactionTriggerTokens(
       window,
-      resolveModelContextOutputTokens({ agentId }),
+      resolveModelContextOutputTokens({
+        agentId,
+        model,
+        preferModelParam: Boolean(defaultModel),
+      }),
     ),
   }
 }
@@ -854,8 +867,8 @@ export function buildRunContextParams(agentId: string): { maxContextLength: numb
 export function hydrateUnknownModelCaps(settings: {
   activeModel?: string
   agentRouting?: Record<string, AgentRoute>
-}, agentId: string): void {
-  const model = resolveRoutedModelForRun(settings, agentId)
+}, agentId: string, defaultModel?: string): void {
+  const model = resolveRoutedModelForRun(settings, agentId, defaultModel)
   if (!model || !model.includes('/')) return
   const providerId = model.split('/')[0]
   // Already know the window (declared, learned, or resolved from the
@@ -948,6 +961,15 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
   // ("Spawn mentioned agents") as a sub-agent spawn, not a root override.
   const mode = opts.mode ?? 'default'
   const agentId = AGENT_ID_FOR_MODE[mode]
+  // Task/tab-scoped defaults. Model/agent routes in anybuff.json still win;
+  // these replace the persistent defaultModel/defaultReasoningEffort for THIS
+  // run, so concurrent tabs cannot read each other's selector state.
+  const runModel =
+    typeof opts.model === 'string' && opts.model.trim() ? opts.model.trim() : undefined
+  const runReasoningEffort =
+    typeof opts.reasoningEffort === 'string' && opts.reasoningEffort !== 'default'
+      ? opts.reasoningEffort
+      : undefined
   // #17: normalize image content once — the SDK accepts base64 image parts on
   // the run; a malformed entry is dropped rather than failing the whole turn.
   const imageContent = (opts.content ?? []).filter(
@@ -1012,7 +1034,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
 
     // P1 B1d: fill unknown model windows from the catalogs in the background
     // (persisted for the next run; the current one keeps the 1M fallback).
-    hydrateUnknownModelCaps(loadSettings(), agentId)
+    hydrateUnknownModelCaps(loadSettings(), agentId, runModel)
 
     // Load custom agents (.agents/). A broken agent file must never block the whole
     // run — fall back to the bundled definitions and report the load failure.
@@ -1071,7 +1093,8 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         }
         const messageHistory = historyContainer?.sessionState?.mainAgentState?.messageHistory
         const effectiveWindowTokens = resolveEffectiveContextWindow(
-          resolveRoutedModelForRun(currentSettings, agentId) ?? '',
+          resolveRoutedModelForRun(currentSettings, agentId, runModel) ?? '',
+          Boolean(runModel),
         )
         const plan = planOverflowResume({
           resumeReason,
@@ -1237,9 +1260,13 @@ export async function startRun(opts: StartRunOptions): Promise<RunResult> {
         ...(currentSettings.costMode && currentSettings.costMode !== 'normal'
           ? { costMode: currentSettings.costMode }
           : {}),
+        // Task-scoped routing defaults for concurrent tabs. Mode/agent routes
+        // in anybuff.json still take precedence inside the SDK.
+        ...(runModel ? { defaultModel: runModel } : {}),
+        ...(runReasoningEffort ? { defaultReasoningEffort: runReasoningEffort } : {}),
         // AnyBuff P1 B3: forward the window-derived compaction trigger so
         // base2's baked 400k pruner budgets scale with the real model window.
-        params: buildRunContextParams(agentId),
+        params: buildRunContextParams(agentId, runModel),
         previousRun: previousRun as RunState | undefined,
         signal: runCtx.abort.signal,
         // ADR-12: decrypted provider keys travel through the SDK injection

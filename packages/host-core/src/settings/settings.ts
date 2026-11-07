@@ -123,11 +123,24 @@ import type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
  */
 export type { FileChange, TaskMessage, TodoItem } from '../contracts/types'
 
+export type TaskMode = 'default' | 'plan' | 'chat'
+
+/** Per-conversation composer selection (ADR-38 follow-up). */
+export interface TaskSelection {
+  mode?: TaskMode
+  /** `${providerId}/${model}`; empty/undefined means the global default. */
+  model?: string
+  /** Reasoning effort literal; `default` means inherit the configured value. */
+  reasoningEffort?: string
+}
+
 export interface TaskRecord {
   id: string
   prompt: string
   createdAt: number
   updatedAt?: number
+  /** Durable mode/model/reasoning choice for this conversation. */
+  selection?: TaskSelection
 }
 
 export interface ProjectRecord {
@@ -1855,6 +1868,58 @@ export function ensureProjectTask(cwd: string, title: string, taskId?: string): 
   if (project.tasks.length > 100) project.tasks = project.tasks.slice(0, 100)
   saveSettings(s)
   return task
+}
+
+/** Read a task's durable composer selection (undefined for legacy tasks). */
+export function getTaskSelection(taskId: string): TaskSelection | undefined {
+  const s = loadSettings()
+  for (const project of s.projects ?? []) {
+    const task = project.tasks.find((item) => item.id === taskId)
+    if (task) return task.selection
+  }
+  return undefined
+}
+
+/**
+ * Merge a task's durable composer selection. Only supplied fields change, so
+ * a renderer that still sends just `mode` cannot erase a stored model.
+ */
+export function updateTaskSelection(
+  taskId: string,
+  selection: TaskSelection,
+): TaskRecord | undefined {
+  const s = loadSettings()
+  for (const project of s.projects ?? []) {
+    const task = project.tasks.find((item) => item.id === taskId)
+    if (!task) continue
+
+    const current = task.selection ?? {}
+    const next: TaskSelection = { ...current }
+    if (selection.mode === 'default' || selection.mode === 'plan' || selection.mode === 'chat') {
+      next.mode = selection.mode
+    }
+    if (typeof selection.model === 'string' && selection.model.trim()) {
+      next.model = selection.model.trim()
+    }
+    if (typeof selection.reasoningEffort === 'string' && selection.reasoningEffort.trim()) {
+      next.reasoningEffort = selection.reasoningEffort.trim()
+    }
+    // runPrompt calls this before every turn; skip the fsync+rename when the
+    // caller supplied only values the task already has.
+    if (
+      next.mode === current.mode &&
+      next.model === current.model &&
+      next.reasoningEffort === current.reasoningEffort
+    ) {
+      return task
+    }
+
+    task.selection = next
+    task.updatedAt = Date.now()
+    saveSettings(s)
+    return task
+  }
+  return undefined
 }
 
 export function touchProject(cwd: string): void {

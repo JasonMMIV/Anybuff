@@ -615,6 +615,14 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
     renameTask: (payload: { taskId: string; newPrompt: string }) => call('renameTask', payload),
     removeProject: (projectPath: string) => call('removeProject', projectPath),
     getTaskView: (taskId: string) => call('getTaskView', taskId),
+    setTaskSelection: (payload: {
+      taskId: string
+      selection: {
+        mode?: 'default' | 'plan' | 'chat'
+        model?: string
+        reasoningEffort?: string
+      }
+    }) => call('setTaskSelection', payload),
     trimTaskLastTurn: (payload: { taskId: string; userText: string }) => call('trimTaskLastTurn', payload),
     searchHistory: (query: string) => call('searchHistory', query),
     runPrompt: (payload: {
@@ -624,6 +632,13 @@ export function createWsAnyBuff(options: WsHostOptions): AnyBuffApi {
       taskId?: string
       resume?: boolean
       mode?: 'default' | 'plan' | 'chat'
+      model?: string
+      reasoningEffort?: string
+      selection?: {
+        mode?: 'default' | 'plan' | 'chat'
+        model?: string
+        reasoningEffort?: string
+      }
       content?: Array<{ type: 'image'; image: string; mediaType: string }>
     }) => call('runPrompt', payload),
     /** ADR-30 "Send now" mid-turn steering (WS transport mirrors the preload). */

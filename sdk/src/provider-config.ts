@@ -17,6 +17,7 @@ import {
   type CatalogLookupResult,
   type ModelCatalogIndex,
 } from './impl/model-catalog'
+import { getRunOverrides } from './impl/run-overrides'
 
 export const PROVIDER_CONFIG_ENV_VAR = 'ANYBUFF_PROVIDER_CONFIG'
 const PROVIDER_CONFIG_FILE_NAME = 'anybuff.json'
@@ -2250,6 +2251,7 @@ export function resolveConfiguredAgentModelConfig(params: {
   } = params
   const agentModels = loadedConfig.config.agents ?? {}
   const agentReasoningEfforts = loadedConfig.config.agentReasoningEfforts ?? {}
+  const runOverrides = getRunOverrides()
 
   // Failover path: an explicit model param wins over routing so each
   // configured failover model is actually attempted. Reasoning effort still
@@ -2261,6 +2263,7 @@ export function resolveConfiguredAgentModelConfig(params: {
       normalizeAgentIdCandidates(agentId)
         .map((candidate) => agentReasoningEfforts[candidate])
         .find((effort) => effort !== undefined) ??
+      runOverrides?.defaultReasoningEffort ??
       loadedConfig.config.defaultReasoningEffort
     return { model, reasoningEffort }
   }
@@ -2287,10 +2290,12 @@ export function resolveConfiguredAgentModelConfig(params: {
     }
   }
 
-  if (loadedConfig.config.defaultModel) {
+  const defaultModel = runOverrides?.defaultModel ?? loadedConfig.config.defaultModel
+  if (defaultModel) {
     return {
-      model: loadedConfig.config.defaultModel,
-      reasoningEffort: loadedConfig.config.defaultReasoningEffort,
+      model: defaultModel,
+      reasoningEffort:
+        runOverrides?.defaultReasoningEffort ?? loadedConfig.config.defaultReasoningEffort,
     }
   }
 

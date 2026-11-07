@@ -42,6 +42,16 @@ import {
   queueTargetMatchesView,
 } from './utils/queue-routing'
 import {
+  clampTabReasoningEffort,
+  DEFAULT_TAB_SELECTION,
+  mergeTabSelection,
+  resolveTabSelection,
+  sameTabSelection,
+  type PartialTabSelection,
+  type TabSelection,
+} from './utils/tab-selection'
+import { getReasoningOptionsForModel } from './utils/reasoning'
+import {
   terminalRunBody,
   terminalRunHeading,
   terminalRunKey,
@@ -577,7 +587,8 @@ export default function App() {
   const editMenuRangeRef = useRef<Range | null>(null)
 
   const [settings, setSettings] = useState<UiSettings>({ providers: [], activeModel: '', reasoningEffort: 'default', approvalMode: 'balanced' })
-  const [agentMode, setAgentMode] = useState<AgentMode>('default')
+  /** Seed for the next draft tab; mirrors the active tab's effective selection. */
+  const newTabSelectionRef = useRef<TabSelection>(DEFAULT_TAB_SELECTION)
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [fileCandidates, setFileCandidates] = useState<string[]>([])
@@ -674,6 +685,33 @@ export default function App() {
   /** Titlebar tabs: open conversations / unsent drafts (renderer-scoped). */
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  // The composer controls are per-tab. Derive the visible values from the
+  // active tab; only a tab without a stored selection falls back to the
+  // global defaults from Settings.
+  const activeWorkspaceTab = workspaceTabs.find((tab) => tab.id === activeTabId) ?? null
+  const fallbackSelection: TabSelection = {
+    mode: 'default',
+    model: settings.activeModel,
+    reasoningEffort: settings.reasoningEffort,
+  }
+  const activeTabSelection = resolveTabSelection(activeWorkspaceTab?.selection, fallbackSelection)
+  const availableModels = new Set(
+    settings.providers.flatMap((provider) => provider.models.map((model) => `${provider.id}/${model}`))
+  )
+  const activeModel =
+    activeTabSelection.model && (availableModels.size === 0 || availableModels.has(activeTabSelection.model))
+      ? activeTabSelection.model
+      : settings.activeModel
+  const activeReasoningOptions = getReasoningOptionsForModel(
+    activeModel,
+    settings.reasoningLadders ?? {}
+  )
+  const reasoningEffort = activeReasoningOptions.includes(activeTabSelection.reasoningEffort)
+    ? activeTabSelection.reasoningEffort
+    : 'default'
+  const agentMode: AgentMode = activeTabSelection.mode
+  // A new tab inherits the current tab's effective values, then owns them.
+  newTabSelectionRef.current = { mode: agentMode, model: activeModel, reasoningEffort }
   /** Live titlebar drag-reorder state: source tab + current insertion point. */
   const [tabDrag, setTabDrag] = useState<TabDragState | null>(null)
   /** Per-task cost in CREDITS (finish.totalCost is cents), keyed by taskId. */
@@ -781,14 +819,17 @@ export default function App() {
    */
   const createDraftTab = useCallback(
     (projectPath: string | null): string => {
+      const selection: TabSelection = { ...newTabSelectionRef.current }
       if (isAndroidShell) {
-        setWorkspaceTabs([{ id: MOBILE_TAB_ID, taskId: null, projectPath, title: 'New Task' }])
+        setWorkspaceTabs([{ id: MOBILE_TAB_ID, taskId: null, projectPath, title: 'New Task', selection }])
         setActiveTabId(MOBILE_TAB_ID)
+        activeTabIdRef.current = MOBILE_TAB_ID
         return MOBILE_TAB_ID
       }
       const id = makeTabId()
-      setWorkspaceTabs((prev) => [...prev, { id, taskId: null, projectPath, title: 'New Task' }])
+      setWorkspaceTabs((prev) => [...prev, { id, taskId: null, projectPath, title: 'New Task', selection }])
       setActiveTabId(id)
+      activeTabIdRef.current = id
       return id
     },
     [isAndroidShell]
@@ -1253,6 +1294,30 @@ export default function App() {
   // applyOpenedFolder (declared below with the other handlers).
   // The pull below uses cwdRef (declared with the tab refs above) so it does
   // not re-fire on every cwd change mid-pick.
+
+  /** Apply a host/task selection to the tab that owns it, without touching other tabs. */
+  const updateTabSelectionForTask = useCallback(
+    (taskId: string, selection: PartialTabSelection) => {
+      const tabs = workspaceTabsRef.current
+      const tab = tabs.find((item) => item.taskId === taskId)
+      if (!tab) return
+      const fallback: TabSelection = {
+        mode: 'default',
+        model: settingsRef.current.activeModel,
+        reasoningEffort: settingsRef.current.reasoningEffort,
+      }
+      const current = resolveTabSelection(tab.selection, fallback)
+      const next = mergeTabSelection(current, fallback, selection)
+      if (sameTabSelection(current, next)) return
+      const nextTabs = tabs.map((item) =>
+        item.id === tab.id ? { ...item, selection: next } : item
+      )
+      workspaceTabsRef.current = nextTabs
+      setWorkspaceTabs(nextTabs)
+      if (tab.id === activeTabIdRef.current) newTabSelectionRef.current = next
+    },
+    []
+  )
 
   /**
    * First prompt of a draft: turn a tab into a task tab. Existing task tabs
@@ -1946,8 +2011,10 @@ export default function App() {
         // blanks; existing conversations (and any background run) are left
         // untouched. Per-tab composer sessions restore the target's drafts.
         const existingDraft = findDraftTab(workspaceTabsRef.current, path)
-        if (existingDraft) setActiveTabId(existingDraft.id)
-        else createDraftTab(path)
+        if (existingDraft) {
+          setActiveTabId(existingDraft.id)
+          activeTabIdRef.current = existingDraft.id
+        } else createDraftTab(path)
       }
       setCwd(path)
       autoScrollRef.current = true
@@ -2176,7 +2243,13 @@ export default function App() {
     async (
       textOverride?: string,
       prebuiltPrompt?: string,
-      opts?: { mode?: AgentMode; steer?: boolean; attachments?: Attachment[] }
+      opts?: {
+        mode?: AgentMode
+        steer?: boolean
+        attachments?: Attachment[]
+        /** Queue/dispatch snapshot: the tab's selection at composition time. */
+        selection?: PartialTabSelection
+      }
     ) => {
       let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
@@ -2186,6 +2259,8 @@ export default function App() {
       const sendDraftKey = draftKeyRef.current
       const sendCwd = cwd
       const sendAttachments = opts?.attachments ?? attachments
+      const sendModel = opts?.selection?.model || activeModel
+      const sendReasoningEffort = opts?.selection?.reasoningEffort || reasoningEffort
       const sendTaskId = currentTaskRef.current ?? (isPreview ? (sendTabId ?? 'preview') : null)
       const viewIsRunning = sendTaskId
         ? runningTaskIdsRef.current.has(sendTaskId)
@@ -2428,7 +2503,9 @@ export default function App() {
             taskId: currentTaskRef.current,
             tabId: sendTabId,
             cwd: sendCwd,
-            mode: opts?.mode ?? (initRun ? 'default' : agentMode)
+            mode: opts?.mode ?? (initRun ? 'default' : agentMode),
+            model: sendModel,
+            reasoningEffort: sendReasoningEffort
           }
         ])
         setPrompt('')
@@ -2528,6 +2605,9 @@ export default function App() {
         displayText: text,
         taskId: taskIdAtSend ?? undefined,
         mode: opts?.mode ?? (initRun ? 'default' : agentMode),
+        selection: { mode: agentMode, model: activeModel, reasoningEffort },
+        ...(sendModel ? { model: sendModel } : {}),
+        ...(sendReasoningEffort ? { reasoningEffort: sendReasoningEffort } : {}),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
       }) as Promise<{ ok: boolean; taskId?: string; error?: string; code?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }>
@@ -2559,7 +2639,9 @@ export default function App() {
               taskId: taskIdAtSend,
               tabId: sendTabId,
               cwd: sendCwd,
-              mode: opts?.mode ?? (initRun ? 'default' : agentMode)
+              mode: opts?.mode ?? (initRun ? 'default' : agentMode),
+              model: sendModel,
+              reasoningEffort: sendReasoningEffort
             }
           ])
           if (result.code === 'task-busy') {
@@ -2628,7 +2710,7 @@ export default function App() {
       }
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, agentMode, buildFinalPrompt, buildImageContent, refreshProjects, setViewTask, bindActiveTabToTask, interviewArmed, attachments])
+  }, [prompt, cwd, agentMode, activeModel, reasoningEffort, buildFinalPrompt, buildImageContent, refreshProjects, setViewTask, bindActiveTabToTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -2695,12 +2777,16 @@ export default function App() {
       setAttentionByTask((prev) => dropTaskValue(prev, taskId))
       try {
         const imageContent = buildImageContent(item.attachments ?? [])
+        const taskTabSelection = workspaceTabsRef.current.find((tab) => tab.taskId === taskId)?.selection
         const result = (await window.AnyBuff.runPrompt({
           cwd,
           prompt: item.finalPrompt,
           displayText: item.text,
           taskId,
-          mode: item.mode ?? agentMode,
+          mode: item.mode,
+          ...(taskTabSelection ? { selection: taskTabSelection } : {}),
+          ...(item.model ? { model: item.model } : {}),
+          ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
           ...(imageContent.length > 0 ? { content: imageContent } : {})
         })) as {
           ok: boolean
@@ -2762,7 +2848,7 @@ export default function App() {
         }
       }
     },
-    [agentMode, buildImageContent, handleSteeredLeftovers]
+    [buildImageContent, handleSteeredLeftovers]
   )
 
   // Dispatch queued messages to their OWN conversation/project. A background
@@ -2802,7 +2888,11 @@ export default function App() {
     } else {
       void send(next.text, next.finalPrompt, {
         mode: next.mode,
-        attachments: next.attachments
+        attachments: next.attachments,
+        selection: {
+          model: next.model,
+          reasoningEffort: next.reasoningEffort
+        }
       }).finally(finish)
     }
   }, [
@@ -2864,7 +2954,10 @@ export default function App() {
         prompt: info.prompt,
         resume: true,
         taskId,
-        mode: agentMode
+        mode: agentMode,
+        selection: { mode: agentMode, model: activeModel, reasoningEffort },
+        ...(activeModel ? { model: activeModel } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {})
       })) as { ok: boolean; taskId?: string; error?: string; interrupted?: boolean; reason?: string; errorMessage?: string; steeredLeftovers?: { pushId: string; text: string }[] }
       if (!result.ok) {
         setChatItems((prev) => [...prev, { kind: 'system', text: result.error ?? 'Resume failed' }])
@@ -2894,7 +2987,7 @@ export default function App() {
       }
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [resumeInfo, cwd, runningTaskIds, agentMode, refreshProjects, handleSteeredLeftovers])
+  }, [resumeInfo, cwd, runningTaskIds, agentMode, activeModel, reasoningEffort, refreshProjects, handleSteeredLeftovers])
 
   // Discard the banner; the preserved state simply stays on disk unused.
   const discardResume = useCallback(() => {
@@ -3490,33 +3583,71 @@ export default function App() {
     [refreshProjects]
   )
 
-  const onModelChange = useCallback((m: string) => {
-    setSettings((prev) => ({ ...prev, activeModel: m }))
-    if (!isPreview) {
-      void window.AnyBuff.saveSettings({
-        providers: settingsRef.current.providers,
-        activeModel: m,
+  /**
+   * Composer controls edit the ACTIVE TAB, never the global defaults or another
+   * tab. Task tabs also persist the choice on the host so reopening the
+   * conversation restores it.
+   */
+  const updateActiveTabSelection = useCallback(
+    (patch: PartialTabSelection) => {
+      const tabId = activeTabIdRef.current
+      const tabs = workspaceTabsRef.current
+      const tab = tabId ? tabs.find((item) => item.id === tabId) : undefined
+      if (!tab) return
+      const fallback: TabSelection = {
+        mode: 'default',
+        model: settingsRef.current.activeModel,
         reasoningEffort: settingsRef.current.reasoningEffort,
-        approvalMode: settingsRef.current.approvalMode,
-        apiKeys: {},
-        deleteKeys: []
-      })
-    }
-  }, [])
+      }
+      const current = resolveTabSelection(tab.selection, fallback)
+      let next = mergeTabSelection(current, fallback, patch)
+      // A model change can invalidate the old rung (e.g. DeepSeek → GPT).
+      // Keep the visible value truthful by dropping back to `default`.
+      if (patch.model !== undefined) {
+        next = clampTabReasoningEffort(
+          next,
+          getReasoningOptionsForModel(
+            next.model,
+            settingsRef.current.reasoningLadders ?? {}
+          )
+        )
+      }
+      if (sameTabSelection(current, next)) return
+      const nextTabs = tabs.map((item) =>
+        item.id === tab.id ? { ...item, selection: next } : item
+      )
+      workspaceTabsRef.current = nextTabs
+      setWorkspaceTabs(nextTabs)
+      newTabSelectionRef.current = next
+      if (tab.taskId && !isPreview) {
+        void window.AnyBuff
+          .setTaskSelection({ taskId: tab.taskId, selection: next })
+          .then((res) => {
+            const saved = res as { ok?: boolean; error?: string }
+            if (saved?.ok === false) {
+              console.warn('[anybuff] task selection not persisted:', saved.error)
+            }
+          })
+          .catch((err) => console.warn('[anybuff] task selection not persisted:', err))
+      }
+    },
+    [isPreview]
+  )
 
-  const onReasoningChange = useCallback((r: string) => {
-    setSettings((prev) => ({ ...prev, reasoningEffort: r }))
-    if (!isPreview) {
-      void window.AnyBuff.saveSettings({
-        providers: settingsRef.current.providers,
-        activeModel: settingsRef.current.activeModel,
-        reasoningEffort: r,
-        approvalMode: settingsRef.current.approvalMode,
-        apiKeys: {},
-        deleteKeys: []
-      })
-    }
-  }, [])
+  const onModelChange = useCallback(
+    (model: string) => updateActiveTabSelection({ model }),
+    [updateActiveTabSelection]
+  )
+
+  const onReasoningChange = useCallback(
+    (reasoningEffort: string) => updateActiveTabSelection({ reasoningEffort }),
+    [updateActiveTabSelection]
+  )
+
+  const onAgentModeChange = useCallback(
+    (mode: AgentMode) => updateActiveTabSelection({ mode }),
+    [updateActiveTabSelection]
+  )
 
   // #17 保險絲: persist the per-run step cap / cost mode whenever changed.
   const persistRunGuardrails = useCallback((steps: number, mode: 'normal' | 'max' | 'lite') => {
@@ -3786,6 +3917,20 @@ export default function App() {
       // Reset first: same-project switches skip onOpenProject's early return, so
       // a stale count from the previous task must never gate /compact below.
       setTokenUsage(null)
+      const selectionFallback: TabSelection = {
+        mode: 'default',
+        model: settingsRef.current.activeModel,
+        reasoningEffort: settingsRef.current.reasoningEffort,
+      }
+      // Apply the sidebar's persisted selection immediately; the full snapshot
+      // below may refine it if the host has newer values.
+      if (task.selection) updateTabSelectionForTask(task.id, task.selection)
+      // If the user edits a selector while the snapshot is in flight, the late
+      // host copy must not overwrite that newer choice.
+      const selectionBeforeView = resolveTabSelection(
+        workspaceTabsRef.current.find((tab) => tab.taskId === task.id)?.selection,
+        selectionFallback
+      )
       // Attachments/interview/bash context belong to the TAB's composer session;
       // the draft-sync effect swaps them in after the view id flips.
       if (isPreview) {
@@ -3810,8 +3955,16 @@ export default function App() {
           resumeErrorMessage?: string
           contextTokenCount?: number
           contextWindowTokensByMode?: Partial<Record<AgentMode, number>>
+          selection?: PartialTabSelection
         }
         if (viewLoadSeqRef.current !== loadSeq) return
+        const selectionAfterLoad = resolveTabSelection(
+          workspaceTabsRef.current.find((tab) => tab.taskId === task.id)?.selection,
+          selectionFallback
+        )
+        if (view.selection && sameTabSelection(selectionBeforeView, selectionAfterLoad)) {
+          updateTabSelectionForTask(task.id, view.selection)
+        }
         // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
         const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
         const items = transcript.map((m) => {
@@ -3827,9 +3980,13 @@ export default function App() {
         // reopened conversation shows 0/0 and `/compact` stays disabled until a
         // new run emits its first `context_window` event.
         if (typeof view.contextTokenCount === 'number') {
+          const viewMode = resolveTabSelection(
+            workspaceTabsRef.current.find((tab) => tab.taskId === task.id)?.selection,
+            selectionFallback
+          ).mode
           setTokenUsage({
             used: view.contextTokenCount,
-            max: view.contextWindowTokensByMode?.[agentMode] ?? 0,
+            max: view.contextWindowTokensByMode?.[viewMode] ?? 0,
           })
         }
         if (view.ok && view.canResume && view.status !== 'running') {
@@ -3853,7 +4010,7 @@ export default function App() {
       // No setPrompt('') — the draft-sync effect swaps in this conversation's
       // draft when the view id flips (per-conversation composer memory).
     },
-    [agentMode, onOpenProject, setViewTask]
+    [onOpenProject, setViewTask, updateTabSelectionForTask]
   )
 
   /**
@@ -3922,6 +4079,7 @@ export default function App() {
       const existingDraft = findDraftTab(workspaceTabsRef.current, path)
       if (existingDraft) {
         setActiveTabId(existingDraft.id)
+        activeTabIdRef.current = existingDraft.id
         newTask()
         await onOpenProject(path)
         return
@@ -3961,40 +4119,53 @@ export default function App() {
       if (isAndroidShell) {
         // The WebView keeps one implicit tab; re-point it at the conversation
         // instead of stacking tabs that the hidden titlebar cannot show.
-        setWorkspaceTabs([
+        const nextTabs = [
           {
             id: MOBILE_TAB_ID,
             taskId: task.id,
             projectPath: project.path,
-            title: tabTitleFromPrompt(task.prompt, 'Untitled')
+            title: tabTitleFromPrompt(task.prompt, 'Untitled'),
+            selection: task.selection
           }
-        ])
+        ]
+        workspaceTabsRef.current = nextTabs
+        setWorkspaceTabs(nextTabs)
         setActiveTabId(MOBILE_TAB_ID)
+        activeTabIdRef.current = MOBILE_TAB_ID
         await onOpenTask(project, task)
         return
       }
       const existing = workspaceTabsRef.current.find((t) => t.taskId === task.id)
       if (existing) {
-        if (existing.id !== activeTabIdRef.current) setActiveTabId(existing.id)
+        if (existing.id !== activeTabIdRef.current) {
+          setActiveTabId(existing.id)
+          activeTabIdRef.current = existing.id
+        }
         if (existing.projectPath !== project.path) {
-          setWorkspaceTabs((prev) =>
-            prev.map((t) => (t.id === existing.id ? { ...t, projectPath: project.path } : t))
+          const nextTabs = workspaceTabsRef.current.map((t) =>
+            t.id === existing.id ? { ...t, projectPath: project.path } : t
           )
+          workspaceTabsRef.current = nextTabs
+          setWorkspaceTabs(nextTabs)
         }
         await onOpenTask(project, task)
         return
       }
       const id = makeTabId()
-      setWorkspaceTabs((prev) => [
-        ...prev,
+      const nextTabs: WorkspaceTab[] = [
+        ...workspaceTabsRef.current,
         {
           id,
           taskId: task.id,
           projectPath: project.path,
-          title: tabTitleFromPrompt(task.prompt, 'Untitled')
+          title: tabTitleFromPrompt(task.prompt, 'Untitled'),
+          selection: task.selection
         }
-      ])
+      ]
+      workspaceTabsRef.current = nextTabs
+      setWorkspaceTabs(nextTabs)
       setActiveTabId(id)
+      activeTabIdRef.current = id
       await onOpenTask(project, task)
     },
     [isAndroidShell, onOpenTask]
@@ -5201,12 +5372,13 @@ export default function App() {
                     onPasteImages={onPasteImages}
                     onRemoveAttachment={onRemoveAttachment}
                     providers={models}
-                    activeModel={settings.activeModel}
+                    activeModel={activeModel}
                     onModelChange={onModelChange}
-                    reasoningEffort={settings.reasoningEffort} reasoningLadders={settings.reasoningLadders ?? {}}
+                    reasoningEffort={reasoningEffort}
+                    reasoningLadders={settings.reasoningLadders ?? {}}
                     onReasoningChange={onReasoningChange}
                     agentMode={agentMode}
-                    onAgentModeChange={setAgentMode}
+                    onAgentModeChange={onAgentModeChange}
                     tokenUsage={tokenUsage}
                     taskCostUsd={taskCostUsd(taskCosts, activeViewTaskId)}
                     fileCandidates={fileCandidates}

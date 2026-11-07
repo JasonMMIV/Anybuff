@@ -39,6 +39,7 @@ import { getErrorStatusCode } from './error-utils'
 import { getAgentRuntimeImpl } from './impl/agent-runtime'
 import { applyFollowupsPolicy } from './impl/followups-policy'
 import { setProviderApiKeyOverrides } from './impl/model-provider'
+import { withRunOverrides } from './impl/run-overrides'
 import { localGetUserInfoFromApiKey as getUserInfoFromApiKey } from './impl/local-database'
 import { initialSessionState, applyOverridesToSessionState } from './run-state'
 import type { ComputedProjectIndex } from './run-state'
@@ -226,6 +227,12 @@ export type RunOptions = {
    * prompt for after the turn finishes. */
   drainSteeringMessages?: () => string[]
   costMode?: string
+  /** Task-scoped default model for this run. Mode/agent routes still win;
+   *  this replaces `defaultModel` for one concurrent conversation. */
+  defaultModel?: string
+  /** Task-scoped default reasoning effort (`default`/undefined inherits the
+   *  configured value). Explicit mode/agent efforts still win. */
+  defaultReasoningEffort?: string
   /** ADR-12: providerId → API key injected by the host for this run. Wins
    * over anybuff.json apiKeyEnv resolution and keeps plaintext keys out of
    * process.env (agent-spawned children cannot read them). */
@@ -379,8 +386,8 @@ export async function run(options: RunExecutionOptions): Promise<RunState> {
   const { signal } = options
 
   // ADR-12: register host-injected provider keys for the whole run so model
-  // resolution never needs plaintext keys in process.env. Desktop hosts run
-  // one turn at a time; concurrent runs share the last registration.
+  // resolution never needs plaintext keys in process.env. Concurrent desktop
+  // turns share the same configured key map (last registration wins).
   if (options.apiKeyOverrides) {
     setProviderApiKeyOverrides(options.apiKeyOverrides)
   }
@@ -398,7 +405,17 @@ export async function run(options: RunExecutionOptions): Promise<RunState> {
     }
   }
 
-  return runOnce(options)
+  const defaultReasoningEffort =
+    options.defaultReasoningEffort && options.defaultReasoningEffort !== 'default'
+      ? options.defaultReasoningEffort
+      : undefined
+  return withRunOverrides(
+    {
+      defaultModel: options.defaultModel?.trim() || undefined,
+      defaultReasoningEffort,
+    },
+    () => runOnce(options),
+  )
 }
 
 async function runOnce({

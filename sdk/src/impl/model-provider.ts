@@ -896,6 +896,7 @@ function getLearnedWindowForCandidate(params: {
  */
 export function resolveEffectiveContextWindow(
   model: string,
+  preferModelParam = false,
 ): number | undefined {
   const declared = resolveModelContextWindow({ model })
   if (declared !== undefined) return declared
@@ -903,6 +904,7 @@ export function resolveEffectiveContextWindow(
   const effectiveModel = resolveConfiguredAgentModelConfig({
     model,
     loadedConfig,
+    preferModelParam,
   }).model
   return resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
     (candidateModel) => {
@@ -1038,12 +1040,14 @@ export function resolveModelContextWindow(params: {
 export function resolveModelContextOutputTokens(params: {
   agentId?: string
   model?: string
+  preferModelParam?: boolean
 }): number | undefined {
   const loadedConfig = loadProviderConfigSync()
   const effectiveModel = resolveConfiguredAgentModelConfig({
     agentId: params.agentId,
     model: params.model,
     loadedConfig,
+    preferModelParam: params.preferModelParam,
   }).model
   const outputs = resolveModelsToTry(effectiveModel, loadedConfig).flatMap(
     (candidateModel) => {

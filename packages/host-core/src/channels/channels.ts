@@ -30,6 +30,7 @@ export const CHANNELS = [
   'saveCwd',
   'touchProject',
   'getTaskView',
+  'setTaskSelection',
   'deleteTask',
   'renameTask',
   'removeProject',

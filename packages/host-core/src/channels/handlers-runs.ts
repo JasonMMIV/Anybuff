@@ -17,7 +17,7 @@ import {
   retractSteeringEcho,
   getOrCreateSession,
 } from '../sessions/session-store'
-import { applySettingsToEnv } from '../settings/settings'
+import { applySettingsToEnv, updateTaskSelection } from '../settings/settings'
 
 export interface RunPromptPayload {
   cwd: string
@@ -26,6 +26,17 @@ export interface RunPromptPayload {
   taskId?: string
   resume?: boolean
   mode?: 'default' | 'plan' | 'chat'
+  /** Task-scoped model selection (`${providerId}/${model}`). */
+  model?: string
+  /** Task-scoped reasoning effort; `default` inherits the configured value. */
+  reasoningEffort?: string
+  /** Durable tab selection to persist when `mode` is only a per-turn override
+   *  (e.g. `/init` forces Build without changing the tab away from Plan). */
+  selection?: {
+    mode?: 'default' | 'plan' | 'chat'
+    model?: string
+    reasoningEffort?: string
+  }
   /** #4 base64 image parts (see contracts/types.ts RunImagePart). */
   content?: Array<{ type: 'image'; image: string; mediaType: string }>
 }
@@ -61,6 +72,27 @@ export async function runPrompt(payload: RunPromptPayload): Promise<unknown> {
   // The record title comes from what the user typed (not the expanded prompt).
   const title = (payload.displayText ?? payload.prompt).trim().slice(0, 300)
   const entry = getOrCreateSession(payload.cwd, title, taskId)
+  // Persist supplied fields before the first run settles, so reopening the
+  // task shows the same mode/model/effort. A requeued/legacy caller may omit
+  // them; fall back to the task's durable selection, never another tab's.
+  const savedTask = updateTaskSelection(
+    entry.taskId,
+    payload.selection ?? {
+      mode: payload.mode,
+      model: payload.model,
+      reasoningEffort: payload.reasoningEffort,
+    }
+  )
+  const storedSelection = savedTask?.selection
+  const mode = payload.mode ?? storedSelection?.mode
+  const model =
+    typeof payload.model === 'string' && payload.model.trim()
+      ? payload.model.trim()
+      : storedSelection?.model
+  const reasoningEffort =
+    typeof payload.reasoningEffort === 'string' && payload.reasoningEffort.trim()
+      ? payload.reasoningEffort.trim()
+      : storedSelection?.reasoningEffort
 
   return await startRun({
     cwd: payload.cwd,
@@ -69,7 +101,9 @@ export async function runPrompt(payload: RunPromptPayload): Promise<unknown> {
     displayText: payload.displayText ?? payload.prompt,
     taskId: entry.taskId,
     resume: payload.resume === true,
-    mode: payload.mode,
+    mode,
+    model,
+    reasoningEffort,
     content: payload.content,
   })
 }

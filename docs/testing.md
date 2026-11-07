@@ -199,6 +199,7 @@ Setup:
 | 8 | Notifications | Unfocus the window, let a run finish, then focus it and let another finish. | Exactly one native notification per terminal run while unfocused; no notification for the focused run. |
 | 9 | Reload during a run | In dev, reload the renderer (F5 / dev reload) while a run is active. | `getState` re-seeds `runningTaskIds`; the task keeps its spinner and Stop control instead of looking idle. |
 | 10 | Diagnostics | Open `/diagnostics` with two active runs. | The Active runs list shows each short task id, mode label, full cwd and elapsed time. The copy report includes the same runs but only the project basename, not the full path. The terminal subprocess list stays separate. |
+| 11 | Per-tab composer selection | Set tab A to Plan / Claude / High, then tab B to Chat / GPT / Default. Switch back and forth. | Each tab keeps its own mode, model and reasoning effort. A new tab inherits the active tab's selection at creation, then stays independent. Reopening a task restores its persisted selection. |
 
 After the matrix, stop all runs, close the app and confirm no `run_terminal_command` child processes remain. For the known same-project trade-offs (lost updates, whole-worktree revert, file hooks on a half-edited tree), record the observed behaviour in the release notes rather than treating it as a test failure; ADR-38 delegates that risk to the user.
 

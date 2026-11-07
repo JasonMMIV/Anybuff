@@ -6,6 +6,8 @@
  * become a task tab when their first prompt is sent.
  */
 
+import type { PartialTabSelection } from './tab-selection'
+
 export interface WorkspaceTab {
   id: string
   /** Host task id; `null` while this is an unsent draft. */
@@ -13,6 +15,8 @@ export interface WorkspaceTab {
   /** Project the conversation belongs to; `null` only before a folder is picked. */
   projectPath: string | null
   title: string
+  /** Per-tab composer selection; partial when restored from a legacy task. */
+  selection?: PartialTabSelection
 }
 
 /** Unique renderer-local tab id (never persisted, never sent to the host). */

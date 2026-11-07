@@ -70,6 +70,15 @@ const api = {
   },
 
   getState: () => ipcRenderer.invoke('AnyBuff:getState'),
+  /** Persist a task's mode/model/reasoning selection (ADR-38 follow-up). */
+  setTaskSelection: (payload: {
+    taskId: string
+    selection: {
+      mode?: 'default' | 'plan' | 'chat'
+      model?: string
+      reasoningEffort?: string
+    }
+  }) => ipcRenderer.invoke('AnyBuff:setTaskSelection', payload),
   /** #15 /diagnostics — host process snapshot (CPU/memory/uptime/children). */
   getDiagnostics: () => ipcRenderer.invoke('AnyBuff:getDiagnostics'),
   /** Running app version (Electron, sourced from package.json). */
@@ -171,6 +180,16 @@ const api = {
     taskId?: string
     resume?: boolean
     mode?: 'default' | 'plan' | 'chat'
+    /** Task-scoped model selection (`${providerId}/${model}`). */
+    model?: string
+    /** Task-scoped reasoning effort; `default` inherits the configured value. */
+    reasoningEffort?: string
+    /** Durable tab selection when `mode` is only a turn override (`/init`). */
+    selection?: {
+      mode?: 'default' | 'plan' | 'chat'
+      model?: string
+      reasoningEffort?: string
+    }
     /** #4 base64 image parts (composer paste/attach), see host contracts. */
     content?: Array<{ type: 'image'; image: string; mediaType: string }>
   }) => ipcRenderer.invoke('AnyBuff:runPrompt', payload),

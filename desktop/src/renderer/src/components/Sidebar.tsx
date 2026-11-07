@@ -12,6 +12,7 @@ import {
   TrashIcon,
   XIcon
 } from './Icons'
+import type { PartialTabSelection } from '../utils/tab-selection'
 
 export interface SearchResult {
   index: number
@@ -30,6 +31,8 @@ export interface TaskRecord {
   createdAt: number
   updatedAt?: number
   messages?: unknown[]
+  /** Durable per-conversation composer selection (ADR-38 follow-up). */
+  selection?: PartialTabSelection
 }
 
 export interface ProjectRecord {

@@ -13,6 +13,9 @@ import {
   searchHistory as searchHistoryFn,
   saveCwd as saveCwdFn,
   touchProject as touchProjectFn,
+  getTaskSelection,
+  updateTaskSelection,
+  type TaskSelection,
 } from '../settings/settings'
 import {
   getSessionSnapshot,
@@ -116,12 +119,27 @@ export function removeProject(projectPath: string): unknown {
 export function getTaskView(taskId: string): unknown {
   if (!taskId) return { ok: false, error: 'Missing taskId' }
   const snapshot = getSessionSnapshot(taskId)
+  const selection = getTaskSelection(taskId)
   const contextWindowTokensByMode = resolveModeContextWindows()
   return {
     ok: true,
     ...snapshot,
+    ...(selection ? { selection } : {}),
     ...(contextWindowTokensByMode ? { contextWindowTokensByMode } : {}),
   }
+}
+
+/** AnyBuff:setTaskSelection — persist the visible tab's composer choices. */
+export function setTaskSelection(payload: {
+  taskId: string
+  selection?: TaskSelection
+}): unknown {
+  if (!payload?.taskId || !payload.selection) {
+    return { ok: false, error: 'Invalid payload' }
+  }
+  const task = updateTaskSelection(payload.taskId, payload.selection)
+  if (!task) return { ok: false, error: 'Task not found' }
+  return { ok: true, selection: task.selection ?? {} }
 }
 
 /** AnyBuff:trimTaskLastTurn — revert support. */
