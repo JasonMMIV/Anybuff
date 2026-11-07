@@ -8,7 +8,9 @@ import { describe, expect, test } from 'bun:test'
 import {
   findDraftTab,
   makeTabId,
+  moveWorkspaceTab,
   neighborTabAfterClose,
+  projectInitial,
   retargetDraftTab,
   tabTitleFromPrompt,
   type WorkspaceTab,
@@ -116,5 +118,72 @@ describe('makeTabId', () => {
     expect(a.startsWith('tab-')).toBe(true)
     expect(a).toBe(makeTabId(1_700_000_000_000, 0.123456789))
     expect(a).not.toBe(b)
+  })
+})
+
+describe('moveWorkspaceTab', () => {
+  const ids = (tabs: readonly WorkspaceTab[] | null) => tabs?.map((item) => item.id)
+
+  test('moves a left tab to the right of its target', () => {
+    const tabs = [tab('a', 't1'), tab('b', 't2'), tab('c', 't3')]
+    expect(ids(moveWorkspaceTab(tabs, 'a', 'b', 'after'))).toEqual(['b', 'a', 'c'])
+  })
+
+  test('moves a right tab to the left of its target', () => {
+    const tabs = [tab('a', 't1'), tab('b', 't2'), tab('c', 't3')]
+    expect(ids(moveWorkspaceTab(tabs, 'c', 'b', 'before'))).toEqual(['a', 'c', 'b'])
+  })
+
+  test('dropping next to itself is a no-op', () => {
+    const tabs = [tab('a', 't1'), tab('b', 't2')]
+    expect(moveWorkspaceTab(tabs, 'a', 'a', 'after')).toBeNull()
+    expect(moveWorkspaceTab(tabs, 'a', 'b', 'before')).toBeNull()
+    expect(moveWorkspaceTab(tabs, 'b', 'a', 'after')).toBeNull()
+  })
+
+  test('unknown ids are ignored', () => {
+    const tabs = [tab('a', 't1')]
+    expect(moveWorkspaceTab(tabs, 'missing', 'a', 'after')).toBeNull()
+    expect(moveWorkspaceTab(tabs, 'a', 'missing', 'before')).toBeNull()
+  })
+
+  test('never mutates the input order', () => {
+    const tabs = [tab('a', 't1'), tab('b', 't2'), tab('c', 't3')]
+    moveWorkspaceTab(tabs, 'c', 'a', 'before')
+    expect(tabs.map((item) => item.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  test('keeps the moved tab object (task/project metadata) intact', () => {
+    const tabs = [tab('a', 't1'), tab('b', 't2')]
+    const moved = moveWorkspaceTab(tabs, 'a', 'b', 'after')
+    expect(moved?.[1]).toBe(tabs[0])
+    expect(moved?.[1]).toMatchObject({ taskId: 't1', projectPath: '~/p' })
+  })
+})
+
+describe('projectInitial', () => {
+  test('uses the folder name on POSIX and Windows paths', () => {
+    expect(projectInitial('/home/me/AnyBuff')).toBe('A')
+    expect(projectInitial('C:\\Users\\me\\AnyBuff')).toBe('A')
+  })
+
+  test('ignores trailing separators and handles drive roots', () => {
+    expect(projectInitial('/home/me/AnyBuff/')).toBe('A')
+    expect(projectInitial('C:\\')).toBe('C')
+  })
+
+  test('skips leading dots so dotfolders still show a letter', () => {
+    expect(projectInitial('/home/me/.config')).toBe('C')
+  })
+
+  test('uses a leading digit and falls back for punctuation-only names', () => {
+    expect(projectInitial('/work/2024-plans')).toBe('2')
+    expect(projectInitial('/work/...')).toBe('?')
+  })
+
+  test('handles non-Latin names and a missing project', () => {
+    expect(projectInitial('/home/me/專案')).toBe('專')
+    expect(projectInitial(null)).toBe('?')
+    expect(projectInitial('')).toBe('?')
   })
 })

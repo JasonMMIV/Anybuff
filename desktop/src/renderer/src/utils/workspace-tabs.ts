@@ -69,3 +69,45 @@ export function neighborTabAfterClose(
   const remaining = tabs.filter((tab) => tab.id !== closedId)
   return remaining[Math.min(idx, remaining.length - 1)] ?? null
 }
+
+export type TabDropEdge = 'before' | 'after'
+
+/**
+ * Move a tab next to another tab in the titlebar strip. `before`/`after` refer
+ * to the target tab in the ORIGINAL list; the source is removed first so
+ * dropping a tab rightwards does not land one slot off.
+ *
+ * Returns null when nothing would change (same tab, unknown ids, or a drop
+ * that already matches the current order) so callers can skip a re-render.
+ */
+export function moveWorkspaceTab(
+  tabs: readonly WorkspaceTab[],
+  sourceId: string,
+  targetId: string,
+  edge: TabDropEdge
+): WorkspaceTab[] | null {
+  if (sourceId === targetId) return null
+  const source = tabs.find((tab) => tab.id === sourceId)
+  if (!source || !tabs.some((tab) => tab.id === targetId)) return null
+  const without = tabs.filter((tab) => tab.id !== sourceId)
+  const targetIndex = without.findIndex((tab) => tab.id === targetId)
+  const insertAt = edge === 'before' ? targetIndex : targetIndex + 1
+  const next = [...without.slice(0, insertAt), source, ...without.slice(insertAt)]
+  return next.every((tab, index) => tab.id === tabs[index]?.id) ? null : next
+}
+
+/**
+ * First letter of the project folder, for the circular tab avatar. Handles
+ * Windows and POSIX separators, trailing separators, drive roots and dot
+ * folders (`.config` → C). Returns `?` when the tab has no project yet.
+ */
+export function projectInitial(projectPath: string | null | undefined): string {
+  const trimmed = (projectPath ?? '').replace(/[\\/]+$/, '')
+  const name = trimmed.split(/[\\/]/).pop() ?? ''
+  const chars = Array.from(name.trim())
+  const pick =
+    chars.find((char) => /[\p{L}\p{N}]/u.test(char)) ??
+    chars.find((char) => !/[\s.]/u.test(char)) ??
+    '?'
+  return pick.toUpperCase()
+}

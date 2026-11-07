@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import AskUserBanner from './components/AskUserBanner'
 import Sidebar, { type ProjectRecord, type TaskRecord, type SearchResult } from './components/Sidebar'
 import RightPanel, { type RightTab } from './components/RightPanel'
@@ -42,9 +42,12 @@ import { composerDraftKey, createComposerDraft, EMPTY_COMPOSER_DRAFT, isComposer
 import {
   findDraftTab,
   makeTabId,
+  moveWorkspaceTab,
   neighborTabAfterClose,
+  projectInitial,
   retargetDraftTab,
   tabTitleFromPrompt,
+  type TabDropEdge,
   type WorkspaceTab
 } from './utils/workspace-tabs'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
@@ -234,6 +237,19 @@ function absPath(cwd: string, rel: string): string {
 
 function basenameOf(p: string): string {
   return p.split(/[\\/]/).pop() ?? p
+}
+
+/** Live titlebar drag state: the source tab and the current insertion point. */
+type TabDragState = {
+  sourceId: string
+  overId: string | null
+  edge: TabDropEdge
+}
+
+/** Which half of a tab the pointer is over (titlebar drag reordering). */
+function tabDropEdge(e: ReactDragEvent<HTMLElement>): TabDropEdge {
+  const rect = e.currentTarget.getBoundingClientRect()
+  return e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
 }
 
 /**
@@ -610,6 +626,8 @@ export default function App() {
   /** Titlebar tabs: open conversations / unsent drafts (renderer-scoped, one run at a time). */
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  /** Live titlebar drag-reorder state: source tab + current insertion point. */
+  const [tabDrag, setTabDrag] = useState<TabDragState | null>(null)
   /** Per-task cost in CREDITS (finish.totalCost is cents), keyed by taskId. */
   const [taskCosts, setTaskCosts] = useState<TaskCostMap>({})
 
@@ -632,6 +650,10 @@ export default function App() {
   projectsRef.current = projects
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
+  /** Mirror of tabDrag for handlers that run before React commits the state. */
+  const tabDragRef = useRef<TabDragState | null>(null)
+  /** A press that began on the close button must not start a tab drag. */
+  const tabDragBlockedRef = useRef(false)
 
   /**
    * #7 composer drafts are keyed per TAB on desktop (two new-chat tabs in the
@@ -758,6 +780,74 @@ export default function App() {
         ?.focus()
     })
   }, [])
+
+  /** Write the drag state to both the ref and React, so dragover never lags. */
+  const updateTabDrag = useCallback((next: TabDragState | null) => {
+    tabDragRef.current = next
+    setTabDrag(next)
+  }, [])
+
+  /** Commit a drag move without changing which tab is active. */
+  const commitTabMove = useCallback(
+    (sourceId: string, targetId: string, edge: TabDropEdge) => {
+      const next = moveWorkspaceTab(workspaceTabsRef.current, sourceId, targetId, edge)
+      if (!next) return
+      // Keep the ref in lockstep: another drop can fire before this state lands.
+      workspaceTabsRef.current = next
+      setWorkspaceTabs(next)
+    },
+    []
+  )
+
+  const onTabDragStart = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>, tabId: string) => {
+      if (tabDragBlockedRef.current) {
+        tabDragBlockedRef.current = false
+        e.preventDefault()
+        return
+      }
+      e.dataTransfer.effectAllowed = 'move'
+      // A private MIME type: dropping a tab on the composer textarea or another
+      // app must never paste the internal tab id as plain text.
+      e.dataTransfer.setData('application/x-anybuff-tab', tabId)
+      updateTabDrag({ sourceId: tabId, overId: null, edge: 'before' })
+    },
+    [updateTabDrag]
+  )
+
+  const onTabDragOver = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>, tabId: string) => {
+      const drag = tabDragRef.current
+      if (!drag) return
+      if (drag.sourceId === tabId) {
+        if (drag.overId) updateTabDrag({ ...drag, overId: null })
+        return
+      }
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const edge = tabDropEdge(e)
+      if (drag.overId === tabId && drag.edge === edge) return
+      updateTabDrag({ ...drag, overId: tabId, edge })
+    },
+    [updateTabDrag]
+  )
+
+  const onTabDrop = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>, tabId: string) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const drag = tabDragRef.current
+      updateTabDrag(null)
+      if (!drag || drag.sourceId === tabId) return
+      // Prefer the edge the indicator is showing; fall back to the pointer
+      // position when the drop lands on a tab that never saw a dragover.
+      const edge = drag.overId === tabId ? drag.edge : tabDropEdge(e)
+      commitTabMove(drag.sourceId, tabId, edge)
+    },
+    [commitTabMove, updateTabDrag]
+  )
+
+  const onTabDragEnd = useCallback(() => updateTabDrag(null), [updateTabDrag])
 
   // Keep the active tab inside the (scrollbar-less) strip when it is created
   // or selected from the sidebar / keyboard shortcuts.
@@ -3838,6 +3928,31 @@ export default function App() {
               if (el.scrollWidth <= el.clientWidth) return
               el.scrollLeft += e.deltaY
             }}
+            onDragOver={(e) => {
+              // Edge auto-scroll keeps off-screen tabs reachable while dragging.
+              if (!tabDragRef.current) return
+              e.preventDefault()
+              const el = e.currentTarget
+              const rect = el.getBoundingClientRect()
+              const margin = 36
+              if (e.clientX < rect.left + margin) el.scrollLeft -= 14
+              else if (e.clientX > rect.right - margin) el.scrollLeft += 14
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+              const drag = tabDragRef.current
+              if (drag?.overId) updateTabDrag({ ...drag, overId: null })
+            }}
+            onDrop={(e) => {
+              // Tabs handle their own drops; an empty strip area appends to the end.
+              if ((e.target as HTMLElement).closest('[data-tab-id]')) return
+              e.preventDefault()
+              const drag = tabDragRef.current
+              updateTabDrag(null)
+              if (!drag) return
+              const last = workspaceTabsRef.current[workspaceTabsRef.current.length - 1]
+              if (last && last.id !== drag.sourceId) commitTabMove(drag.sourceId, last.id, 'after')
+            }}
             onKeyDown={(e) => {
               if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return
               const tabsNow = workspaceTabsRef.current
@@ -3866,13 +3981,24 @@ export default function App() {
                   role="tab"
                   aria-selected={isActive}
                   tabIndex={isActive ? 0 : -1}
-                  className={`titlebar-tab${isActive ? ' active' : ''}${isRunningTab ? ' running' : ''}`}
+                  draggable={workspaceTabs.length > 1}
+                  className={`titlebar-tab${isActive ? ' active' : ''}${isRunningTab ? ' running' : ''}${
+                    tabDrag?.sourceId === tab.id ? ' dragging' : ''
+                  }${tabDrag?.overId === tab.id ? ` drop-${tabDrag.edge}` : ''}`}
                   title={`${tab.title}${tab.projectPath ? `\n${tab.projectPath}` : ''}`}
                   onClick={() => void activateWorkspaceTab(tab)}
+                  onDragStart={(e) => onTabDragStart(e, tab.id)}
+                  onDragOver={(e) => onTabDragOver(e, tab.id)}
+                  onDrop={(e) => onTabDrop(e, tab.id)}
+                  onDragEnd={onTabDragEnd}
                   onMouseDown={(e) => {
                     // Suppress Windows middle-click autoscroll; the aux click
                     // below is the actual close action.
                     if (e.button === 1) e.preventDefault()
+                    // Dragstart's target is always the draggable tab, so the
+                    // press target has to be remembered here.
+                    tabDragBlockedRef.current =
+                      e.button === 0 && Boolean((e.target as HTMLElement).closest('.titlebar-tab-close'))
                   }}
                   onAuxClick={(e) => {
                     // Middle-click closes, like a browser tab.
@@ -3891,12 +4017,22 @@ export default function App() {
                   {isRunningTab && (
                     <span className="spinner-ring titlebar-tab-spinner" role="status" aria-label="Running" />
                   )}
+                  {tab.projectPath ? (
+                    <span className="titlebar-tab-avatar" aria-hidden="true">
+                      {projectInitial(tab.projectPath)}
+                    </span>
+                  ) : (
+                    <span className="titlebar-tab-icon titlebar-tab-icon-new" aria-hidden="true">
+                      <FolderPlusIcon size={14} />
+                    </span>
+                  )}
                   <span className="titlebar-tab-title">{tab.title || 'New Task'}</span>
                   <button
                     type="button"
                     className="titlebar-tab-close"
                     title="Close tab"
                     aria-label={`Close ${tab.title || 'tab'}`}
+                    draggable={false}
                     onKeyDown={(e) => {
                       // Enter/Space belong to the close button; without this
                       // they would bubble to the tab and re-activate it first.

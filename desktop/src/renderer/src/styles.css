@@ -1041,6 +1041,7 @@ textarea {
 }
 
 .titlebar-tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1048,10 +1049,10 @@ textarea {
   min-width: 64px;
   /* A definite width (not just flex-basis) is required: .titlebar-tabs is a
      shrink-to-fit scroller, so it sizes from the tabs' intrinsic width — a
-     flex-basis alone would never materialize. 252px is ~40% wider than the
-     old 180px; flex-shrink takes over as soon as the strip runs out of room,
+     flex-basis alone would never materialize. 227px is 90% of the previous
+     252px; flex-shrink takes over as soon as the strip runs out of room,
      so crowded tab strips keep the old shrink-to-64px behavior. */
-  width: 252px;
+  width: 227px;
   padding: 0 4px 0 10px;
   flex: 0 1 auto;
   background: transparent;
@@ -1061,7 +1062,8 @@ textarea {
   font-size: 12px;
   cursor: pointer;
   user-select: none;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .titlebar-tab:hover {
@@ -1078,6 +1080,63 @@ textarea {
 .titlebar-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+
+.titlebar-tab.dragging {
+  opacity: 0.4;
+}
+
+.titlebar-tab.drop-before::before,
+.titlebar-tab.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-soft);
+  pointer-events: none;
+}
+
+.titlebar-tab.drop-before::before {
+  left: 0;
+}
+
+.titlebar-tab.drop-after::after {
+  right: 0;
+}
+
+.titlebar-tab-icon,
+.titlebar-tab-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.titlebar-tab-avatar,
+.titlebar-tab-icon-new {
+  color: var(--accent);
+  opacity: 0.88;
+  transition: opacity var(--transition-fast);
+}
+
+.titlebar-tab-avatar {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.titlebar-tab:hover .titlebar-tab-avatar,
+.titlebar-tab:hover .titlebar-tab-icon-new,
+.titlebar-tab.active .titlebar-tab-avatar,
+.titlebar-tab.active .titlebar-tab-icon-new {
+  opacity: 1;
 }
 
 .titlebar-tab-title {
