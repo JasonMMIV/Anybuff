@@ -38,7 +38,7 @@ import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
 import { firstReadyQueueIndex, queueTargetMatchesView } from './utils/queue-routing'
-import { composerDraftKey, createComposerDraft, EMPTY_COMPOSER_DRAFT, isComposerTextEmpty, type ComposerDraft } from './utils/composer-draft'
+import { clampComposerSelection, composerDraftKey, createComposerDraft, EMPTY_COMPOSER_DRAFT, isComposerTextEmpty, type ComposerDraft } from './utils/composer-draft'
 import {
   findDraftTab,
   makeTabId,
@@ -523,6 +523,12 @@ export default function App() {
    *  `msgIndex` scopes Select All to the right-clicked message; `editable`
    *  marks a right-click inside the composer (the only place Cut/Paste apply). */
   const [editMenu, setEditMenu] = useState<{ x: number; y: number; editable: boolean; msgIndex: number | null } | null>(null)
+  /** The editable element (and selection) the edit menu was opened on. Clicking
+   *  a menu button must not steal focus from it, or copy/cut/paste act on the
+   *  button instead of the composer. */
+  const editMenuTargetRef = useRef<HTMLElement | null>(null)
+  const editMenuSelectionRef = useRef<{ start: number; end: number } | null>(null)
+  const editMenuRangeRef = useRef<Range | null>(null)
 
   const [settings, setSettings] = useState<UiSettings>({ providers: [], activeModel: '', reasoningEffort: 'default', approvalMode: 'balanced' })
   const [agentMode, setAgentMode] = useState<AgentMode>('default')
@@ -2769,8 +2775,29 @@ export default function App() {
   /* ── 對話區右鍵編輯選單（Select All / Copy / Cut / Paste）── */
 
   const openEditMenu = useCallback(
-    (x: number, y: number, target?: { editable?: boolean; msgIndex?: number | null }) => {
+    (
+      x: number,
+      y: number,
+      target?: { editable?: boolean; msgIndex?: number | null; element?: HTMLElement | null }
+    ) => {
       setFileMenu(null)
+      const element = target?.element ?? null
+      editMenuTargetRef.current = element
+      const textInput =
+        element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement ? element : null
+      editMenuSelectionRef.current = textInput
+        ? {
+            start: textInput.selectionStart ?? 0,
+            end: textInput.selectionEnd ?? 0
+          }
+        : null
+      if (element?.isContentEditable) {
+        const selection = window.getSelection()
+        editMenuRangeRef.current =
+          selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null
+      } else {
+        editMenuRangeRef.current = null
+      }
       setEditMenu({ x, y, editable: target?.editable ?? false, msgIndex: target?.msgIndex ?? null })
     },
     []
@@ -2782,19 +2809,59 @@ export default function App() {
   const runEditCommand = useCallback(
     (cmd: 'copy' | 'cut' | 'paste' | 'selectAll') => {
       const target = editMenu
+      const targetEl = editMenuTargetRef.current
+      const textInput =
+        targetEl instanceof HTMLTextAreaElement || targetEl instanceof HTMLInputElement
+          ? targetEl
+          : null
+      const editable = Boolean(textInput || targetEl?.isContentEditable)
+      const selection = editMenuSelectionRef.current
       setEditMenu(null)
-      const active = document.activeElement
-      const activeIsEditable =
-        active instanceof HTMLElement && (active.matches('textarea, input') || active.isContentEditable)
-      if ((cmd === 'cut' || cmd === 'paste') && !activeIsEditable) return
+
+      /** Put focus and the captured selection back on the right-clicked
+       *  element. The menu buttons deliberately do not take focus
+       *  (onMouseDown preventDefault), but keyboard activation still can. */
+      const restoreTarget = () => {
+        if (!targetEl) return
+        targetEl.focus({ preventScroll: true })
+        if (textInput) {
+          if (selection && textInput.selectionStart !== null) {
+            const { start, end } = clampComposerSelection(
+              textInput.value,
+              selection.start,
+              selection.end
+            )
+            textInput.setSelectionRange(start, end)
+          }
+        } else if (targetEl.isContentEditable && editMenuRangeRef.current) {
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(editMenuRangeRef.current)
+        }
+      }
+
       if (cmd === 'paste') {
-        void navigator.clipboard
-          ?.readText()
-          .then((t) => document.execCommand('insertText', false, t))
-          .catch(() => {})
+        if (!editable) return
+        restoreTarget()
+        const insert = (text: string) => {
+          // The target may have been closed (or focus moved) while the async
+          // clipboard read was pending — never type into a different field.
+          if (!targetEl || !targetEl.isConnected || document.activeElement !== targetEl) return
+          document.execCommand('insertText', false, text)
+        }
+        const clipboard = navigator.clipboard
+        if (clipboard?.readText) {
+          void clipboard.readText().then(insert, () => {})
+        } else {
+          // Some WebViews expose no async clipboard; this synchronous command
+          // is the only fallback (Chromium may reject it without permission).
+          document.execCommand('paste')
+        }
         return
       }
       if (cmd === 'cut') {
+        if (!editable) return
+        restoreTarget()
         document.execCommand('cut')
         return
       }
@@ -2814,14 +2881,31 @@ export default function App() {
           return
         }
         // Menu opened over the composer: select its text.
-        const ta = document.querySelector('textarea')
-        if (ta) {
-          ta.focus()
-          ta.select()
+        if (textInput) {
+          restoreTarget()
+          if (textInput.selectionStart !== null) textInput.select()
+          return
+        }
+        // Contenteditable target: select its contents, not the whole document.
+        if (targetEl?.isContentEditable) {
+          const range = document.createRange()
+          range.selectNodeContents(targetEl)
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(range)
         }
         return
       }
-      document.execCommand(cmd)
+      // Copy: editable targets need their selection restored; message text is
+      // copied from the document selection the right-click preserved.
+      if (editable) restoreTarget()
+      const copied = document.execCommand('copy')
+      if (!copied) {
+        const fallback = textInput
+          ? textInput.value.slice(selection?.start ?? 0, selection?.end ?? 0)
+          : (window.getSelection()?.toString() ?? '')
+        if (fallback) void navigator.clipboard?.writeText(fallback).catch(() => {})
+      }
     },
     [editMenu]
   )
@@ -4183,12 +4267,13 @@ export default function App() {
                 // contextmenu handler, so those menus never double-open.
                 e.preventDefault()
                 const t = e.target instanceof HTMLElement ? e.target : null
-                const editable = Boolean(t?.closest('textarea, input, [contenteditable="true"]'))
+                const editableEl = (t?.closest('textarea, input, [contenteditable="true"]') as HTMLElement | null) ?? null
+                const editable = Boolean(editableEl)
                 // Select All scope: the message row under the cursor, or the
                 // composer when the right-click landed there.
                 const row = editable ? null : t?.closest('[data-index]')
                 const msgIndex = row && row instanceof HTMLElement && row.dataset.index != null ? Number(row.dataset.index) : null
-                openEditMenu(e.clientX, e.clientY, { editable, msgIndex })
+                openEditMenu(e.clientX, e.clientY, { editable, msgIndex, element: editableEl })
               }}
             >
               <header className="topbar">
@@ -4603,8 +4688,8 @@ export default function App() {
         )}
       </div>
 
-      {/* 對話區右鍵編輯選單：Select All / Copy / Cut / Paste（對 File 選單的
-          Edit 群組同一組 execCommand，作用在當下聚焦/選取的元素上）。 */}
+      {/* 對話區右鍵編輯選單：Select All / Copy / Cut / Paste。命令作用在
+          右鍵瞄準的元素（輸入框會保留焦點與選取範圍）。 */}
       {editMenu && (
         <div
           className="file-context-menu slim"
@@ -4615,6 +4700,9 @@ export default function App() {
             top: Math.min(editMenu.y, Math.max(0, window.innerHeight - 180))
           }}
           onPointerDown={(e) => e.stopPropagation()}
+          // Keep focus (and the textarea selection) where the right-click
+          // landed — execCommand/copy/paste act on the focused element.
+          onMouseDown={(e) => e.preventDefault()}
           onContextMenu={(e) => e.preventDefault()}
         >
           <button type="button" className="context-menu-item" role="menuitem" onClick={() => runEditCommand('selectAll')}>
