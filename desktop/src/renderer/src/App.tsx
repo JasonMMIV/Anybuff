@@ -37,6 +37,14 @@ import { compactionNote } from './utils/compaction-note'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
 import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
+import { firstReadyQueueIndex, queueTargetMatchesView } from './utils/queue-routing'
+import {
+  findDraftTab,
+  makeTabId,
+  neighborTabAfterClose,
+  tabTitleFromPrompt,
+  type WorkspaceTab
+} from './utils/workspace-tabs'
 import { FileChangesSummary, type FileChange } from './components/FileChangesSummary'
 import {
   AlertCircleIcon,
@@ -55,6 +63,7 @@ import {
   PanelLeftIcon,
   PanelRightIcon,
   PaperclipIcon,
+  PlusIcon,
   UndoIcon,
   WindowMinimizeIcon,
   WindowMaximizeIcon,
@@ -83,6 +92,9 @@ type ChatItem =
   | { kind: 'file-changes'; files: FileChange[] }
   | { kind: 'compaction'; text: string }
   | { kind: 'system'; text: string }
+
+/** Android WebView has no titlebar: one implicit tab preserves the pre-tabs view semantics. */
+const MOBILE_TAB_ID = 'mobile-single-tab'
 
 /** Silent background polling / internal tools that should be hidden from the UI timeline */
 function isSilentTool(name?: string): boolean {
@@ -572,21 +584,117 @@ export default function App() {
   const [activeTodos, setActiveTodos] = useState<TodoTodo[]>([])
   const [todoPanelCollapsed, setTodoPanelCollapsed] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
-  const [zoomLevel, setZoomLevel] = useState(100)
   /** The conversation that owns the active agent run (may differ from the view). */
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
   /** Reactive mirror of currentTaskRef — which conversation is displayed. */
   const [activeViewTaskId, setActiveViewTaskId] = useState<string | null>(null)
+  /** Titlebar tabs: open conversations / unsent drafts (renderer-scoped, one run at a time). */
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
   /** Per-task cost in CREDITS (finish.totalCost is cents), keyed by taskId. */
   const [taskCosts, setTaskCosts] = useState<TaskCostMap>({})
 
   /** View state: which conversation is displayed (also the event-routing key). */
   const currentTaskRef = useRef<string | null>(null)
+  /** Monotonic token for async view loads; a stale snapshot must never win. */
+  const viewLoadSeqRef = useRef(0)
   /** Keep the ref and its reactive mirror in sync at every view switch. */
   const setViewTask = useCallback((id: string | null) => {
     currentTaskRef.current = id
     setActiveViewTaskId(id)
   }, [])
+  // Refs mirror tab/project state so stable callbacks (run events, tab switches)
+  // never act on a stale snapshot between renders.
+  const workspaceTabsRef = useRef(workspaceTabs)
+  workspaceTabsRef.current = workspaceTabs
+  const activeTabIdRef = useRef(activeTabId)
+  activeTabIdRef.current = activeTabId
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
+
+  /**
+   * #7 composer drafts are keyed per TAB on desktop (two new-chat tabs in the
+   * same project must not share text) and per project on Android, where a
+   * single implicit tab preserves the pre-tabs behavior. Declared up here so
+   * tab close/bind cleanup can reach them.
+   */
+  const draftsRef = useRef<Map<string, string>>(new Map())
+  const promptRef = useRef(prompt)
+  promptRef.current = prompt
+  /** The draft key the prompt currently belongs to ('' until first mount). */
+  const draftKeyRef = useRef('')
+
+  /** Drop a closed/bound tab's composer draft (no session-long leak). */
+  const discardTabDraft = useCallback((tab: WorkspaceTab) => {
+    draftsRef.current.delete(`tab:${tab.id}`)
+    if (tab.taskId) draftsRef.current.delete(tab.taskId)
+  }, [])
+
+  /**
+   * The host record behind the active tab was deleted (e.g. a revert that could
+   * not trim the last turn). Turn the tab back into a draft so it cannot point
+   * at a dead task, keeping the restored message in the composer.
+   */
+  const demoteActiveTabToDraft = useCallback(() => {
+    const tabId = activeTabIdRef.current
+    if (!tabId) return
+    const newKey = isAndroidShell
+      ? `__new__:${cwdRef.current ?? ''}`
+      : `tab:${tabId}`
+    if (draftKeyRef.current && draftKeyRef.current !== newKey) {
+      draftsRef.current.delete(draftKeyRef.current)
+      draftKeyRef.current = newKey
+    }
+    setWorkspaceTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, taskId: null, title: 'New chat' } : t))
+    )
+  }, [isAndroidShell])
+
+  /**
+   * Append a fresh draft tab and make it active (never touches the host).
+   * The Android WebView hides the titlebar and keeps exactly one implicit tab,
+   * so it replaces that tab in place instead of growing an invisible strip.
+   */
+  const createDraftTab = useCallback(
+    (projectPath: string | null): string => {
+      if (isAndroidShell) {
+        setWorkspaceTabs([{ id: MOBILE_TAB_ID, taskId: null, projectPath, title: 'New chat' }])
+        setActiveTabId(MOBILE_TAB_ID)
+        return MOBILE_TAB_ID
+      }
+      const id = makeTabId()
+      setWorkspaceTabs((prev) => [...prev, { id, taskId: null, projectPath, title: 'New chat' }])
+      setActiveTabId(id)
+      return id
+    },
+    [isAndroidShell]
+  )
+
+  const tabStripRef = useRef<HTMLDivElement>(null)
+  /** Move keyboard focus to a tab that just became active (after close/new). */
+  const focusWorkspaceTab = useCallback((tabId: string) => {
+    requestAnimationFrame(() => {
+      tabStripRef.current
+        ?.querySelector<HTMLElement>(`[data-tab-id="${tabId}"]`)
+        ?.focus()
+    })
+  }, [])
+
+  // Keep the active tab inside the (scrollbar-less) strip when it is created
+  // or selected from the sidebar / keyboard shortcuts.
+  useEffect(() => {
+    if (!activeTabId) return
+    const strip = tabStripRef.current
+    const el = strip?.querySelector<HTMLElement>(`[data-tab-id="${activeTabId}"]`)
+    if (!strip || !el) return
+    const stripRect = strip.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    if (elRect.left < stripRect.left) strip.scrollLeft -= stripRect.left - elRect.left
+    else if (elRect.right > stripRect.right) strip.scrollLeft += elRect.right - stripRect.right
+  }, [activeTabId, workspaceTabs.length])
+
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
   const changedFilesRef = useRef<string[]>([])
@@ -667,45 +775,6 @@ export default function App() {
   }, [isPreview])
 
 
-
-  const reloadPage = useCallback(() => {
-    if (isPreview) return
-    window.AnyBuff.windowReload()
-  }, [])
-
-  const forceReloadPage = useCallback(() => {
-    if (isPreview) return
-    window.AnyBuff.windowForceReload()
-  }, [])
-
-  const zoomIn = useCallback(() => {
-    if (isPreview) return
-    setZoomLevel((prev) => {
-      const next = Math.min(prev + 10, 300)
-      window.AnyBuff.setZoomFactor(next / 100)
-      return next
-    })
-  }, [])
-
-  const zoomOut = useCallback(() => {
-    if (isPreview) return
-    setZoomLevel((prev) => {
-      const next = Math.max(prev - 10, 30)
-      window.AnyBuff.setZoomFactor(next / 100)
-      return next
-    })
-  }, [])
-
-  const resetZoom = useCallback(() => {
-    if (isPreview) return
-    setZoomLevel(100)
-    window.AnyBuff.setZoomFactor(1)
-  }, [])
-
-  const toggleFullScreen = useCallback(() => {
-    if (isPreview) return
-    window.AnyBuff.windowToggleFullScreen()
-  }, [])
 
   // Auto-dismiss notice
   useEffect(() => {
@@ -858,6 +927,16 @@ export default function App() {
     loadInitialState()
   }, [isPreview, loadInitialState])
 
+  // The tab strip always starts with one draft for the restored (or freshly
+  // picked) project. `createDraftTab` is idempotent in the sense that later
+  // folder picks append their own tab; this bootstrap runs at most once.
+  const tabsBootstrappedRef = useRef(false)
+  useEffect(() => {
+    if (tabsBootstrappedRef.current || !cwd) return
+    tabsBootstrappedRef.current = true
+    if (workspaceTabsRef.current.length === 0) createDraftTab(cwd)
+  }, [cwd, createDraftTab])
+
   // Project name, git branch, @-file candidates, skills
   useEffect(() => {
     if (!cwd) return
@@ -865,10 +944,24 @@ export default function App() {
       setFileCandidates(['src/calculator.js', 'src/index.js', 'README.md', 'package.json'])
       return
     }
-    void window.AnyBuff.projectName(cwd).then(setProjectName)
-    void window.AnyBuff.gitBranch(cwd).then(setBranch)
-    void window.AnyBuff.listFiles(cwd).then((t) => setFileCandidates(flattenTree(t as TreeNode[], cwd)))
-    void window.AnyBuff.listSkills(cwd).then((s) => setSkills(s as SkillInfo[]))
+    // Late replies from a project the user already left must not relabel the
+    // new one (fast tab/project switching).
+    let current = true
+    void window.AnyBuff.projectName(cwd).then((v) => {
+      if (current) setProjectName(v)
+    })
+    void window.AnyBuff.gitBranch(cwd).then((v) => {
+      if (current) setBranch(v)
+    })
+    void window.AnyBuff.listFiles(cwd).then((t) => {
+      if (current) setFileCandidates(flattenTree(t as TreeNode[], cwd))
+    })
+    void window.AnyBuff.listSkills(cwd).then((s) => {
+      if (current) setSkills(s as SkillInfo[])
+    })
+    return () => {
+      current = false
+    }
   }, [cwd, isPreview])
 
   // #20/ADR-23 @-mention menu — the current MODE root's spawnable agents,
@@ -917,10 +1010,42 @@ export default function App() {
   // requesting page died with the old WebView, so the shell stages the guest
   // path and pushes it here once the page can run JS. Applied via
   // applyOpenedFolder (declared below with the other handlers).
-  // cwdRef mirrors cwd for the pull below without re-running the effect on
-  // every cwd change mid-pick (the pull itself must not re-fire on cwd updates).
-  const cwdRef = useRef(cwd)
-  cwdRef.current = cwd
+  // The pull below uses cwdRef (declared with the tab refs above) so it does
+  // not re-fire on every cwd change mid-pick.
+
+  /**
+   * First prompt of a draft: turn the active tab into a task tab. Existing task
+   * tabs keep their title (a conversation is named by its first prompt).
+   */
+  const bindActiveTabToTask = useCallback((taskId: string, title?: string) => {
+    const tabId = activeTabIdRef.current
+    if (!tabId) return
+    // The draft bucket `tab:<id>` (or the Android project bucket) ends here:
+    // drop it before the key flips to the task id so its text cannot leak back
+    // into a later new-chat tab.
+    if (draftKeyRef.current === `tab:${tabId}` || draftKeyRef.current.startsWith('__new__:')) {
+      draftsRef.current.delete(draftKeyRef.current)
+      draftKeyRef.current = taskId
+    }
+    // Messages queued while this tab was still a draft now belong to the task
+    // that just started; otherwise they would wait for a draft that no longer
+    // exists and never dispatch.
+    setQueuedMessages((prev) =>
+      prev.map((m) => (m.taskId == null && m.tabId === tabId ? { ...m, taskId } : m))
+    )
+    setWorkspaceTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              taskId: tab.taskId ?? taskId,
+              projectPath: cwdRef.current ?? tab.projectPath,
+              title: tab.taskId ? tab.title : tabTitleFromPrompt(title, tab.title)
+            }
+          : tab
+      )
+    )
+  }, [])
   useEffect(() => {
     if (isPreview) return
     const nativeTakeStagedFolder = (
@@ -1460,6 +1585,13 @@ export default function App() {
   // folder-pending listener (declared earlier) reach it without a TDZ issue.
   const applyOpenedFolder = useCallback(
     (path: string) => {
+      // Opening a folder starts a fresh conversation in its own tab. Reuse an
+      // existing empty draft for that project instead of piling up blanks;
+      // existing conversations (and any background run) are left untouched.
+      viewLoadSeqRef.current += 1
+      const existingDraft = findDraftTab(workspaceTabsRef.current, path)
+      if (existingDraft) setActiveTabId(existingDraft.id)
+      else createDraftTab(path)
       setCwd(path)
       autoScrollRef.current = true
       setChatItems([])
@@ -1471,7 +1603,7 @@ export default function App() {
       setResumeInfo(null)
       setViewTask(null)
     },
-    [setViewTask],
+    [createDraftTab, setViewTask],
   )
   const applyOpenedFolderRef = useRef(applyOpenedFolder)
   applyOpenedFolderRef.current = applyOpenedFolder
@@ -1612,7 +1744,11 @@ export default function App() {
    * stop; a later send() clears the pause like any normal resume.
    */
   const handleSteeredLeftovers = useCallback(
-    (leftovers: { pushId: string; text: string }[] | undefined, pausedByStop: boolean) => {
+    (
+      leftovers: { pushId: string; text: string }[] | undefined,
+      pausedByStop: boolean,
+      target?: { taskId?: string | null; tabId?: string | null; cwd?: string }
+    ) => {
       if (!leftovers || leftovers.length === 0) return
       const leftoverIds = new Set(leftovers.map((l) => l.pushId))
       setChatItems((prev) =>
@@ -1621,7 +1757,12 @@ export default function App() {
         )
       )
       // Prepend the leftover block (arrival order = FIFO; utils/send-routing).
-      setQueuedMessages((prev) => [...leftoverRequeueItems(leftovers), ...prev])
+      // They belong to the run that received them, not whichever tab happens
+      // to be visible when they are requeued.
+      setQueuedMessages((prev) => [
+        ...leftoverRequeueItems(leftovers).map((item) => ({ ...item, ...target })),
+        ...prev
+      ])
       if (pausedByStop) setQueuePaused(true)
     },
     []
@@ -1643,6 +1784,9 @@ export default function App() {
     ) => {
       let text = (textOverride ?? prompt).trim()
       if (!text || !cwd) return
+      // The tab that submitted this prompt. Async completions must not drag the
+      // view back if the user has since switched to another tab.
+      const sendTabId = activeTabIdRef.current
       // ADR-30: an explicit user submit unpauses a queue that a Stop left
       // paused ('pause-if-pending') — the user is driving again.
       setQueuePaused(false)
@@ -1844,7 +1988,12 @@ export default function App() {
             text,
             finalPrompt,
             // Snapshot so an inline edit re-bakes with the same files.
-            attachments
+            attachments,
+            // Route the message back to the conversation/project it was
+            // composed in — tabs make cross-conversation queueing routine.
+            taskId: currentTaskRef.current,
+            tabId: activeTabIdRef.current,
+            cwd
           }
         ])
         setPrompt('')
@@ -1871,10 +2020,15 @@ export default function App() {
       setHistoryTask(null)
       setResumeInfo(null)
       // New conversations get their id up front so streamed events route to
-      // this view immediately; existing conversations reuse their id.
+      // this view immediately; existing conversations reuse their id. The tab
+      // that owned the draft becomes this task's tab (title = first prompt).
       if (!currentTaskRef.current && !isPreview) {
         const newId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+        // A snapshot request from the previous view may still be in flight;
+        // it must not overwrite the task this submit is about to start.
+        viewLoadSeqRef.current += 1
         setViewTask(newId)
+        bindActiveTabToTask(newId, text)
       }
       // Optimistic: this view owns the run until events say otherwise.
       if (!isPreview) setRunningTaskId(currentTaskRef.current)
@@ -1910,11 +2064,15 @@ export default function App() {
       // existing taskId continues that conversation with full history; omitting
       // it starts (and names) a new one.
       const imageContent = buildImageContent(attachments)
+      // The task id this prompt runs against (a freshly minted draft id above,
+      // or the conversation already on screen). Captured before the await so
+      // leftover requeues know their owner even if the view changes.
+      const taskIdAtSend = currentTaskRef.current
       const runPromise = window.AnyBuff.runPrompt({
         cwd,
         prompt: finalPrompt,
         displayText: text,
-        taskId: currentTaskRef.current ?? undefined,
+        taskId: taskIdAtSend ?? undefined,
         mode: opts?.mode ?? (initRun ? 'default' : agentMode),
         // #4: pasted/attached images ride the multimodal content channel.
         ...(imageContent.length > 0 ? { content: imageContent } : {})
@@ -1927,13 +2085,19 @@ export default function App() {
       if (!result.ok) {
         setChatItems((prev) => [...prev, { kind: 'system', text: result.error ?? 'Execution failed' }])
       } else {
-        if (result.taskId) setViewTask(result.taskId)
+        // Only retarget the view if the submitting tab is still the visible
+        // one — a run finishing in the background owns its own tab.
+        if (result.taskId && activeTabIdRef.current === sendTabId) setViewTask(result.taskId)
         // Failed (stopped or API error) runs preserve their state; offer to resume.
         if (result.interrupted) {
           setResumeInfo({ prompt: text, reason: result.reason, errorMessage: result.errorMessage })
         }
       }
-      handleSteeredLeftovers(result.steeredLeftovers, result.interrupted === true && result.reason === 'stopped')
+      handleSteeredLeftovers(
+        result.steeredLeftovers,
+        result.interrupted === true && result.reason === 'stopped',
+        { taskId: result.taskId ?? taskIdAtSend, tabId: sendTabId, cwd }
+      )
       void window.AnyBuff.gitBranch(cwd).then(setBranch)
     } catch (err) {
       setChatItems((prev) => [...prev, { kind: 'system', text: String(err) }])
@@ -1946,7 +2110,7 @@ export default function App() {
       setApprovalRequest(null)
       setNotice((prev) => (prev && prev.includes('Stop requested') ? null : prev))
     }
-  }, [prompt, cwd, running, runningTaskId, agentMode, buildFinalPrompt, refreshProjects, setViewTask, interviewArmed, attachments])
+  }, [prompt, cwd, running, runningTaskId, agentMode, buildFinalPrompt, refreshProjects, setViewTask, bindActiveTabToTask, interviewArmed, attachments])
 
   /** #5 第二批：/review 範圍選擇面板的送出入口 —— 以預建提示詞走正常送出流程。 */
   const runReviewScope = useCallback(
@@ -1974,10 +2138,11 @@ export default function App() {
     void send(INIT_DISPLAY_TEXT, '/init', { mode: 'default' })
   }, [send, agentMode])
 
-  // When the current turn ends, automatically dispatch the first queued message.
-  // drainingQueueRef serializes against re-entrant effect runs (StrictMode dev
-  // double-invoke included); `send` flips `running` synchronously so the follow-up
-  // run sees the in-flight state immediately.
+  // When the current turn ends, automatically dispatch the first queued message
+  // whose own conversation is on screen. drainingQueueRef serializes against
+  // re-entrant effect runs (StrictMode dev double-invoke included); `send`
+  // flips `running` synchronously so the follow-up run sees the in-flight state
+  // immediately. Items parked for other tabs keep waiting for their tab.
   const drainingQueueRef = useRef(false)
   useEffect(() => {
     if (isPreview) return
@@ -1986,14 +2151,20 @@ export default function App() {
     // queue ('pause-if-pending') — it must wait for an explicit resume (or a
     // fresh user submit) instead of instantly restarting the stopped turn.
     if (queuePaused) return
-    const next = queuedMessages[0]
-    if (!next) return
+    const view = {
+      taskId: currentTaskRef.current,
+      tabId: activeTabIdRef.current,
+      cwd: cwdRef.current
+    }
+    const readyIdx = firstReadyQueueIndex(queuedMessages, view)
+    if (readyIdx < 0) return
+    const next = queuedMessages[readyIdx]
     drainingQueueRef.current = true
-    setQueuedMessages((prev) => prev.slice(1))
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id))
     void send(next.text, next.finalPrompt).finally(() => {
       drainingQueueRef.current = false
     })
-  }, [running, queuedMessages, send, queuePaused])
+  }, [running, queuedMessages, send, queuePaused, activeViewTaskId, activeTabId, cwd])
 
   const stop = useCallback(() => {
     setApprovalRequest(null)
@@ -2070,15 +2241,23 @@ export default function App() {
    * target conversation's draft whenever the view changes — the prompt state
    * read during the swap still belongs to the OLD view (the restore happens
    * inside the same effect run), which is exactly what stashing needs.
+   *
+   * The draft map/refs themselves are declared with the tab state above so tab
+   * close/bind cleanup can reach them.
    */
-  const draftsRef = useRef<Map<string, string>>(new Map())
-  const promptRef = useRef(prompt)
-  promptRef.current = prompt
-  /** The draft key the prompt currently belongs to ('' until first mount). */
-  const draftKeyRef = useRef('')
 
   useEffect(() => {
-    const key = activeViewTaskId ?? `__new__:${cwdRef.current ?? ''}`
+    // Drafts are keyed per TAB, not per project: two new-chat tabs in the same
+    // project must not share (and overwrite) each other's composer text. The
+    // Android WebView has one stable tab, so it keeps the pre-tabs
+    // project-scoped key (a new chat in the same project restores its draft).
+    const key =
+      activeViewTaskId ??
+      (isAndroidShell
+        ? `__new__:${cwdRef.current ?? ''}`
+        : activeTabId
+          ? `tab:${activeTabId}`
+          : `__new__:${cwdRef.current ?? ''}`)
     const prevKey = draftKeyRef.current
     draftKeyRef.current = key
     if (prevKey && prevKey !== key) {
@@ -2098,6 +2277,7 @@ export default function App() {
     // its conversation stays fully persisted in the main-process session store.
     // The prompt is NOT cleared here: the draft-sync effect stashes the old
     // view's text and restores the fresh-conversation draft for this project.
+    viewLoadSeqRef.current += 1
     setChatItems([])
     autoScrollRef.current = true
     setEvents([])
@@ -2136,6 +2316,9 @@ export default function App() {
     const pending = pendingRevert
     setPendingRevert(null)
     if (!pending || !cwd) return
+    // Revert rewrites the visible transcript/run state: any snapshot still in
+    // flight belongs to the pre-revert conversation and must not win.
+    viewLoadSeqRef.current += 1
     const { files, lastUserIdx, lastUserText } = pending
     // Update the UI immediately: drop the exchange and put the original message
     // back into the composer (unsent) so the user can edit it right away.
@@ -2182,13 +2365,17 @@ export default function App() {
           refreshProjects()
         } else {
           // Turn not found in the persisted state — remove the whole record.
+          demoteActiveTabToDraft()
           setViewTask(null)
+          setQueuedMessages((prev) => prev.filter((m) => m.taskId !== taskId))
           void window.AnyBuff.deleteTask(taskId)
           refreshProjects()
         }
       } else {
         // No user message to anchor the trim — remove the whole record.
+        demoteActiveTabToDraft()
         setViewTask(null)
+        setQueuedMessages((prev) => prev.filter((m) => m.taskId !== taskId))
         void window.AnyBuff.deleteTask(taskId)
         refreshProjects()
       }
@@ -2202,7 +2389,7 @@ export default function App() {
     }
     // Focus the composer so the restored message is immediately editable.
     setFocusSignal((n) => n + 1)
-  }, [pendingRevert, cwd, refreshProjects])
+  }, [pendingRevert, cwd, refreshProjects, demoteActiveTabToDraft])
 
   useEffect(() => {
     if (!pendingRevert) return
@@ -2767,9 +2954,13 @@ export default function App() {
   }, [searchQuery, chatItems, historyResults, fileCandidates, historyTask, cwd, projectName])
 
   const onOpenProject = useCallback(
-    async (path: string) => {
+    async (path: string, opts?: { keepViewRequest?: boolean }) => {
       if (path === cwd) return
       if (isPreview) return
+      // A task re-attach owns the sequence token itself; a standalone project
+      // switch invalidates any snapshot that is still in flight.
+      if (!opts?.keepViewRequest) viewLoadSeqRef.current += 1
+      const projectSeq = viewLoadSeqRef.current
       // Switching projects only changes the view — a running task keeps going
       // in the background and its history stays persisted in the main process.
       setCwd(path)
@@ -2791,14 +2982,21 @@ export default function App() {
       setViewTask(null)
       setProjectMenuOpen(false)
       const pname = (await window.AnyBuff.projectName(path)) as string
-      setProjectName(pname)
+      // A slower project-name lookup from a tab the user already left must not
+      // relabel the newer project.
+      if (viewLoadSeqRef.current === projectSeq) setProjectName(pname)
     },
     [cwd, setViewTask]
   )
 
   const onOpenTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord) => {
-      await onOpenProject(project.path)
+      // Every re-attach owns a token from the moment it starts: a slow project
+      // switch or snapshot from a tab the user already left must never
+      // overwrite the newer view.
+      const loadSeq = ++viewLoadSeqRef.current
+      await onOpenProject(project.path, { keepViewRequest: true })
+      if (viewLoadSeqRef.current !== loadSeq) return
       // Reset first: same-project switches skip onOpenProject's early return, so
       // a stale count from the previous task must never gate /compact below.
       setTokenUsage(null)
@@ -2829,6 +3027,7 @@ export default function App() {
           contextTokenCount?: number
           contextWindowTokensByMode?: Partial<Record<AgentMode, number>>
         }
+        if (viewLoadSeqRef.current !== loadSeq) return
         // #21 完成時間戳：歷史 transcript 以 updatedAt（完成）／createdAt（建立）補上 ts。
         const transcript = ((view.ok ? view.transcript ?? [] : []) as (ChatItem & { createdAt?: number; updatedAt?: number })[])
         const items = transcript.map((m) => {
@@ -2859,6 +3058,7 @@ export default function App() {
           setResumeInfo(null)
         }
       } catch (err) {
+        if (viewLoadSeqRef.current !== loadSeq) return
         // A malformed or legacy conversation must never white-screen the app:
         // surface the failure in the chat view so it stays navigable.
         console.error('[anybuff] failed to load conversation snapshot', task.id, err)
@@ -2871,6 +3071,217 @@ export default function App() {
     },
     [agentMode, onOpenProject, setViewTask]
   )
+
+  /**
+   * Switch the visible conversation to an existing tab. Task tabs reattach to
+   * the host session (transcript + live run status); draft tabs just reset the
+   * view. The host remains the single source of truth in both cases.
+   */
+  const activateWorkspaceTab = useCallback(
+    async (tab: WorkspaceTab) => {
+      if (!tab || tab.id === activeTabIdRef.current) return
+      setActiveTabId(tab.id)
+      // Mirror the selection immediately: batched close() calls in the same
+      // tick must see which tab is active, not the previous render's value.
+      activeTabIdRef.current = tab.id
+      if (tab.taskId) {
+        const project =
+          projectsRef.current.find((p) => p.path === tab.projectPath && p.tasks.some((t) => t.id === tab.taskId)) ??
+          projectsRef.current.find((p) => p.tasks.some((t) => t.id === tab.taskId))
+        const task = project?.tasks.find((t) => t.id === tab.taskId)
+        const projectForView: ProjectRecord | null =
+          project ??
+          (tab.projectPath ? { path: tab.projectPath, name: basenameOf(tab.projectPath), tasks: [] } : null)
+        if (!projectForView) return
+        // A task opened moments ago may not be in the refreshed sidebar list
+        // yet — getTaskView only needs the id, so a synthetic record is enough.
+        const taskForView: TaskRecord =
+          task ?? { id: tab.taskId, prompt: tab.title, createdAt: Date.now() }
+        await onOpenTask(projectForView, taskForView)
+        return
+      }
+      // Draft tab: move to its project first (if different), then blank the view.
+      if (tab.projectPath && tab.projectPath !== cwdRef.current) {
+        await onOpenProject(tab.projectPath)
+      }
+      // The user may have picked another tab while the project switch was in
+      // flight — never blank the view they are now looking at.
+      if (activeTabIdRef.current !== tab.id) return
+      newTask()
+    },
+    [newTask, onOpenProject, onOpenTask]
+  )
+
+  /**
+   * New-chat action: create a draft tab (for `projectPath`, else the current
+   * project) and reset the view. A run in another tab keeps going.
+   */
+  const newTab = useCallback(
+    (projectPath?: string) => {
+      const path = projectPath ?? cwdRef.current
+      if (!path && !isAndroidShell) return
+      // A per-project "+" must always create a fresh draft, even when an empty
+      // draft already exists for that project.
+      createDraftTab(path)
+      newTask()
+      if (path && path !== cwdRef.current) void onOpenProject(path)
+    },
+    [createDraftTab, isAndroidShell, newTask, onOpenProject]
+  )
+
+  /** Project picker / sidebar project click: reuse that project's draft tab or add one. */
+  const openProjectInNewTab = useCallback(
+    async (path: string) => {
+      // The current project is already on screen; its sidebar row only expands
+      // the task list (Sidebar enforces that), so never duplicate the view.
+      if (path === cwdRef.current) return
+      const existingDraft = findDraftTab(workspaceTabsRef.current, path)
+      if (existingDraft) {
+        setActiveTabId(existingDraft.id)
+        newTask()
+        await onOpenProject(path)
+        return
+      }
+      createDraftTab(path)
+      newTask()
+      await onOpenProject(path)
+    },
+    [createDraftTab, newTask, onOpenProject]
+  )
+
+  /**
+   * Sidebar / search entry point: focus the conversation's existing tab or
+   * create one, then let `onOpenTask` reload its host snapshot.
+   */
+  const openTaskInTab = useCallback(
+    async (project: ProjectRecord, task: TaskRecord) => {
+      if (isAndroidShell) {
+        // The WebView keeps one implicit tab; re-point it at the conversation
+        // instead of stacking tabs that the hidden titlebar cannot show.
+        setWorkspaceTabs([
+          {
+            id: MOBILE_TAB_ID,
+            taskId: task.id,
+            projectPath: project.path,
+            title: tabTitleFromPrompt(task.prompt, 'Untitled')
+          }
+        ])
+        setActiveTabId(MOBILE_TAB_ID)
+        await onOpenTask(project, task)
+        return
+      }
+      const existing = workspaceTabsRef.current.find((t) => t.taskId === task.id)
+      if (existing) {
+        if (existing.id !== activeTabIdRef.current) setActiveTabId(existing.id)
+        if (existing.projectPath !== project.path) {
+          setWorkspaceTabs((prev) =>
+            prev.map((t) => (t.id === existing.id ? { ...t, projectPath: project.path } : t))
+          )
+        }
+        await onOpenTask(project, task)
+        return
+      }
+      const id = makeTabId()
+      setWorkspaceTabs((prev) => [
+        ...prev,
+        {
+          id,
+          taskId: task.id,
+          projectPath: project.path,
+          title: tabTitleFromPrompt(task.prompt, 'Untitled')
+        }
+      ])
+      setActiveTabId(id)
+      await onOpenTask(project, task)
+    },
+    [isAndroidShell, onOpenTask]
+  )
+
+  /** Close a tab (run, if any, keeps going; its task stays in the sidebar). */
+  const closeWorkspaceTab = useCallback(
+    (tabId: string) => {
+      const tabsNow = workspaceTabsRef.current
+      const idx = tabsNow.findIndex((t) => t.id === tabId)
+      if (idx < 0) return
+      const closed = tabsNow[idx]
+      discardTabDraft(closed)
+      if (!closed.taskId) {
+        // Closing a draft drops its queued messages: there is no conversation
+        // left for them to dispatch into.
+        setQueuedMessages((prev) =>
+          prev.filter((m) => !(m.taskId == null && m.tabId === closed.id))
+        )
+      }
+      const remaining = tabsNow.filter((t) => t.id !== tabId)
+      // Keep the ref in lockstep with this synchronous removal: a second close
+      // fired in the same tick (middle-click bursts, scripted batches) would
+      // otherwise read the pre-close list and clobber this removal on render.
+      workspaceTabsRef.current = remaining
+      setWorkspaceTabs(remaining)
+      if (activeTabIdRef.current !== tabId) return
+      // Prevent the draft-sync effect from stashing the closed tab's text back
+      // into the map after this render.
+      draftKeyRef.current = ''
+      setPrompt('')
+      const next = neighborTabAfterClose(tabsNow, tabId)
+      if (next) {
+        void activateWorkspaceTab(next)
+        focusWorkspaceTab(next.id)
+      } else {
+        newTab()
+      }
+    },
+    [activateWorkspaceTab, discardTabDraft, focusWorkspaceTab, newTab]
+  )
+
+  // Browser-style tab shortcuts: Ctrl/Cmd+T (new), Ctrl/Cmd+W (close),
+  // Ctrl+Tab / Ctrl+Shift+Tab (cycle). Ignored while a pure modifier is held.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      const key = e.key.toLowerCase()
+      if (key === 't' && !e.shiftKey) {
+        e.preventDefault()
+        newTab()
+        return
+      }
+      if (key === 'w' && !e.shiftKey) {
+        e.preventDefault()
+        if (activeTabIdRef.current) closeWorkspaceTab(activeTabIdRef.current)
+        return
+      }
+      if (e.key === 'Tab') {
+        const tabsNow = workspaceTabsRef.current
+        if (tabsNow.length < 2) return
+        e.preventDefault()
+        const currentIdx = tabsNow.findIndex((t) => t.id === activeTabIdRef.current)
+        const step = e.shiftKey ? -1 : 1
+        const next = tabsNow[(currentIdx + step + tabsNow.length) % tabsNow.length]
+        if (next) void activateWorkspaceTab(next)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [activateWorkspaceTab, closeWorkspaceTab, newTab])
+
+  // Keep tab labels in lockstep with host records (rename, refreshed sidebar).
+  useEffect(() => {
+    setWorkspaceTabs((prev) => {
+      let changed = false
+      const next = prev.map((tab) => {
+        if (!tab.taskId) return tab
+        const project = projects.find((p) => p.tasks.some((t) => t.id === tab.taskId))
+        if (!project) return tab
+        const task = project.tasks.find((t) => t.id === tab.taskId)
+        if (!task) return tab
+        const title = tabTitleFromPrompt(task.prompt, tab.title)
+        if (title === tab.title && project.path === tab.projectPath) return tab
+        changed = true
+        return { ...tab, title, projectPath: project.path }
+      })
+      return changed ? next : prev
+    })
+  }, [projects])
 
   const onRenameTask = useCallback(
     async (project: ProjectRecord, task: TaskRecord, newPrompt: string) => {
@@ -2886,6 +3297,11 @@ export default function App() {
             tasks: p.tasks.map((t) => (t.id === task.id ? { ...t, prompt: newPrompt } : t))
           }
         })
+      )
+      setWorkspaceTabs((prev) =>
+        prev.map((t) =>
+          t.taskId === task.id ? { ...t, title: tabTitleFromPrompt(newPrompt, t.title) } : t
+        )
       )
       if (historyTask?.id === task.id) {
         setHistoryTask((prev) => (prev ? { ...prev, prompt: newPrompt } : null))
@@ -2913,11 +3329,18 @@ export default function App() {
         })
       )
       setTaskCosts((prev) => removeTaskCost(prev, task.id))
-      if (historyTask?.id === task.id || currentTaskRef.current === task.id) {
+      // Parked messages for a deleted conversation can never dispatch.
+      setQueuedMessages((prev) => prev.filter((m) => m.taskId !== task.id))
+      const openTab = workspaceTabsRef.current.find((t) => t.taskId === task.id)
+      if (openTab) {
+        // Closing the tab picks the neighbouring tab (or a fresh draft); the
+        // deleted conversation can never be re-opened from the strip.
+        closeWorkspaceTab(openTab.id)
+      } else if (historyTask?.id === task.id || currentTaskRef.current === task.id) {
         newTask()
       }
     },
-    [historyTask, newTask]
+    [closeWorkspaceTab, historyTask, newTask]
   )
 
   /** #8 對話匯出：把整段對話(含工具輸入與結果)序列化成 Markdown 檔存下來。 */
@@ -3003,12 +3426,42 @@ export default function App() {
         }
       }
       setProjects((prev) => prev.filter((p) => p.path !== project.path))
-      const isCurrentProjectTask = historyTask && project.tasks.some((t) => t.id === historyTask.id)
-      if (isCurrentProjectTask || cwd === project.path) {
-        newTask()
+      // Drop parked messages for the project's conversations (and prompts
+      // baked against its cwd) before their tasks vanish.
+      const removedTaskIds = new Set(project.tasks.map((t) => t.id))
+      setQueuedMessages((prev) =>
+        prev.filter(
+          (m) => m.cwd !== project.path && !(m.taskId && removedTaskIds.has(m.taskId))
+        )
+      )
+      const tabsBefore = workspaceTabsRef.current
+      const activeTab = tabsBefore.find((t) => t.id === activeTabIdRef.current)
+      const activeWasRemoved = Boolean(activeTab && activeTab.projectPath === project.path)
+      const remainingTabs = tabsBefore.filter((t) => t.projectPath !== project.path)
+      // Keep the ref in lockstep so an activation scheduled right below (and
+      // any close fired before the render) sees the post-removal list.
+      workspaceTabsRef.current = remainingTabs
+      setWorkspaceTabs(remainingTabs)
+      if (activeWasRemoved) {
+        const next = neighborTabAfterClose(tabsBefore, activeTabIdRef.current ?? '')
+        if (next) {
+          void activateWorkspaceTab(next)
+          focusWorkspaceTab(next.id)
+        } else {
+          const fallback = projectsRef.current.find((p) => p.path !== project.path)
+          if (fallback) {
+            newTab(fallback.path)
+          } else {
+            // Last project removed: park on the welcome screen instead of
+            // leaving a draft pointed at a deleted folder.
+            createDraftTab(null)
+            setCwd(null)
+            newTask()
+          }
+        }
       }
     },
-    [cwd, historyTask, newTask]
+    [activateWorkspaceTab, createDraftTab, focusWorkspaceTab, newTab, newTask]
   )
 
   const onSearchJump = useCallback(
@@ -3039,18 +3492,28 @@ export default function App() {
         const targetTask = targetProject?.tasks.find((t) => t.id === r.taskId)
         if (targetProject && targetTask) {
           setPendingJump({ taskId: r.taskId, index: r.index })
-          await onOpenTask(targetProject, targetTask)
+          await openTaskInTab(targetProject, targetTask)
           return
         }
       }
 
       setPendingJump({ index: r.index })
     },
-    [cwd, projects, onOpenTask, openPreviewByPath]
+    [cwd, projects, openTaskInTab, openPreviewByPath]
   )
 
   // Safe jump scrolling when loading a historical task from search — the
   // effect itself lives below, next to `jumpToRow` (which needs `chatNodes`).
+
+  // Queued messages whose own conversation is currently on screen. The drain
+  // effect and the queue panel both use this: an item parked for another tab
+  // must never dispatch into (or look sendable from) the visible one.
+  const readyQueueIds = useMemo(() => {
+    const view = { taskId: activeViewTaskId, tabId: activeTabId, cwd }
+    return new Set(
+      queuedMessages.filter((m) => queueTargetMatchesView(m, view)).map((m) => m.id)
+    )
+  }, [queuedMessages, activeViewTaskId, activeTabId, cwd])
 
   // View-scoped run state: only the conversation being VIEWED shows streaming
   // cursors, stop buttons, and activity animations — background runs elsewhere
@@ -3185,46 +3648,103 @@ export default function App() {
       <header className="titlebar">
         <div className="titlebar-left">
           <AppIcon size={16} />
-          <nav className="titlebar-menus">
-            <div className="titlebar-menu">
-              <button className="titlebar-menu-btn">File</button>
-              <div className="titlebar-menu-dropdown">
-                <button className="menu-item" onClick={newTask}>New Task</button>
-                <button className="menu-item" onClick={() => void selectFolder()}>Open Folder…</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={() => setShowSettings(true)}>Settings</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={() => window.AnyBuff.windowClose()}>Exit</button>
-              </div>
-            </div>
-            <div className="titlebar-menu">
-              <button className="titlebar-menu-btn">Edit</button>
-              <div className="titlebar-menu-dropdown">
-                <button className="menu-item" onClick={() => setSearchOpen(true)}>Find…</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={() => document.execCommand('undo')}>Undo</button>
-                <button className="menu-item" onClick={() => document.execCommand('redo')}>Redo</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={() => document.execCommand('cut')}>Cut</button>
-                <button className="menu-item" onClick={() => document.execCommand('copy')}>Copy</button>
-                <button className="menu-item" onClick={() => void navigator.clipboard?.readText().then((t) => document.execCommand('insertText', false, t)).catch(() => {}) }>Paste</button>
-                <button className="menu-item" onClick={() => document.execCommand('selectAll')}>Select All</button>
-              </div>
-            </div>
-            <div className="titlebar-menu">
-              <button className="titlebar-menu-btn">View</button>
-              <div className="titlebar-menu-dropdown">
-                <button className="menu-item" onClick={reloadPage}>Reload</button>
-                <button className="menu-item" onClick={forceReloadPage}>Force Reload</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={resetZoom}>Actual Size</button>
-                <button className="menu-item" onClick={zoomIn}>Zoom In</button>
-                <button className="menu-item" onClick={zoomOut}>Zoom Out</button>
-                <div className="menu-sep" />
-                <button className="menu-item" onClick={toggleFullScreen}>Toggle Full Screen</button>
-              </div>
-            </div>
-          </nav>
+          <div
+            ref={tabStripRef}
+            className="titlebar-tabs"
+            role="tablist"
+            aria-label="Open conversations"
+            onWheel={(e) => {
+              // Hidden scrollbar: map the wheel to horizontal scrolling so a
+              // long strip stays reachable with the mouse too.
+              const el = e.currentTarget
+              if (el.scrollWidth <= el.clientWidth) return
+              el.scrollLeft += e.deltaY
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return
+              const tabsNow = workspaceTabsRef.current
+              if (tabsNow.length === 0) return
+              e.preventDefault()
+              const currentIdx = tabsNow.findIndex((t) => t.id === activeTabIdRef.current)
+              const nextIdx =
+                e.key === 'Home'
+                  ? 0
+                  : e.key === 'End'
+                    ? tabsNow.length - 1
+                    : (currentIdx + (e.key === 'ArrowRight' ? 1 : -1) + tabsNow.length) % tabsNow.length
+              const next = tabsNow[nextIdx]
+              if (!next) return
+              void activateWorkspaceTab(next)
+              focusWorkspaceTab(next.id)
+            }}
+          >
+            {workspaceTabs.map((tab) => {
+              const isActive = tab.id === activeTabId
+              const isRunningTab = Boolean(tab.taskId && runningTaskId === tab.taskId)
+              return (
+                <div
+                  key={tab.id}
+                  data-tab-id={tab.id}
+                  role="tab"
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  className={`titlebar-tab${isActive ? ' active' : ''}${isRunningTab ? ' running' : ''}`}
+                  title={`${tab.title}${tab.projectPath ? `\n${tab.projectPath}` : ''}`}
+                  onClick={() => void activateWorkspaceTab(tab)}
+                  onMouseDown={(e) => {
+                    // Suppress Windows middle-click autoscroll; the aux click
+                    // below is the actual close action.
+                    if (e.button === 1) e.preventDefault()
+                  }}
+                  onAuxClick={(e) => {
+                    // Middle-click closes, like a browser tab.
+                    if (e.button === 1) {
+                      e.preventDefault()
+                      closeWorkspaceTab(tab.id)
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      void activateWorkspaceTab(tab)
+                    }
+                  }}
+                >
+                  {isRunningTab && (
+                    <span className="spinner-ring titlebar-tab-spinner" role="status" aria-label="Running" />
+                  )}
+                  <span className="titlebar-tab-title">{tab.title || 'New chat'}</span>
+                  <button
+                    type="button"
+                    className="titlebar-tab-close"
+                    title="Close tab"
+                    aria-label={`Close ${tab.title || 'tab'}`}
+                    onKeyDown={(e) => {
+                      // Enter/Space belong to the close button; without this
+                      // they would bubble to the tab and re-activate it first.
+                      if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeWorkspaceTab(tab.id)
+                    }}
+                  >
+                    <XIcon size={11} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            className="titlebar-new-tab"
+            onClick={() => newTab()}
+            disabled={!cwd}
+            title={cwd ? 'New tab (Ctrl+T)' : 'Select a project folder first'}
+            aria-label="New tab"
+          >
+            <PlusIcon size={14} />
+          </button>
         </div>
         <div className="titlebar-drag-region" />
         {!isPreview && (
@@ -3309,7 +3829,7 @@ export default function App() {
             <Sidebar
               open={leftOpen}
               onClose={() => setLeftOpen(false)}
-              onNewTask={newTask}
+              onNewTask={newTab}
               searchOpen={searchOpen}
               onToggleSearch={() => setSearchOpen((v) => !v)}
               searchQuery={searchQuery}
@@ -3319,8 +3839,8 @@ export default function App() {
               projects={projects}
               runningTaskId={runningTaskId}
               onNewProject={() => void selectFolder()}
-              onOpenProject={(p) => void onOpenProject(p)}
-              onOpenTask={(p, t) => void onOpenTask(p, t)}
+              onOpenProject={(p) => void openProjectInNewTab(p)}
+              onOpenTask={(p, t) => void openTaskInTab(p, t)}
               onRenameTask={onRenameTask}
               onExportTask={onExportTask}
               onDeleteTask={onDeleteTask}
@@ -3385,7 +3905,7 @@ export default function App() {
                             className={`project-menu-item${p.path === cwd ? ' current' : ''}`}
                             onClick={() => {
                               setProjectMenuOpen(false)
-                              if (p.path !== cwd) void onOpenProject(p.path)
+                              if (p.path !== cwd) void openProjectInNewTab(p.path)
                             }}
                             title={p.path}
                           >
@@ -3699,6 +4219,7 @@ export default function App() {
 
                   <MessageQueuePanel
                     items={queuedMessages}
+                    readyIds={readyQueueIds}
                     paused={queuePaused}
                     onResume={() => resumeQueueDispatch()}
                     onEdit={(id, text) => void queueEdit(id, text)}

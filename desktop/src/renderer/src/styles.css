@@ -1016,98 +1016,137 @@ textarea {
 .titlebar-left {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
+  gap: 8px;
+  padding: 0 4px 0 8px;
   -webkit-app-region: no-drag;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 150px);
+}
+
+/* ─── Titlebar tabs (replace the File/Edit/View menus) ─── */
+.titlebar-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.titlebar-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.titlebar-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  min-width: 64px;
+  max-width: 190px;
+  padding: 0 4px 0 10px;
+  flex: 0 1 180px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.titlebar-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-0);
+}
+
+.titlebar-tab.active {
+  background: var(--bg-1);
+  border-color: var(--border);
+  color: var(--text-0);
+}
+
+.titlebar-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.titlebar-tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-tab-spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.5px;
   flex-shrink: 0;
 }
 
-.titlebar-menus {
+.titlebar-tab-close {
   display: flex;
   align-items: center;
-  gap: 0;
-}
-
-.titlebar-menu {
-  position: relative;
-}
-
-.titlebar-menu-btn {
-  background: none;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
   border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+}
+
+.titlebar-tab:hover .titlebar-tab-close,
+.titlebar-tab.active .titlebar-tab-close,
+.titlebar-tab:focus-within .titlebar-tab-close {
+  opacity: 1;
+}
+
+.titlebar-tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-0);
+}
+
+.titlebar-new-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-1);
-  font-size: 12.5px;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.titlebar-menu-btn:hover {
+.titlebar-new-tab:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-0);
 }
 
-.titlebar-menu-dropdown {
-  display: none;
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  min-width: 180px;
-  background: var(--bg-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px var(--shadow);
-  padding: 4px;
-  z-index: 200;
-}
-
-.titlebar-menu:hover .titlebar-menu-dropdown {
-  display: block;
-}
-
-.menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  color: var(--text-0);
-  font-size: 13px;
-  padding: 6px 12px;
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.menu-item:hover {
-  background: var(--bg-hover);
-}
-
-.menu-sep {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--border);
-}
-
-.menu-shortcut {
-  margin-left: auto;
-  padding-left: 24px;
-  font-size: 11.5px;
-  color: var(--text-2);
-}
-
-.menu-item:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.menu-item:disabled:hover {
-  background: transparent;
+.titlebar-new-tab:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .titlebar-drag-region {
   flex: 1;
+  min-width: 24px;
   height: 100%;
   -webkit-app-region: drag;
 }
@@ -2248,17 +2287,22 @@ textarea {
 .process-label {
   font-family: var(--font-mono);
   font-size: 12.5px;
-  color: var(--text-0);
+  color: var(--text-1);
+  transition: color var(--transition-base);
+}
+
+.process-head:hover .process-label {
+  /* Same hover step as the thinking/tool rows inside the group. */
+  color: color-mix(in srgb, var(--text-0) 72%, var(--text-1));
 }
 
 /* Working state is carried by the wording (`Working` vs `Worked`) and the
-   three-dot bounce — not by colour. An accent-tinted header read like an alert
-   and pulled the eye away from the prose, so the label and its dots stay in the
-   primary text colour. --text-0 is #090d16 (black) on light themes; on dark
-   themes it is white, because literal black on a near-black panel is unreadable
-   — "black" here means "primary text", not "always #000". */
+   three-dot bounce — not by colour. The label and its dots share the muted
+   process-card ink (--text-1: deep gray-black on light themes, silver on dark)
+   so the group header reads as the same layer as the thinking/tool rows
+   inside it, not as prose. */
 .process-group.live .thinking-dots span {
-  background: var(--text-0);
+  background: var(--text-1);
 }
 
 /* The `Working` trailing ellipsis is the same CSS three-dot bounce as the stream
@@ -2318,34 +2362,35 @@ textarea {
   cursor: pointer;
   user-select: none;
   font-size: 12.5px;
-  color: var(--text-0);
-}
-
-:root[data-theme='light'] .thought-head {
-  color: #000000;
+  /* Process cards are secondary chrome, not prose: --text-1 keeps the icon and
+     label one step softer than primary text in both themes (deep gray-black on
+     light themes, silver on dark) instead of the old pure-#000000 overrides.
+     Hovering the row darkens/brightens it a step so it still reads as the
+     interactive element. */
+  color: var(--text-1);
 }
 
 .thought-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-0);
+  color: var(--text-1);
   line-height: 1;
-}
-
-:root[data-theme='light'] .thought-icon {
-  color: #000000;
+  transition: color var(--transition-base);
 }
 
 .thought-label {
   flex: 1;
   font-weight: 500;
   font-size: 12.5px;
-  color: var(--text-0);
+  color: var(--text-1);
+  transition: color var(--transition-base);
 }
 
-:root[data-theme='light'] .thought-label {
-  color: #000000;
+.thought-head:hover .thought-icon,
+.thought-head:hover .thought-label {
+  /* Softer than snapping to --text-0: a hover step, not the old near-black. */
+  color: color-mix(in srgb, var(--text-0) 72%, var(--text-1));
 }
 
 .thought-content {
@@ -2413,7 +2458,8 @@ textarea {
 .tool-name {
   font-family: var(--font-mono);
   font-size: 12.5px;
-  color: var(--text-0);
+  color: var(--text-1);
+  transition: color var(--transition-base);
 }
 
 /* #12 工具具名卡片：語意化標題 icon、常駐摘要 chips、blocked 標記 */
@@ -2424,19 +2470,17 @@ textarea {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  opacity: 0.85;
-  /* 單色 SVG：與 thinking 卡片的 thought-icon 一致，隨主題黑白變色 */
-  color: var(--text-0);
+  /* 單色 SVG：與 thinking 卡片的 thought-icon 一致，比主文字淡一階
+     （淺色主題為深灰黑、深色主題為柔和亮灰），hover 再提升一階對比。 */
+  color: var(--text-1);
   line-height: 1;
-  transition: opacity var(--transition-base);
+  transition: color var(--transition-base);
 }
 
-:root[data-theme='light'] .tool-icon {
-  color: #000000;
-}
-
+.tool-card-head:hover .tool-name,
 .tool-card-head:hover .tool-icon {
-  opacity: 1;
+  /* Softer than snapping to --text-0: a hover step, not the old near-black. */
+  color: color-mix(in srgb, var(--text-0) 72%, var(--text-1));
 }
 
 .tool-result-count {
@@ -2550,6 +2594,15 @@ textarea {
   margin: 0 var(--space-2);
 }
 
+/* The docked panel above the composer owns the outer rhythm: only the card's
+   vertical padding is dropped so the dock's own 8px inset is the whole gap
+   above the title and below the last checklist item. Horizontal padding and
+   margin stay, keeping the checklist aligned exactly where it was. */
+.todo-panel-dock .todo-card {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .todo-card.collapsed .todo-header {
   margin-bottom: 0;
 }
@@ -2646,14 +2699,19 @@ textarea {
 .todo-panel-dock {
   margin: 0 max(var(--space-6), calc((100% - 760px) / 2));
   border-top: 1px solid var(--border);
-  padding: var(--space-3) var(--space-4);
+  /* Compact dock: 8px top/bottom instead of the old 12px dock padding stacked
+     on the card's 8px, which put ~20px of dead space on each side. */
+  padding: var(--space-2) var(--space-4);
   background: var(--bg-elevated, var(--bg-1));
   animation: slideUp 0.2s ease-out;
   transition: padding 0.2s ease;
 }
 
+/* Collapsed keeps the header anchored at the same 10px top inset as the
+   expanded panel (8px dock + 2px header) — only the bottom tightens, so the
+   panel collapses downward without the title jumping. */
 .todo-panel-dock:has(.todo-card.collapsed) {
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-1);
 }
 
 @keyframes slideUp {
@@ -2906,6 +2964,22 @@ textarea {
   border-color: rgba(122, 155, 240, 0.45);
 }
 
+.queue-item.waiting {
+  opacity: 0.68;
+}
+
+.queue-route-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border-0);
+  border-radius: 8px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
 .queue-order {
   flex-shrink: 0;
   font-size: 10.5px;
@@ -2937,6 +3011,15 @@ textarea {
 .queue-text:hover {
   background: rgba(122, 155, 240, 0.08);
   border-radius: 4px;
+}
+
+.queue-text:disabled {
+  cursor: default;
+  color: var(--text-2);
+}
+
+.queue-text:disabled:hover {
+  background: transparent;
 }
 
 .queue-edit {
@@ -3705,6 +3788,16 @@ select option {
 .mini-btn:hover {
   background: var(--bg-hover);
   color: var(--text-0);
+}
+
+.mini-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mini-btn:disabled:hover {
+  background: none;
+  color: var(--text-2);
 }
 
 /* ─── Floating file preview modal (gap #14) ─────────────────────── */

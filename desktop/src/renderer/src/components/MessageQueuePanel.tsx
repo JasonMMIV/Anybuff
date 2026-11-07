@@ -19,10 +19,16 @@ export interface QueuedMessage {
   /** Snapshot of the attachments this message was queued with — kept so an
    * inline edit re-bakes them without re-attaching. */
   attachments?: Attachment[]
+  /** Conversation (or draft tab) and project this message belongs to. */
+  taskId?: string | null
+  tabId?: string | null
+  cwd?: string
 }
 
 interface MessageQueuePanelProps {
   items: QueuedMessage[]
+  /** Ids whose own conversation is currently on screen (safe to auto-send). */
+  readyIds: ReadonlySet<string>
   /** ADR-30: pause-if-pending after a user interrupt requeued steering leftovers —
    *  nothing auto-dispatches until the user resumes (or submits a fresh run). */
   paused?: boolean
@@ -33,7 +39,7 @@ interface MessageQueuePanelProps {
   onSendNext: (id: string) => void
 }
 
-export default function MessageQueuePanel({ items, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
+export default function MessageQueuePanel({ items, readyIds, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -49,13 +55,21 @@ export default function MessageQueuePanel({ items, paused, onResume, onEdit, onD
   }, [editingId])
 
   if (items.length === 0) return null
+  const waitingCount = items.filter((item) => !readyIds.has(item.id)).length
+  const nextReadyIndex = items.findIndex((item) => readyIds.has(item.id))
 
   return (
     <div className="queue-panel">
       <button type="button" className="queue-panel-header" onClick={() => setCollapsed((c) => !c)} title={collapsed ? 'Expand' : 'Collapse'}>
         <BoltIcon size={12} />
         <span>{items.length} queued{paused ? ' (paused)' : ''}</span>
-        <span className="queue-panel-hint">{paused ? 'paused after stop — nothing sends until you resume' : 'sent automatically when the current turn finishes'}</span>
+        <span className="queue-panel-hint">
+          {paused
+            ? 'paused after stop — nothing sends until you resume'
+            : waitingCount > 0
+              ? `sent when its conversation is visible — ${waitingCount} waiting for another chat`
+              : 'sent automatically when the current turn finishes'}
+        </span>
         <ChevronDownIcon size={12} className={`queue-chevron${collapsed ? '' : ' open'}`} />
       </button>
 
@@ -78,74 +92,123 @@ export default function MessageQueuePanel({ items, paused, onResume, onEdit, onD
 
       {!collapsed && items.length > 0 && (
         <div className="queue-items">
-          {items.map((item, i) => (
-            <div key={item.id} className={`queue-item${i === 0 ? ' next' : ''}`}>
-              <span className="queue-order" title={i === 0 ? 'Sends next' : `Position ${i + 1}`}>
-                {i === 0 ? 'next' : i + 1}
-              </span>
-
-              {editingId === item.id ? (
-                <textarea
-                  ref={editRef}
-                  className="queue-edit"
-                  value={draft}
-                  rows={2}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.nativeEvent.isComposing || e.keyCode === 229) return
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      const text = draft.trim()
-                      if (text) onEdit(item.id, text)
-                      setEditingId(null)
-                    }
-                    if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setEditingId(null)
-                    }
-                  }}
-                  onBlur={() => {
-                    const text = draft.trim()
-                    if (text && text !== item.text) onEdit(item.id, text)
-                    setEditingId(null)
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  className="queue-text"
-                  title="Click to edit (note: attachments captured at enqueue time are kept)"
-                  onClick={() => {
-                    setDraft(item.text)
-                    setEditingId(item.id)
-                  }}
+          {items.map((item, i) => {
+            const ready = readyIds.has(item.id)
+            const isNext = i === nextReadyIndex
+            return (
+              <div
+                key={item.id}
+                className={`queue-item${isNext ? ' next' : ''}${ready ? '' : ' waiting'}`}
+              >
+                <span
+                  className="queue-order"
+                  title={
+                    isNext
+                      ? 'Sends next'
+                      : ready
+                        ? `Position ${i + 1}`
+                        : 'Waiting for its conversation'
+                  }
                 >
-                  {item.text}
-                </button>
-              )}
+                  {isNext ? 'next' : i + 1}
+                </span>
 
-              <div className="queue-actions">
-                {i > 0 && (
-                  <button type="button" className="mini-btn" title="Promote to next" onClick={() => onSendNext(item.id)}>
-                    <ArrowUpIcon size={11} />
+                {editingId === item.id ? (
+                  <textarea
+                    ref={editRef}
+                    className="queue-edit"
+                    value={draft}
+                    rows={2}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        const text = draft.trim()
+                        if (text) onEdit(item.id, text)
+                        setEditingId(null)
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingId(null)
+                      }
+                    }}
+                    onBlur={() => {
+                      const text = draft.trim()
+                      if (text && text !== item.text) onEdit(item.id, text)
+                      setEditingId(null)
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="queue-text"
+                    disabled={!ready}
+                    title={
+                      ready
+                        ? 'Click to edit (note: attachments captured at enqueue time are kept)'
+                        : 'Waiting for its conversation to be visible before it can send'
+                    }
+                    onClick={() => {
+                      if (!ready) return
+                      setDraft(item.text)
+                      setEditingId(item.id)
+                    }}
+                  >
+                    {item.text}
                   </button>
                 )}
-                {i > 0 && (
-                  <button type="button" className="mini-btn" title="Move up" onClick={() => onMove(item.id, -1)}>
-                    ↑
-                  </button>
+
+                {!ready && (
+                  <span
+                    className="queue-route-badge"
+                    title="This message belongs to another conversation and sends there"
+                  >
+                    other chat
+                  </span>
                 )}
-                {i < items.length - 1 && (
-                  <button type="button" className="mini-btn" title="Move down" onClick={() => onMove(item.id, 1)}>
-                    ↓
+
+                <div className="queue-actions">
+                  {i > 0 && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title="Promote to next"
+                      disabled={!ready}
+                      onClick={() => onSendNext(item.id)}
+                    >
+                      <ArrowUpIcon size={11} />
+                    </button>
+                  )}
+                  {i > 0 && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title="Move up"
+                      disabled={!ready}
+                      onClick={() => onMove(item.id, -1)}
+                    >
+                      ↑
+                    </button>
+                  )}
+                  {i < items.length - 1 && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title="Move down"
+                      disabled={!ready}
+                      onClick={() => onMove(item.id, 1)}
+                    >
+                      ↓
+                    </button>
+                  )}
+                  <button type="button" className="mini-btn danger" title="Remove from queue" onClick={() => onDelete(item.id)}>
+                    <XIcon size={11} />
                   </button>
-                )}
-                <button type="button" className="mini-btn danger" title="Remove from queue" onClick={() => onDelete(item.id)}>
-                  <XIcon size={11} />
-                </button>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

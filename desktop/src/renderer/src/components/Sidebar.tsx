@@ -42,7 +42,7 @@ interface SidebarProps {
   open: boolean
   onClose?: () => void
   // nav
-  onNewTask: () => void
+  onNewTask: (projectPath?: string) => void
   searchOpen: boolean
   onToggleSearch: () => void
   searchQuery: string
@@ -236,10 +236,10 @@ export default function Sidebar(props: SidebarProps) {
                 className="project-row"
                 onClick={() => {
                   if (isOpen) setExpandedProject(null)
-                  else {
-                    setExpandedProject(p.path)
-                    props.onOpenProject(p.path)
-                  }
+                  else setExpandedProject(p.path)
+                  // Expanding the CURRENT project's task list must not reset
+                  // the conversation being viewed; other projects switch views.
+                  if (!isCurrent) props.onOpenProject(p.path)
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -259,8 +259,9 @@ export default function Sidebar(props: SidebarProps) {
                   title="New task"
                   onClick={(e) => {
                     e.stopPropagation()
-                    props.onOpenProject(p.path)
-                    props.onNewTask()
+                    // One action owns both parts: open a fresh draft in that
+                    // project (App knows the current cwd/tab state).
+                    props.onNewTask(p.path)
                     props.onClose?.()
                   }}
                 >
