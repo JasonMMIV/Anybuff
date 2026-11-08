@@ -10,9 +10,10 @@
 
 import { describe, test, expect } from 'bun:test'
 import {
+  canSteerQueuedMessage,
   canSteerRunningTurn,
   leftoverRequeueItems,
-  type SteerGateInput
+  type SteerGateInput,
 } from '../src/renderer/src/utils/send-routing'
 
 const base: SteerGateInput = {
@@ -61,6 +62,47 @@ describe('canSteerRunningTurn (ADR-30 send routing)', () => {
 
   test('a shell without the sendNow channel (browser preview / old preload) falls back', () => {
     expect(canSteerRunningTurn({ ...base, hasSendNowApi: false })).toBe(false)
+  })
+})
+
+describe('canSteerQueuedMessage (ADR-30 queue Send now)', () => {
+  const queued = {
+    text: 'try the blue theme instead',
+    finalPrompt: 'try the blue theme instead',
+    attachmentCount: 0,
+    hasSendNowApi: true,
+  }
+
+  test('plain queued text can be injected into the running turn', () => {
+    expect(canSteerQueuedMessage(queued)).toBe(true)
+  })
+
+  test('a baked finalPrompt (files, skills, slash or bash context) is not steerable', () => {
+    expect(
+      canSteerQueuedMessage({
+        ...queued,
+        finalPrompt: 'try the blue theme instead\n\n<file path="x">…</file>',
+      })
+    ).toBe(false)
+  })
+
+  test('attachments are not steerable', () => {
+    expect(canSteerQueuedMessage({ ...queued, attachmentCount: 1 })).toBe(false)
+  })
+
+  test('slash and bash drafts are not steerable', () => {
+    expect(canSteerQueuedMessage({ ...queued, text: '/review', finalPrompt: '/review' })).toBe(false)
+    expect(canSteerQueuedMessage({ ...queued, text: '!bun test', finalPrompt: '!bun test' })).toBe(
+      false
+    )
+  })
+
+  test('an empty draft is not steerable', () => {
+    expect(canSteerQueuedMessage({ ...queued, text: '   ', finalPrompt: '   ' })).toBe(false)
+  })
+
+  test('a shell without sendNow cannot steer a queued message', () => {
+    expect(canSteerQueuedMessage({ ...queued, hasSendNowApi: false })).toBe(false)
   })
 })
 

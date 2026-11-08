@@ -59,7 +59,8 @@ interface ComposerProps {
   stopping?: boolean
   /** ADR-30: this conversation's running turn can take a plain-text "Send
    *  now" steer (no attachments/no slash/no bash draft) — shows the additive
-   *  Send now button next to the queue button. */
+   *  Send now button next to the queue button. It stays visible but disabled
+   *  while the draft is empty. */
   steerable?: boolean
   disabled: boolean
   attachments: Attachment[]
@@ -743,7 +744,7 @@ export default function Composer({ ref, ...props }: ComposerProps & { ref?: Ref<
               // the execution queue while a run is in flight (#2 執行中訊息佇列).
               // Ctrl/Cmd+Enter is the explicit "Send now" twin — offered only
               // when the running turn can actually take the steer.
-              if (steerable && !disabled && onSendNow && (e.metaKey || e.ctrlKey)) {
+              if (steerable && prompt.trim() && !disabled && onSendNow && (e.metaKey || e.ctrlKey)) {
                 onSendNow()
                 return
               }
@@ -850,7 +851,12 @@ export default function Composer({ ref, ...props }: ComposerProps & { ref?: Ref<
                 className="btn send-btn send-now-btn"
                 onClick={onSendNow}
                 disabled={!prompt.trim()}
-                title={`Send now — inject into the running task (${shortcutLabel})`}
+                aria-label="Send now"
+                title={
+                  prompt.trim()
+                    ? `Send now — inject into the running task (${shortcutLabel})`
+                    : `Type a message to send now (${shortcutLabel})`
+                }
               >
                 <ArrowUpIcon size={14} />
               </button>

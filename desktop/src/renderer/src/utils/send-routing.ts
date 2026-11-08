@@ -48,6 +48,36 @@ export function canSteerRunningTurn(input: SteerGateInput): boolean {
   return input.hasSendNowApi
 }
 
+/** Gate for injecting an already queued message into the running turn. */
+export interface QueuedSteerGateInput {
+  /** What the user typed in the queued card. */
+  text: string
+  /** The fully baked prompt stored with the queue entry. */
+  finalPrompt: string
+  /** Attachments captured at enqueue time. */
+  attachmentCount: number
+  /** Whether the shell exposes the sendNow channel. */
+  hasSendNowApi: boolean
+}
+
+/**
+ * A queued message can be sent now only when nothing was baked into
+ * `finalPrompt` (attachments, @file contents, slash/prebuilt prompts, bash
+ * context, interview wrappers) and the text is still plain. Anything else must
+ * keep its normal queued dispatch path so no context is silently lost.
+ */
+export function canSteerQueuedMessage(input: QueuedSteerGateInput): boolean {
+  if (!input.hasSendNowApi) return false
+  if (input.attachmentCount > 0) return false
+  if (input.finalPrompt !== input.text) return false
+  return canSteerRunningTurn({
+    sendNowIntent: true,
+    text: input.text,
+    attachmentCount: 0,
+    hasSendNowApi: true
+  })
+}
+
 /** A steering leftover requeued as a fresh queued message (id minted from the push id). */
 export interface LeftoverQueueItem {
   id: string

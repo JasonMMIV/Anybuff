@@ -8,8 +8,12 @@ import { describe, expect, test } from 'bun:test'
 import {
   firstDispatchableQueueIndex,
   firstReadyQueueIndex,
+  moveQueueItemWithinTarget,
+  promoteQueueItemWithinTarget,
+  queueItemsForView,
   queueTargetKey,
   queueTargetMatchesView,
+  type QueueReorderItem,
   type QueueTarget,
   type QueueView,
 } from '../src/renderer/src/utils/queue-routing'
@@ -119,5 +123,94 @@ describe('firstReadyQueueIndex', () => {
       { taskId: 'task-a', cwd: '~/p' },
     ]
     expect(firstReadyQueueIndex(sameConversation, view())).toBe(0)
+  })
+})
+
+describe('queueItemsForView', () => {
+  const items: QueueReorderItem[] = [
+    { id: 'a1', taskId: 'task-a', tabId: 'tab-a', cwd: '~/p' },
+    { id: 'b1', taskId: 'task-b', tabId: 'tab-b', cwd: '~/p' },
+    { id: 'a2', taskId: 'task-a', tabId: 'tab-a', cwd: '~/p' },
+    { id: 'draft', taskId: null, tabId: 'tab-draft', cwd: '~/p' },
+  ]
+
+  test('returns only the visible conversation items in queue order', () => {
+    expect(queueItemsForView(items, view()).map((item) => item.id)).toEqual(['a1', 'a2'])
+  })
+
+  test('draft items belong to their own tab', () => {
+    expect(
+      queueItemsForView(items, view({ taskId: null, tabId: 'tab-draft' })).map((item) => item.id)
+    ).toEqual(['draft'])
+  })
+
+  test('a reopened conversation follows its task into the new tab', () => {
+    expect(
+      queueItemsForView(items, view({ tabId: 'tab-reopened' })).map((item) => item.id)
+    ).toEqual(['a1', 'a2'])
+  })
+
+  test('a bound draft tab keeps the messages composed in that tab', () => {
+    expect(
+      queueItemsForView(
+        [{ id: 'draft', taskId: null, tabId: 'tab-bound', cwd: '~/p' }],
+        view({ taskId: 'task-new', tabId: 'tab-bound' })
+      ).map((item) => item.id)
+    ).toEqual(['draft'])
+  })
+
+  test('legacy untargeted entries are hidden instead of shown in every dock', () => {
+    expect(queueItemsForView([{ id: 'legacy' }], view())).toEqual([])
+  })
+
+  test('a task target wins over a stale composition tab', () => {
+    const mismatch = { id: 'mismatch', taskId: 'task-a', tabId: 'tab-b', cwd: '~/p' }
+    expect(queueItemsForView([mismatch], view()).map((item) => item.id)).toEqual(['mismatch'])
+    expect(
+      queueItemsForView([mismatch], view({ taskId: 'task-b', tabId: 'tab-b' }))
+    ).toEqual([])
+  })
+})
+
+describe('scoped queue reordering', () => {
+  const items: QueueReorderItem[] = [
+    { id: 'a1', taskId: 'task-a', cwd: '~/p' },
+    { id: 'b1', taskId: 'task-b', cwd: '~/p' },
+    { id: 'a2', taskId: 'task-a', cwd: '~/p' },
+    { id: 'a3', taskId: 'task-a', cwd: '~/p' },
+    { id: 'b2', taskId: 'task-b', cwd: '~/p' },
+  ]
+
+  test('move up skips other conversations', () => {
+    expect(moveQueueItemWithinTarget(items, 'a3', -1).map((item) => item.id)).toEqual([
+      'a1', 'b1', 'a3', 'a2', 'b2',
+    ])
+  })
+
+  test('move down skips other conversations', () => {
+    expect(moveQueueItemWithinTarget(items, 'a1', 1).map((item) => item.id)).toEqual([
+      'a2', 'b1', 'a1', 'a3', 'b2',
+    ])
+  })
+
+  test('move at a boundary is a no-op', () => {
+    expect(moveQueueItemWithinTarget(items, 'a1', -1)).toBe(items)
+    expect(moveQueueItemWithinTarget(items, 'a3', 1)).toBe(items)
+  })
+
+  test('promote moves to the front of its own conversation only', () => {
+    expect(promoteQueueItemWithinTarget(items, 'a3').map((item) => item.id)).toEqual([
+      'a3', 'a1', 'b1', 'a2', 'b2',
+    ])
+  })
+
+  test('promote inserts before the first sibling even when it is not global-first', () => {
+    expect(promoteQueueItemWithinTarget(items, 'b2').map((item) => item.id)).toEqual([
+      'a1', 'b2', 'b1', 'a2', 'a3',
+    ])
+  })
+
+  test('promote of the first item is a no-op', () => {
+    expect(promoteQueueItemWithinTarget(items, 'a1')).toBe(items)
   })
 })

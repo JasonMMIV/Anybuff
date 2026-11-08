@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUpIcon, BoltIcon, ChevronDownIcon, XIcon } from './Icons'
+import { ArrowUpIcon, BoltIcon, ChevronDownIcon, SendIcon, XIcon } from './Icons'
 import type { Attachment } from './Composer'
 
 /**
@@ -7,8 +7,8 @@ import type { Attachment } from './Composer'
  *
  * While a run is in flight, newly submitted messages are parked here instead
  * of being rejected. When the current turn ends the first queued message is
- * dispatched automatically. Items can be edited inline, reordered, promoted to
- * "next" and deleted before they run.
+ * dispatched automatically. Items can be edited inline, sent into the running
+ * turn now, reordered, promoted to "next" and deleted before they run.
  */
 export interface QueuedMessage {
   id: string
@@ -33,20 +33,23 @@ export interface QueuedMessage {
 
 interface MessageQueuePanelProps {
   items: QueuedMessage[]
-  /** Ids whose own conversation is currently on screen (inline edit only). */
-  readyIds: ReadonlySet<string>
   /** Ids held by a per-conversation ADR-30 pause. */
   pausedIds?: ReadonlySet<string>
   /** True when this view owns at least one paused item. */
   paused?: boolean
+  /** True while this chat's turn is in flight. */
+  running: boolean
+  /** Ids whose queued text can be injected into the live run right now. */
+  sendNowIds: ReadonlySet<string>
   onResume?: () => void
   onEdit: (id: string, text: string) => void
   onDelete: (id: string) => void
   onMove: (id: string, direction: -1 | 1) => void
   onSendNext: (id: string) => void
+  onSendNow: (id: string) => void
 }
 
-export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, onResume, onEdit, onDelete, onMove, onSendNext }: MessageQueuePanelProps) {
+export default function MessageQueuePanel({ items, pausedIds, paused, running, sendNowIds, onResume, onEdit, onDelete, onMove, onSendNext, onSendNow }: MessageQueuePanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
@@ -72,7 +75,7 @@ export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, 
         <span className="queue-panel-hint">
           {paused
             ? 'paused after stop — resume this chat’s queue to continue'
-            : 'sent automatically when the current turn finishes, in its own chat'}
+            : 'sent automatically when this chat’s turn finishes'}
         </span>
         <ChevronDownIcon size={12} className={`queue-chevron${collapsed ? '' : ' open'}`} />
       </button>
@@ -97,13 +100,18 @@ export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, 
       {!collapsed && items.length > 0 && (
         <div className="queue-items">
           {items.map((item, i) => {
-            const editable = readyIds.has(item.id)
             const itemPaused = pausedIds?.has(item.id) === true
+            const canSendNow = running && sendNowIds.has(item.id)
+            const sendNowTitle = canSendNow
+              ? 'Send now — inject this message into the running turn'
+              : running
+                ? 'Only plain-text queued messages can be sent now'
+                : 'Send now is available while this chat is running'
             const isNext = i === nextIndex
             return (
               <div
                 key={item.id}
-                className={`queue-item${isNext ? ' next' : ''}${editable ? '' : ' waiting'}${itemPaused ? ' paused' : ''}`}
+                className={`queue-item${isNext ? ' next' : ''}${itemPaused ? ' paused' : ''}`}
               >
                 <span
                   className="queue-order"
@@ -148,14 +156,8 @@ export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, 
                   <button
                     type="button"
                     className="queue-text"
-                    disabled={!editable}
-                    title={
-                      editable
-                        ? 'Click to edit (note: attachments captured at enqueue time are kept)'
-                        : 'Open this chat to edit its queued message'
-                    }
+                    title="Click to edit (note: attachments captured at enqueue time are kept)"
                     onClick={() => {
-                      if (!editable) return
                       setDraft(item.text)
                       setEditingId(item.id)
                     }}
@@ -164,21 +166,22 @@ export default function MessageQueuePanel({ items, readyIds, pausedIds, paused, 
                   </button>
                 )}
 
-                {!editable && (
-                  <span
-                    className="queue-route-badge"
-                    title="This message belongs to another conversation and sends there"
-                  >
-                    other chat
-                  </span>
-                )}
-
                 <div className="queue-actions">
+                  <button
+                    type="button"
+                    className="mini-btn queue-now-btn"
+                    title={sendNowTitle}
+                    aria-label="Send now"
+                    disabled={!canSendNow}
+                    onClick={() => onSendNow(item.id)}
+                  >
+                    <SendIcon size={11} /> Send now
+                  </button>
                   {i > 0 && (
                     <button
                       type="button"
                       className="mini-btn"
-                      title="Promote to next"
+                      title="Send next in this chat"
                       onClick={() => onSendNext(item.id)}
                     >
                       <ArrowUpIcon size={11} />

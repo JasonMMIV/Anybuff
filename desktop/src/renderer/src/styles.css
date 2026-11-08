@@ -3114,22 +3114,6 @@ textarea {
   border-color: rgba(122, 155, 240, 0.45);
 }
 
-.queue-item.waiting {
-  opacity: 0.68;
-}
-
-.queue-route-badge {
-  flex-shrink: 0;
-  font-size: 9.5px;
-  font-weight: 600;
-  color: var(--text-2);
-  background: var(--bg-2);
-  border: 1px solid var(--border-0);
-  border-radius: 8px;
-  padding: 1px 5px;
-  white-space: nowrap;
-}
-
 .queue-order {
   flex-shrink: 0;
   font-size: 10.5px;
@@ -3189,6 +3173,15 @@ textarea {
   display: flex;
   gap: 3px;
   flex-shrink: 0;
+}
+
+.queue-now-btn {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.queue-now-btn:disabled {
+  color: var(--text-2);
 }
 
 .attachment-strip {
@@ -3318,6 +3311,9 @@ textarea {
 
 .btn.send-btn.send-now-btn:disabled {
   opacity: 0.45;
+  background: var(--accent-strong);
+  border-color: transparent;
+  color: var(--on-accent);
 }
 
 

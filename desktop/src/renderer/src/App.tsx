@@ -35,11 +35,17 @@ import { ProcessGroup, ThinkingDots } from './components/ProcessGroup'
 import { buildChatNodes, findProcessGroup, isGroupOpen } from './utils/chat-groups'
 import { compactionNote } from './utils/compaction-note'
 import { findToolResultIndex, sweepRunningCards } from './utils/tool-events'
-import { canSteerRunningTurn, leftoverRequeueItems } from './utils/send-routing'
+import {
+  canSteerQueuedMessage,
+  canSteerRunningTurn,
+  leftoverRequeueItems,
+} from './utils/send-routing'
 import { addTaskCost, removeTaskCost, taskCostUsd, type TaskCostMap } from './utils/task-cost'
 import {
+  moveQueueItemWithinTarget,
+  promoteQueueItemWithinTarget,
+  queueItemsForView,
   queueTargetKey,
-  queueTargetMatchesView,
 } from './utils/queue-routing'
 import {
   clampTabReasoningEffort,
@@ -689,6 +695,10 @@ export default function App() {
   // active tab; only a tab without a stored selection falls back to the
   // global defaults from Settings.
   const activeWorkspaceTab = workspaceTabs.find((tab) => tab.id === activeTabId) ?? null
+  // Queue identity follows the selected TAB, not the async-loaded view: a task
+  // switch must hide the previous tab's queue immediately.
+  const activeQueueTaskId = activeWorkspaceTab ? activeWorkspaceTab.taskId : activeViewTaskId
+  const activeQueueCwd = activeWorkspaceTab ? activeWorkspaceTab.projectPath : cwd
   const fallbackSelection: TabSelection = {
     mode: 'default',
     model: settings.activeModel,
@@ -747,6 +757,8 @@ export default function App() {
   /** Guards the async drain loop from double-dispatching one task/draft tab. */
   const dispatchingTaskIdsRef = useRef<Set<string>>(new Set())
   const dispatchingTabIdsRef = useRef<Set<string>>(new Set())
+  /** Queue-items currently being steered; blocks double-click duplicate sends. */
+  const queueSendingNowRef = useRef<Set<string>>(new Set())
   /** Last run token per task: an older run's finally must not clear a newer run. */
   const runTokenByTaskRef = useRef<Record<string, number>>({})
   const nextRunTokenRef = useRef(0)
@@ -2134,24 +2146,12 @@ export default function App() {
   }, [])
 
   const queueMove = useCallback((id: string, direction: -1 | 1) => {
-    setQueuedMessages((prev) => {
-      const idx = prev.findIndex((m) => m.id === id)
-      const to = idx + direction
-      if (idx < 0 || to < 0 || to >= prev.length) return prev
-      const next = [...prev]
-      ;[next[idx], next[to]] = [next[to], next[idx]]
-      return next
-    })
+    setQueuedMessages((prev) => moveQueueItemWithinTarget(prev, id, direction))
   }, [])
 
-  /** 插隊：promote a queued message to the front of the queue. */
+  /** 插隊：promote a queued message to the front of its own conversation. */
   const queueSendNext = useCallback((id: string) => {
-    setQueuedMessages((prev) => {
-      const idx = prev.findIndex((m) => m.id === id)
-      if (idx <= 0) return prev
-      const item = prev[idx]
-      return [item, ...prev.filter((m) => m.id !== id)]
-    })
+    setQueuedMessages((prev) => promoteQueueItemWithinTarget(prev, id))
   }, [])
 
   /**
@@ -2201,9 +2201,9 @@ export default function App() {
 
   const resumeQueueDispatch = useCallback(() => {
     const key = queueTargetKey({
-      taskId: activeViewTaskId ?? undefined,
-      tabId: activeTabIdRef.current,
-      cwd: cwdRef.current ?? undefined
+      taskId: activeQueueTaskId ?? undefined,
+      tabId: activeTabIdRef.current ?? undefined,
+      cwd: activeQueueCwd ?? undefined
     })
     setQueuePausedKeys((prev) => {
       if (!prev.has(key)) return prev
@@ -2211,7 +2211,7 @@ export default function App() {
       next.delete(key)
       return next
     })
-  }, [activeViewTaskId])
+  }, [activeQueueTaskId, activeQueueCwd])
 
   /** #4: turn image attachments into SDK RunImagePart base64 content. */
   const buildImageContent = useCallback(
@@ -4511,15 +4511,18 @@ export default function App() {
   // Safe jump scrolling when loading a historical task from search — the
   // effect itself lives below, next to `jumpToRow` (which needs `chatNodes`).
 
-  // Queued messages whose own conversation is currently on screen. The drain
-  // effect and the queue panel both use this: an item parked for another tab
-  // must never dispatch into (or look sendable from) the visible one.
-  const readyQueueIds = useMemo(() => {
-    const view = { taskId: activeViewTaskId, tabId: activeTabId, cwd }
-    return new Set(
-      queuedMessages.filter((m) => queueTargetMatchesView(m, view)).map((m) => m.id)
-    )
-  }, [queuedMessages, activeViewTaskId, activeTabId, cwd])
+  // Queued messages whose own conversation is currently on screen. The queue
+  // dock is tab-local: items parked for another conversation must not appear
+  // here even though the dispatch loop still starts them in the background.
+  const viewQueueItems = useMemo(
+    () =>
+      queueItemsForView(queuedMessages, {
+        taskId: activeQueueTaskId,
+        tabId: activeTabId,
+        cwd: activeQueueCwd,
+      }),
+    [queuedMessages, activeQueueTaskId, activeTabId, activeQueueCwd]
+  )
 
   // View-scoped run state: only the conversation being VIEWED shows streaming
   // cursors, stop buttons, activity animations, and the topbar Working badge —
@@ -4528,33 +4531,101 @@ export default function App() {
   const viewRunning = viewTaskKey !== null && runningTaskIds.has(viewTaskKey)
   const viewStopping = viewTaskKey !== null && stoppingTaskIds.has(viewTaskKey)
   const activeRunStartedAt = viewTaskKey ? runStartedAtByTask[viewTaskKey] ?? null : null
+  // Queue actions follow the active TAB, not the async-loaded view: sending a
+  // queued item now must target this tab's run, even while its snapshot loads.
+  const queueViewRunning =
+    activeQueueTaskId !== null && runningTaskIds.has(activeQueueTaskId)
+  const hasSendNowApi = !isPreview && typeof window.AnyBuff.sendNow === 'function'
+  const queueSendNowIds = useMemo(() => {
+    if (!queueViewRunning || !hasSendNowApi) return new Set<string>()
+    return new Set(
+      viewQueueItems
+        .filter((item) =>
+          canSteerQueuedMessage({
+            text: item.text,
+            finalPrompt: item.finalPrompt,
+            attachmentCount: item.attachments?.length ?? 0,
+            hasSendNowApi,
+          })
+        )
+        .map((item) => item.id)
+    )
+  }, [queueViewRunning, hasSendNowApi, viewQueueItems])
+
+  const queueSendNow = useCallback(
+    async (id: string) => {
+      if (!queueSendNowIds.has(id) || queueSendingNowRef.current.has(id)) return
+      const item = queuedMessages.find((m) => m.id === id)
+      if (!item) return
+      // Draft items are not steerable. Never fall back to whichever task the
+      // active tab happens to show — that could inject into the wrong chat.
+      const targetTaskId = item.taskId
+      if (!targetTaskId || !runningTaskIdsRef.current.has(targetTaskId)) {
+        setNotice('This chat is no longer running.')
+        return
+      }
+      queueSendingNowRef.current.add(id)
+      try {
+        const res = (await window.AnyBuff.sendNow({
+          text: item.finalPrompt,
+          taskId: targetTaskId,
+        })) as { ok: boolean; pushId?: string; error?: string }
+        if (!res?.ok || !res.pushId) {
+          setNotice(res?.error ?? 'Could not send this queued message now.')
+          return
+        }
+        setQueuedMessages((prev) => prev.filter((m) => m.id !== id))
+        // The user is driving again, so any Stop-pause on this chat no longer
+        // applies to the rest of its queue.
+        setQueuePausedKeys((prev) => {
+          const key = queueTargetKey({
+            taskId: targetTaskId,
+            tabId: item.tabId ?? undefined,
+            cwd: item.cwd,
+          })
+          if (!prev.has(key)) return prev
+          const next = new Set(prev)
+          next.delete(key)
+          return next
+        })
+        if (targetTaskId === currentTaskRef.current) {
+          setChatItems((prev) => [
+            ...prev,
+            { kind: 'user', text: item.text, ts: Date.now(), steeringId: res.pushId },
+          ])
+        }
+      } catch (err) {
+        setNotice(`Could not send this queued message now: ${String(err)}`)
+      } finally {
+        queueSendingNowRef.current.delete(id)
+      }
+    },
+    [queueSendNowIds, queuedMessages]
+  )
   const activeTodos = activeViewTaskId ? todosByTask[activeViewTaskId] ?? [] : []
   const followups = activeViewTaskId ? followupsByTask[activeViewTaskId] ?? [] : []
   const viewQueueKey = queueTargetKey({
-    taskId: activeViewTaskId ?? undefined,
+    taskId: activeQueueTaskId ?? undefined,
     tabId: activeTabId ?? undefined,
-    cwd: cwd ?? undefined
+    cwd: activeQueueCwd ?? undefined
   })
   const viewQueuePaused = queuePausedKeys.has(viewQueueKey)
   const pausedQueueIds = new Set(
-    queuedMessages
+    viewQueueItems
       .filter((m) => queuePausedKeys.has(queueTargetKey(m)))
       .map((m) => m.id)
   )
-  // ADR-30: the composer offers its separate "Send now" entry only when the
-  // running turn could actually take the draft as a mid-turn steer. This MIRRORS
-  // every refusal in the send() routing gate (utils/send-routing.ts) — plain
-  // text (no slash command / bash draft), nothing staged for the bake
-  // (interview wrapper / pending `!command` output), a non-empty draft and a
-  // shell that actually exposes the channel. Queued messages deliberately do
-  // NOT hide it: Send now answers in the live turn while the parked ones still
-  // dispatch after it. Anything short of the list below would advertise a
-  // steer that silently queues instead.
+  // ADR-30: the composer offers its separate "Send now" entry whenever the
+  // running turn could take a plain-text steer. This MIRRORS every refusal in
+  // the send() routing gate (utils/send-routing.ts) — no slash command / bash
+  // draft, nothing staged for the bake (interview wrapper / pending `!command`
+  // output), and a shell that actually exposes the channel. An empty draft
+  // keeps the button visible but disabled so the action is discoverable; the
+  // queued messages deliberately do NOT hide it. Anything short of the list
+  // below would advertise a steer that silently queues instead.
   const composerSteerable =
     viewRunning &&
-    !isPreview &&
-    typeof window.AnyBuff.sendNow === 'function' &&
-    prompt.trim().length > 0 &&
+    hasSendNowApi &&
     !prompt.trim().startsWith('!') &&
     !prompt.trim().startsWith('/') &&
     !interviewArmed &&
@@ -5336,15 +5407,18 @@ export default function App() {
                   )}
 
                   <MessageQueuePanel
-                    items={queuedMessages}
-                    readyIds={readyQueueIds}
+                    key={activeTabId ?? viewQueueKey}
+                    items={viewQueueItems}
                     pausedIds={pausedQueueIds}
                     paused={viewQueuePaused}
+                    running={queueViewRunning}
+                    sendNowIds={queueSendNowIds}
                     onResume={() => resumeQueueDispatch()}
                     onEdit={(id, text) => void queueEdit(id, text)}
                     onDelete={queueDelete}
                     onMove={queueMove}
                     onSendNext={queueSendNext}
+                    onSendNow={(id) => void queueSendNow(id)}
                   />
                   <Composer
                     ref={composerRef}

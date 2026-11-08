@@ -116,6 +116,13 @@ describe('Composer queue-first contract (ADR-30)', () => {
     expect(html).toContain('class="btn send-btn send-now-btn"')
   })
 
+  test('an empty draft keeps Send now visible but disabled', () => {
+    const html = renderToStaticMarkup(<Composer {...base} prompt="" steerable />)
+    expect(html).toContain('send-now-btn')
+    expect(html).toContain('Type a message to send now')
+    expect(html).toMatch(/class="btn send-btn send-now-btn"[^>]*disabled/)
+  })
+
   test('nothing is rendered above the input for the steer entry (button title carries it)', () => {
     const html = renderToStaticMarkup(<Composer {...base} steerable />)
     expect(html).not.toContain('steer-hint')

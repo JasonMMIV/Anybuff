@@ -4,9 +4,9 @@
  * A queued message was composed in a specific conversation (and its
  * `finalPrompt` was baked against that project's cwd). It must run in THAT
  * conversation/project, never in whichever tab happens to be visible when a
- * run ends. P2 dispatches background items too, so visibility is only a UI
- * concern (editing/badges); targeting and pause keys decide where a message
- * runs.
+ * run ends. P2 dispatches background items too, so visibility only decides
+ * which tab's queue dock shows an item; targeting and pause keys decide where
+ * a message runs.
  */
 
 export interface QueueTarget {
@@ -44,6 +44,24 @@ export function queueTargetMatchesView(item: QueueTarget, view: QueueView): bool
   return true
 }
 
+/**
+ * Queued items owned by the given tab/view. Once a message has a taskId it
+ * belongs to that conversation (including when reopened in another tab); only
+ * draft messages are tab-scoped. Legacy untargeted entries are excluded so they
+ * cannot leak into every tab's dock. `view.cwd` is intentionally not used for
+ * visibility — dispatch already routes each prompt to its baked cwd.
+ */
+export function queueItemsForView<T extends QueueTarget>(
+  items: readonly T[],
+  view: QueueView
+): T[] {
+  return items.filter((item) => {
+    if (item.taskId) return item.taskId === view.taskId
+    if (item.tabId) return item.tabId === view.tabId
+    return false
+  })
+}
+
 /** Index of the first queued item whose conversation is currently visible. */
 export function firstReadyQueueIndex(
   items: readonly QueueTarget[],
@@ -79,4 +97,53 @@ export function firstDispatchableQueueIndex(
     if (filter.blockedCwds?.has(item.cwd)) return false
     return true
   })
+}
+
+export interface QueueReorderItem extends QueueTarget {
+  id: string
+}
+
+/**
+ * Swap a visible queued message with its nearest sibling in the SAME
+ * conversation. Other conversations keep their relative order, so the queue
+ * dock can reorder only the items it actually shows.
+ */
+export function moveQueueItemWithinTarget<T extends QueueReorderItem>(
+  items: T[],
+  id: string,
+  direction: -1 | 1
+): T[] {
+  const idx = items.findIndex((item) => item.id === id)
+  if (idx < 0) return items
+  const targetKey = queueTargetKey(items[idx])
+  let swapIdx = idx + direction
+  while (swapIdx >= 0 && swapIdx < items.length) {
+    if (queueTargetKey(items[swapIdx]) === targetKey) {
+      const next = [...items]
+      ;[next[idx], next[swapIdx]] = [next[swapIdx], next[idx]]
+      return next
+    }
+    swapIdx += direction
+  }
+  return items
+}
+
+/**
+ * Move a queued message to the front of its own conversation's queue without
+ * disturbing the relative order of other conversations' items.
+ */
+export function promoteQueueItemWithinTarget<T extends QueueReorderItem>(
+  items: T[],
+  id: string
+): T[] {
+  const idx = items.findIndex((item) => item.id === id)
+  if (idx < 0) return items
+  const targetKey = queueTargetKey(items[idx])
+  const firstIdx = items.findIndex((item) => queueTargetKey(item) === targetKey)
+  if (idx <= firstIdx) return items
+  const next = [...items]
+  const [item] = next.splice(idx, 1)
+  const insertAt = next.findIndex((entry) => queueTargetKey(entry) === targetKey)
+  next.splice(insertAt, 0, item)
+  return next
 }
