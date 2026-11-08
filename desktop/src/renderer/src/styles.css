@@ -3175,13 +3175,32 @@ textarea {
   flex-shrink: 0;
 }
 
+/* Queue-item Send now: mirrors the composer's circled Send now entry —
+   surface disc, accent ring, accent arrow-up glyph (icon-only). */
 .queue-now-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent);
-  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+
+.queue-now-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
 }
 
 .queue-now-btn:disabled {
-  color: var(--text-2);
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .attachment-strip {
@@ -3309,11 +3328,13 @@ textarea {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+/* Disabled (empty draft): keep the circled-arrow identity, just faded —
+   deliberately NOT the solid accent look of the Queue button next to it. */
 .btn.send-btn.send-now-btn:disabled {
   opacity: 0.45;
-  background: var(--accent-strong);
-  border-color: transparent;
-  color: var(--on-accent);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
 }
 
 

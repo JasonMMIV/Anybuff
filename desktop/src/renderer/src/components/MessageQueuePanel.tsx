@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUpIcon, BoltIcon, ChevronDownIcon, SendIcon, XIcon } from './Icons'
+import { ArrowUpIcon, BoltIcon, ChevronDownIcon, XIcon } from './Icons'
 import type { Attachment } from './Composer'
 
 /**
@@ -169,13 +169,13 @@ export default function MessageQueuePanel({ items, pausedIds, paused, running, s
                 <div className="queue-actions">
                   <button
                     type="button"
-                    className="mini-btn queue-now-btn"
+                    className="queue-now-btn"
                     title={sendNowTitle}
                     aria-label="Send now"
                     disabled={!canSendNow}
                     onClick={() => onSendNow(item.id)}
                   >
-                    <SendIcon size={11} /> Send now
+                    <ArrowUpIcon size={12} />
                   </button>
                   {i > 0 && (
                     <button
