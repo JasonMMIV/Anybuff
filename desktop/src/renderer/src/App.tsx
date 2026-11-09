@@ -47,6 +47,7 @@ import {
   queueItemsForView,
   queueTargetKey,
 } from './utils/queue-routing'
+import { promptVisibleInActiveTab } from './utils/prompt-routing'
 import {
   clampTabReasoningEffort,
   DEFAULT_TAB_SELECTION,
@@ -390,6 +391,8 @@ interface AskUserPromptState {
   taskId?: string
   runId?: string
   title?: string
+  /** Renderer-local monotonic id: a new prompt must remount the banner. */
+  seq: number
 }
 
 /** Extract next-step suggestions from the suggest_followups tool output or raw text. */
@@ -675,6 +678,8 @@ export default function App() {
   const [approvalRequest, setApprovalRequest] = useState<ApprovalPromptState | null>(null)
   // ask_user override: questions awaiting user answers (rendered as a banner)
   const [pendingAskUser, setPendingAskUser] = useState<AskUserPromptState | null>(null)
+  /** Monotonic per-prompt key so a new ask_user round never reuses old answers. */
+  const askPromptSeqRef = useRef(0)
   const [askSelections, setAskSelections] = useState<Record<number, string[]>>({})
   const [askOther, setAskOther] = useState<Record<number, string>>({})
   const [todosByTask, setTodosByTask] = useState<Record<string, TodoTodo[]>>({})
@@ -697,8 +702,27 @@ export default function App() {
   const activeWorkspaceTab = workspaceTabs.find((tab) => tab.id === activeTabId) ?? null
   // Queue identity follows the selected TAB, not the async-loaded view: a task
   // switch must hide the previous tab's queue immediately.
-  const activeQueueTaskId = activeWorkspaceTab ? activeWorkspaceTab.taskId : activeViewTaskId
+  const activeTabTaskId = activeWorkspaceTab ? activeWorkspaceTab.taskId : activeViewTaskId
+  const activeQueueTaskId = activeTabTaskId
   const activeQueueCwd = activeWorkspaceTab ? activeWorkspaceTab.projectPath : cwd
+  // Interactive prompts are task-scoped like the queue: a background run's
+  // ask_user questions may only render in the tab that owns the conversation.
+  const openTaskIds = useMemo(
+    () => workspaceTabs.map((tab) => tab.taskId).filter((id): id is string => Boolean(id)),
+    [workspaceTabs]
+  )
+  const visibleAskUser =
+    pendingAskUser && promptVisibleInActiveTab(pendingAskUser, activeTabTaskId, openTaskIds)
+      ? pendingAskUser
+      : null
+  // Approval prompts are emitted by background runs too; they follow the same
+  // owning-tab rule as ask_user instead of appearing in every tab.
+  const visibleApprovalRequest =
+    approvalRequest && promptVisibleInActiveTab(approvalRequest, activeTabTaskId, openTaskIds)
+      ? approvalRequest
+      : null
+  /** The tab that currently needs user input (titlebar badge). */
+  const inputNeededTaskId = pendingAskUser?.taskId ?? approvalRequest?.taskId ?? null
   const fallbackSelection: TabSelection = {
     mode: 'default',
     model: settings.activeModel,
@@ -1626,7 +1650,8 @@ export default function App() {
                 promptId: event.promptId,
                 taskId: event.taskId,
                 runId: event.runId,
-                title: event.title
+                title: event.title,
+                seq: ++askPromptSeqRef.current
               }
             : null
         )
@@ -4803,6 +4828,7 @@ export default function App() {
               const isActive = tab.id === activeTabId
               const isRunningTab = Boolean(tab.taskId && runningTaskIds.has(tab.taskId))
               const tabAttention = tab.taskId ? attentionByTask[tab.taskId] : undefined
+              const tabNeedsInput = Boolean(tab.taskId && inputNeededTaskId === tab.taskId)
               return (
                 <div
                   key={tab.id}
@@ -4847,6 +4873,14 @@ export default function App() {
                 >
                   {isRunningTab && (
                     <span className="spinner-ring titlebar-tab-spinner" role="status" aria-label="Running" />
+                  )}
+                  {tabNeedsInput && (
+                    <span
+                      className="titlebar-tab-attention input"
+                      role="status"
+                      aria-label="Waiting for your answer"
+                      title="This tab is waiting for your answer"
+                    />
                   )}
                   {tabAttention && (
                     <span
@@ -5340,20 +5374,20 @@ export default function App() {
                     </div>
                   )}
 
-                  {approvalRequest && (
+                  {visibleApprovalRequest && (
                     <div className="resume-banner">
                       <span className="resume-icon" style={{ color: '#f59e0b' }}>🛡</span>
                       <span className="resume-text">
                         <strong>
                           Action requires approval
-                          {approvalRequest.title ? ` · ${approvalRequest.title}` : ''}:
+                          {visibleApprovalRequest.title ? ` · ${visibleApprovalRequest.title}` : ''}:
                         </strong>{' '}
-                        {approvalRequest.message}
+                        {visibleApprovalRequest.message}
                       </span>
                       <button
                         className="btn primary small"
                         onClick={() => {
-                          const target = approvalRequest
+                          const target = visibleApprovalRequest
                           setApprovalRequest(null)
                           void window.AnyBuff.respondApproval({
                             approved: true,
@@ -5368,7 +5402,7 @@ export default function App() {
                       <button
                         className="btn ghost small"
                         onClick={() => {
-                          const target = approvalRequest
+                          const target = visibleApprovalRequest
                           setApprovalRequest(null)
                           void window.AnyBuff.respondApproval({
                             approved: false,
@@ -5383,12 +5417,13 @@ export default function App() {
                     </div>
                   )}
 
-                  {pendingAskUser && pendingAskUser.questions.length > 0 && (
+                  {visibleAskUser && visibleAskUser.questions.length > 0 && (
                     <AskUserBanner
-                      questions={pendingAskUser.questions}
-                      contextTitle={pendingAskUser.title}
+                      key={visibleAskUser.seq}
+                      questions={visibleAskUser.questions}
+                      contextTitle={visibleAskUser.title}
                       onRespond={(payload) => {
-                        const target = pendingAskUser
+                        const target = visibleAskUser
                         setPendingAskUser(null)
                         void window.AnyBuff.respondAskUser({
                           answers: payload.answers,
